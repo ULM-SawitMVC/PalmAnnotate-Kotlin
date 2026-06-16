@@ -14,3 +14,8 @@ local.properties
 *.aab
 *.ap_
 *.dex
+
+# Internal / agent files
+HANDOFF.md
+TODO.md
+bug.md
