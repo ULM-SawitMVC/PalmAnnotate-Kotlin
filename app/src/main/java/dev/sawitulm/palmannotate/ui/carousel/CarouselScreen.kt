@@ -426,11 +426,12 @@ private fun CarouselBottomBar(
     onNextTree: () -> Unit,
 ) {
     Surface(tonalElevation = 3.dp, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
-            // Class buttons row
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            // Class buttons row — widened to ~48dp touch targets with more spacing so
+            // the operator's thumb does not hit the wrong control on a moving boat/field.
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 for (cls in AnnotationClass.assignableEntries) {
@@ -439,13 +440,14 @@ private fun CarouselBottomBar(
                     } == true
                     Surface(
                         modifier = Modifier
-                            .size(36.dp)
-                            .clip(RoundedCornerShape(6.dp))
+                            .height(48.dp)
+                            .widthIn(min = 52.dp)
+                            .clip(RoundedCornerShape(8.dp))
                             .clickable {
                                 selectedBboxId?.let { onClassChange(it, cls) }
                             },
                         color = cls.composeColor.copy(alpha = if (isSelected) 1f else 0.5f),
-                        shape = RoundedCornerShape(6.dp),
+                        shape = RoundedCornerShape(8.dp),
                         border = if (isSelected) ButtonDefaults.outlinedButtonBorder(enabled = true) else null,
                     ) {
                         Box(contentAlignment = Alignment.Center) {
@@ -453,57 +455,66 @@ private fun CarouselBottomBar(
                                 cls.displayName,
                                 color = Color.White,
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 11.sp,
+                                fontSize = 15.sp,
                                 textAlign = TextAlign.Center,
                             )
                         }
                     }
                 }
 
-                Spacer(Modifier.width(4.dp))
+                Spacer(Modifier.width(8.dp))
 
                 // Delete
                 IconButton(
                     onClick = { selectedBboxId?.let { onDelete(it) } },
                     enabled = selectedBboxId != null,
-                    modifier = Modifier.size(36.dp),
+                    modifier = Modifier.size(48.dp),
                 ) {
-                    Icon(Icons.Default.Delete, "Delete", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
+                    Icon(Icons.Default.Delete, "Delete", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(26.dp))
                 }
 
                 // Link (arm / cancel if armed)
                 if (linkArmed) {
-                    TextButton(onClick = onCancelLink) { Text("Cancel Link", fontSize = 11.sp, color = MaterialTheme.colorScheme.error) }
+                    TextButton(onClick = onCancelLink, modifier = Modifier.height(48.dp)) {
+                        Text("Cancel Link", fontSize = 14.sp, color = MaterialTheme.colorScheme.error)
+                    }
                 } else {
                     IconButton(
                         onClick = onArmLink,
                         enabled = selectedBboxId != null,
-                        modifier = Modifier.size(36.dp),
+                        modifier = Modifier.size(48.dp),
                     ) {
-                        Icon(Icons.Default.Link, "Link", modifier = Modifier.size(20.dp))
+                        Icon(Icons.Default.Link, "Link", modifier = Modifier.size(26.dp))
                     }
                 }
 
                 Spacer(Modifier.weight(1f))
 
                 // Boxes toggle
-                IconButton(onClick = onToggleBoxes, modifier = Modifier.size(36.dp)) {
+                IconButton(onClick = onToggleBoxes, modifier = Modifier.size(48.dp)) {
                     Icon(
                         if (showBoxes) Icons.Default.Visibility else Icons.Default.VisibilityOff,
                         "Boxes",
-                        modifier = Modifier.size(20.dp),
+                        modifier = Modifier.size(26.dp),
                     )
                 }
             }
 
-            // Action buttons row
+            Spacer(Modifier.height(8.dp))
+
+            // Action buttons row — full-width split buttons (no tiny text targets).
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                TextButton(onClick = onSaveExit) { Text("Save & Exit", fontSize = 12.sp) }
-                Spacer(Modifier.weight(1f))
-                TextButton(onClick = onNextTree) { Text("Next Tree", fontSize = 12.sp) }
+                FilledTonalButton(
+                    onClick = onSaveExit,
+                    modifier = Modifier.weight(1f).height(48.dp),
+                ) { Text("Save & Exit", fontSize = 15.sp) }
+                Button(
+                    onClick = onNextTree,
+                    modifier = Modifier.weight(1f).height(48.dp),
+                ) { Text("Next Tree", fontSize = 15.sp) }
             }
         }
     }
