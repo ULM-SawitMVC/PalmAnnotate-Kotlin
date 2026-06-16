@@ -160,17 +160,17 @@ fun AnnotationCanvas(
         val cacheKey = withContext(Dispatchers.IO) { bitmapCacheKey(uriStr) }
         val cached = BitmapCache.get(cacheKey)
         if (cached != null) {
-            Log.d(CANVAS_TAG, "Image CACHE HIT - uri=${uriStr.takeLast(50)}")
+            // Log.d(CANVAS_TAG, "Image CACHE HIT - uri=${uriStr.takeLast(50)}")
             value = cached
         } else {
-            Log.d(CANVAS_TAG, "Image LOAD START - uri=${uriStr.takeLast(50)}")
+            // Log.d(CANVAS_TAG, "Image LOAD START - uri=${uriStr.takeLast(50)}")
             val loadStart = System.currentTimeMillis()
             value = null
             value = withContext(Dispatchers.IO) {
                 decodeDownsampled(context, uriStr, maxDimension = 1600)?.also {
                     BitmapCache.put(cacheKey, it)
                     val loadTime = System.currentTimeMillis() - loadStart
-                    Log.d(CANVAS_TAG, "Image LOAD END - uri=${uriStr.takeLast(50)}, time=${loadTime}ms")
+                    // Log.d(CANVAS_TAG, "Image LOAD END - uri=${uriStr.takeLast(50)}, time=${loadTime}ms")
                 }
             }
         }

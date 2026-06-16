@@ -416,7 +416,7 @@ class CaptureFlowViewModel @Inject constructor(
                                     put("displayCeilingMm", depth.displayCeilingMm)
                                 }
                                 storage.writeText(storage.depthJsonFile(treeName, index), meta.toString())
-                                Log.i("CaptureFlow", "Depth sidecar written for side $index (${rawBytes.size} bytes)")
+                                // Log.i("CaptureFlow", "Depth sidecar written for side $index (${rawBytes.size} bytes)")
                             } catch (e: Exception) {
                                 Log.w("CaptureFlow", "Depth sidecar write failed for side $index", e)
                             }

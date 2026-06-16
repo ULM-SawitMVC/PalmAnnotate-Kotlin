@@ -61,7 +61,7 @@ class OnnxDetector(private val context: Context) {
             session = ortEnv.createSession(modelBytes, opts)
             env = ortEnv
             isInitialized = true
-            Log.i(TAG, "ONNX detector ready (input=$inputSize conf=$confThreshold iou=$iouThreshold max=$maxBoxes)")
+            // Log.i(TAG, "ONNX detector ready (input=$inputSize conf=$confThreshold iou=$iouThreshold max=$maxBoxes)")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize ONNX detector", e)
         }

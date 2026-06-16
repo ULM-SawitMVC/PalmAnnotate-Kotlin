@@ -117,7 +117,7 @@ class DedupViewModel @Inject constructor(
 
     fun load(sessionId: String) {
         val startTime = System.currentTimeMillis()
-        Log.d(TAG, "load() START - sessionId=$sessionId")
+        // Log.d(TAG, "load() START - sessionId=$sessionId")
         viewModelScope.launch {
             isLoading = true
             errorMessage = null
@@ -125,7 +125,7 @@ class DedupViewModel @Inject constructor(
                 val dbStart = System.currentTimeMillis()
                 val loaded = repo.loadActiveSession(sessionId)
                 val dbTime = System.currentTimeMillis() - dbStart
-                Log.d(TAG, "load() DB query took ${dbTime}ms")
+                // Log.d(TAG, "load() DB query took ${dbTime}ms")
                 
                 session = loaded
                 if (loaded == null) {
@@ -135,7 +135,7 @@ class DedupViewModel @Inject constructor(
                 }
                 
                 val totalTime = System.currentTimeMillis() - startTime
-                Log.d(TAG, "load() END - total=${totalTime}ms, sides=${loaded?.sides?.size ?: 0}, links=${loaded?.confirmedLinks?.size ?: 0}")
+                // Log.d(TAG, "load() END - total=${totalTime}ms, sides=${loaded?.sides?.size ?: 0}, links=${loaded?.confirmedLinks?.size ?: 0}")
             } catch (e: Exception) {
                 errorMessage = "Failed to load: ${e.localizedMessage ?: "Unknown error"}"
                 Log.e(TAG, "load() ERROR", e)
@@ -284,7 +284,7 @@ class DedupViewModel @Inject constructor(
         viewModelScope.launch {
             val safTreeUri = exportFolder.folderUri.first()
             repo.saveSession(s, safTreeUri)
-            android.util.Log.d("SavePerf", "dedup saveAndContinue: tap→nav = ${System.currentTimeMillis() - tap}ms (felt)")
+            // android.util.Log.d("SavePerf", "dedup saveAndContinue: tap→nav = ${System.currentTimeMillis() - tap}ms (felt)")
             onDone()
         }
     }
@@ -324,7 +324,7 @@ fun DeduplicationScreen(
     // Track screen open time
     val screenOpenTime = remember { System.currentTimeMillis() }
     LaunchedEffect(sessionId) {
-        Log.d(TAG, "DeduplicationScreen composable START - sessionId=$sessionId")
+        // Log.d(TAG, "DeduplicationScreen composable START - sessionId=$sessionId")
         viewModel.load(sessionId)
     }
     
@@ -332,7 +332,7 @@ fun DeduplicationScreen(
     LaunchedEffect(viewModel.session) {
         if (viewModel.session != null) {
             val elapsed = System.currentTimeMillis() - screenOpenTime
-            Log.d(TAG, "DeduplicationScreen SESSION LOADED - elapsed=${elapsed}ms")
+            // Log.d(TAG, "DeduplicationScreen SESSION LOADED - elapsed=${elapsed}ms")
         }
     }
     
@@ -340,7 +340,7 @@ fun DeduplicationScreen(
     LaunchedEffect(viewModel.isLoading) {
         if (!viewModel.isLoading) {
             val elapsed = System.currentTimeMillis() - screenOpenTime
-            Log.d(TAG, "DeduplicationScreen LOADING COMPLETE - elapsed=${elapsed}ms")
+            // Log.d(TAG, "DeduplicationScreen LOADING COMPLETE - elapsed=${elapsed}ms")
         }
     }
 

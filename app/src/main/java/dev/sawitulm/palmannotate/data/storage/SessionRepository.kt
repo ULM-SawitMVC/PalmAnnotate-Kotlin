@@ -214,7 +214,7 @@ class SessionRepository(
     /** Write-through save of one tree (sides/bboxes/links + label files + annot-log). */
     suspend fun saveSession(session: ActiveSession, safTreeUri: Uri? = null) = withContext(Dispatchers.IO) {
         val saveStart = System.currentTimeMillis()
-        Log.d(TAG, "saveSession START - tree=${session.treeName}")
+        // Log.d(TAG, "saveSession START - tree=${session.treeName}")
         
         val treeKey = session.sessionId
         val tree = treeDao.getByKey(treeKey) ?: return@withContext
@@ -244,7 +244,7 @@ class SessionRepository(
             })
         }
         val dbTime = System.currentTimeMillis() - dbStart
-        Log.d(TAG, "saveSession DB transaction took ${dbTime}ms")
+        // Log.d(TAG, "saveSession DB transaction took ${dbTime}ms")
         
         // Slow file/SAF artifacts run OUTSIDE the transaction (never hold the DB lock for the
         // multi-MB SAF image mirror). Skipped when we declined to rewrite sides.
@@ -252,18 +252,18 @@ class SessionRepository(
             val artifactsStart = System.currentTimeMillis()
             writeSideArtifacts(session.treeName, session.split, session.sides, safTreeUri)
             val artifactsTime = System.currentTimeMillis() - artifactsStart
-            Log.d(TAG, "saveSession writeSideArtifacts took ${artifactsTime}ms")
+            // Log.d(TAG, "saveSession writeSideArtifacts took ${artifactsTime}ms")
         }
         
         val totalTime = System.currentTimeMillis() - saveStart
-        Log.d(TAG, "saveSession END - total=${totalTime}ms")
+        // Log.d(TAG, "saveSession END - total=${totalTime}ms")
     }
     
     /** Save only the DB transaction (fast). Returns after DB commit, before file artifacts.
      *  Used when we need data persisted before navigating but don't want to wait for SAF I/O. */
     suspend fun saveDbOnly(session: ActiveSession) = withContext(Dispatchers.IO) {
         val saveStart = System.currentTimeMillis()
-        Log.d(TAG, "saveDbOnly START - tree=${session.treeName}")
+        // Log.d(TAG, "saveDbOnly START - tree=${session.treeName}")
         
         val treeKey = session.sessionId
         val tree = treeDao.getByKey(treeKey) ?: return@withContext
@@ -284,7 +284,7 @@ class SessionRepository(
         }
         
         val totalTime = System.currentTimeMillis() - saveStart
-        Log.d(TAG, "saveDbOnly END - total=${totalTime}ms")
+        // Log.d(TAG, "saveDbOnly END - total=${totalTime}ms")
     }
 
     /** Replace a tree's sides + bboxes in the DB. Call INSIDE a [db] transaction. */
@@ -315,7 +315,7 @@ class SessionRepository(
     private fun writeSideArtifacts(treeName: String, split: String, sides: List<TreeSide>, safTreeUri: Uri?) {
         val t0 = System.currentTimeMillis()
         writeLocalArtifacts(treeName, split, sides)
-        Log.d(TAG, "writeLocalArtifacts ${sides.size} sides took ${System.currentTimeMillis() - t0}ms")
+        // Log.d(TAG, "writeLocalArtifacts ${sides.size} sides took ${System.currentTimeMillis() - t0}ms")
         if (safTreeUri != null) {
             safScope.launch { mirrorSafArtifacts(treeName, split, sides, safTreeUri) }
         }
@@ -361,7 +361,7 @@ class SessionRepository(
                 }
             }
         }
-        Log.d(TAG, "mirrorSafArtifacts $treeName (${sides.size} sides) took ${System.currentTimeMillis() - t0}ms [background]")
+        // Log.d(TAG, "mirrorSafArtifacts $treeName (${sides.size} sides) took ${System.currentTimeMillis() - t0}ms [background]")
     }
 
     // ─── Output JSON ─────────────────────────────────────────────────────────────

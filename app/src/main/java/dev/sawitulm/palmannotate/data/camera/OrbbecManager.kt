@@ -188,7 +188,7 @@ class OrbbecManager(private val appContext: Context) {
                 recentDetaches.clear(); degradeLevel = 0; didReset = true
             }
         }
-        if (didReset) Log.i(TAG, "Orbbec flapping guard reset (full color+depth re-enabled)")
+            // Log.i(TAG, "Orbbec flapping guard reset (full color+depth re-enabled)")
     }
 
     private fun resetFlapLadder() { synchronized(flapLock) { recentDetaches.clear(); degradeLevel = 0 } }
@@ -227,7 +227,7 @@ class OrbbecManager(private val appContext: Context) {
     private fun unregisterUsbHotplugReceiver() {
         val r = usbHotplugReceiver ?: return
         usbHotplugReceiver = null
-        try { appContext.unregisterReceiver(r) } catch (e: Exception) { Log.d(TAG, "hotplug unregister ignored", e) }
+        try { appContext.unregisterReceiver(r) } catch (e: Exception) { /* Log.d(TAG, "hotplug unregister ignored", e) */ }
     }
 
     private fun warmUpSdk() {
@@ -241,7 +241,7 @@ class OrbbecManager(private val appContext: Context) {
                     if (obContext == null) {
                         OBContext.setLoggerSeverity(LogSeverity.INFO); OBContext.setLoggerToConsole(LogSeverity.INFO)
                         obContext = OBContext(appContext, deviceChangedCallback)
-                        Log.i(TAG, "Orbbec SDK pre-warmed (core ${OBContext.getCoreVersionName()})")
+                        // Log.i(TAG, "Orbbec SDK pre-warmed (core ${OBContext.getCoreVersionName()})")
                     }
                 }
             } catch (e: Exception) { Log.w(TAG, "SDK pre-warm failed", e) }
@@ -424,7 +424,7 @@ class OrbbecManager(private val appContext: Context) {
             if (obContext == null) {
                 OBContext.setLoggerSeverity(LogSeverity.INFO); OBContext.setLoggerToConsole(LogSeverity.INFO)
                 obContext = OBContext(appContext, deviceChangedCallback)
-                Log.i(TAG, "Orbbec SDK core ${OBContext.getCoreVersionName()} initialised")
+                // Log.i(TAG, "Orbbec SDK core ${OBContext.getCoreVersionName()} initialised")
             }
             try { acquireStreamLocked(obContext!!); return } catch (e: Exception) {
                 lastError = e; Log.w(TAG, "Orbbec open attempt ${attempt + 1}/$OPEN_RETRIES failed; retrying", e)
@@ -454,7 +454,7 @@ class OrbbecManager(private val appContext: Context) {
             selectedProfile = chooseColorProfile(openedPipeline)
             if (selectedProfile != null) config.enableStream(selectedProfile) else config.enableStream(SensorType.COLOR)
             if (depthSensor != null && degradeToColorOnly) {
-                Log.i(TAG, "Orbbec color-only mode (depth disabled to keep the USB host stable)")
+                // Log.i(TAG, "Orbbec color-only mode (depth disabled to keep the USB host stable)")
                 safeClose(depthSensor, "depth sensor (color-only)")
             } else if (depthSensor != null) {
                 try {
@@ -502,7 +502,7 @@ class OrbbecManager(private val appContext: Context) {
         if (profiles.isEmpty()) return null
         profiles.sortWith(compareBy<VideoStreamProfile> { colorFormatPriority(it.getFormat()) }.thenBy { kotlin.math.abs(it.getWidth() - 1280) }.thenByDescending { it.getFps() }.thenByDescending { it.getWidth() * it.getHeight() })
         val selected = profiles.first(); for (p in profiles.drop(1)) safeClose(p, "unselected color profile")
-        Log.i(TAG, "Selected color ${selected.getWidth()}x${selected.getHeight()}@${selected.getFps()} ${selected.getFormat()}")
+        // Log.i(TAG, "Selected color ${selected.getWidth()}x${selected.getHeight()}@${selected.getFps()} ${selected.getFormat()}")
         return selected
     }
 
@@ -732,6 +732,6 @@ class OrbbecManager(private val appContext: Context) {
     private fun isCapturableDepthFormat(format: Format) = when (format) { Format.Y16, Format.Y10, Format.Y11, Format.Y12 -> true; else -> false }
     private fun depthFormatPriority(format: Format) = when (format) { Format.Y16 -> 0; Format.Y12 -> 1; Format.Y11 -> 2; Format.Y10 -> 3; else -> 99 }
 
-    private fun safeStopAndClose(pipeline: Pipeline?) { if (pipeline == null) return; try { pipeline.stop() } catch (e: Exception) { Log.d(TAG, "pipeline stop ignored", e) }; safeClose(pipeline, "pipeline") }
-    private fun safeClose(closeable: AutoCloseable?, label: String) { if (closeable == null) return; try { closeable.close() } catch (e: Exception) { Log.d(TAG, "close $label ignored", e) } }
+    private fun safeStopAndClose(pipeline: Pipeline?) { if (pipeline == null) return; try { pipeline.stop() } catch (e: Exception) { /* Log.d(TAG, "pipeline stop ignored", e) */ }; safeClose(pipeline, "pipeline") }
+    private fun safeClose(closeable: AutoCloseable?, label: String) { if (closeable == null) return; try { closeable.close() } catch (e: Exception) { /* Log.d(TAG, "close $label ignored", e) */ } }
 }
