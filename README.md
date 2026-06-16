@@ -2,7 +2,11 @@
 
 Rewrite dari PalmAnnotate (Capacitor WebView hybrid) ke **native Kotlin + Jetpack Compose**.
 
-> **Status lengkap ada di [`MIGRATION_STATUS.md`](MIGRATION_STATUS.md).**
+> **Status migrasi ada di [`docs/MIGRATION_STATUS.md`](docs/MIGRATION_STATUS.md).**
+
+## License
+
+[GPL 3.0](LICENSE) — Copyright 2026 ULM DS Lab
 
 ## Struktur Project
 
@@ -14,7 +18,7 @@ app/src/main/java/dev/sawitulm/palmannotate/
 │   └── AppModule.kt                ← Hilt DI module (singleton bindings)
 ├── domain/
 │   ├── model/                      ← Data classes (Bbox, ActiveSession, TreeSide, etc.)
-│   ├── dedup/                      ← UnionFind + SuggestionEngine (real algorithm)
+│   ├── dedup/                      ← UnionFind + SuggestionEngine
 │   ├── results/                    ← ResultsComputer (clusters, linkedCount, class counts)
 │   ├── quality/                    ← QualityCheck (capture QA validation)
 │   ├── usecase/                    ← SessionUseCases (bbox CRUD, link mgmt, mismatch resolve)
@@ -34,50 +38,38 @@ app/src/main/java/dev/sawitulm/palmannotate/
 │   ├── home/                       ← HomeScreen + HomeViewModel
 │   ├── session/                    ← SessionDetailScreen
 │   ├── capture/                    ← CaptureFlowScreen (CameraX + Orbbec toggle)
-│   ├── annotation/                 ← AnnotationScreen (canvas + tools + detect + carousel entry)
+│   ├── carousel/                   ← CarouselScreen (primary annotation editor)
 │   ├── viewer/                     ← DepthViewerScreen (jet colormap + tap-to-read)
-│   ├── carousel/                   ← CarouselScreen (fullscreen swipe viewer)
 │   ├── dedup/                      ← DeduplicationScreen (two-canvas pair review)
 │   ├── results/                    ← ResultsScreen (summary + export + QA gate)
 │   └── common/                     ← AnnotationCanvas, AppHeader, Dialogs,
 │                                      KeyboardShortcuts, ToastHost
-└── app/src/test/                   ← Unit tests (39 tests: DomainTests + FolderResumeTests)
+└── app/src/test/                   ← Unit tests (DomainTests + FolderResumeTests)
 ```
 
-## Sudah Dibuat ✅
+## Fitur Utama
 
-| Modul | File |
-|---|---|
-| Gradle build system | `build.gradle.kts`, `libs.versions.toml` |
-| Domain models | `AnnotationClass`, `Bbox`, `TreeSide`, `CrossSideLink`, `ActiveSession`, `Results`, `OutputSchema` |
-| Union-Find | `UnionFind.kt` (path compression + union by rank) |
-| Suggestion engine | `SuggestionEngine.kt` (real algorithm: seam-band, size-ratio, weighted score, mutual-best) |
-| YOLO parser | `YoloParser.kt` (parse/serialize round-trip, clamp, 6-dp) |
-| Results computer | `ResultsComputer.kt` (clusters, linkedCount, class counts, "other" bucket) |
-| Quality check | `QualityCheck.kt` (capture QA validation) |
-| Session use cases | `SessionUseCases.kt` (bbox CRUD, link mgmt, mismatch detect/resolve) |
-| Operation queue | `OperationQueue.kt` (serialized saves) |
-| Room database | `Entities.kt`, `PalmAnnotateDatabase.kt` (v2, cascade delete) |
-| Storage layer | `AndroidStorageManager`, `SafMirrorStore`, `ExportFolderRepository`, `FolderResumeImporter`, `InputCache` |
-| Session repository | `SessionRepository` (Room + filesystem + SAF mirror) |
-| ONNX detector | `OnnxDetector` (letterbox, single-class UNASSIGNED, class-agnostic NMS) |
-| GPS provider | `GpsProvider` (background location) |
-| Export manager | `ExportManager` (Output JSON v4 / YOLO / CSV / Identity) |
-| Orbbec camera | `OrbbecManager` (USB RGB-D, D2C alignment, jet colormap preview) |
-| UI: Home | Session list, create, delete, export folder picker |
-| UI: Session Detail | Tree list, annotate/carousel entry |
-| UI: Capture Flow | CameraX + Orbbec toggle, GPS, QA gate, review-all retake |
-| UI: Annotation | Canvas, bbox tools, detect button, carousel entry, OperationQueue saves |
-| UI: Carousel | HorizontalPager, review/edit mode, link arm, detect button |
-| UI: Dedup | Two-canvas seam-anchored surface, suggestion chips, pair navigation |
-| UI: Depth Viewer | Jet colormap, tap-to-read, valueScale from sidecar |
-| UI: Results | Summary + export buttons + QA gate dialog |
-| Theming | Material 3 dark/light + PalmColors + OnMediaColors |
-| Navigation | Compose Navigation with all routes |
-| DI | Hilt modules |
-| Unit tests | 39 tests (DomainTests + FolderResumeTests) |
-| ONNX model | `ffb-detector.onnx` + `detector.config.json` |
-| Orbbec SDK | `obsensor_v2.0.6_2026031801_release.aar` |
+| Fitur | Deskripsi |
+|-------|-----------|
+| **Carousel Editor** | Primary annotation editor — swipe antar side, bbox draw/select/delete, class assignment (B1–B4), auto-save silent |
+| **Cross-Side Linking** | Link bbox antar side (select → Link → swipe → tap matching bunch) |
+| **Link Groups** | Badge angka di linked bbox, nomor grup konsisten antar side |
+| **ONNX Detection** | Deteksi bbox otomatis dengan ONNX Runtime + NMS |
+| **Deduplication** | Two-canvas pair review, suggestion engine (seam-band, size-ratio, weighted score) |
+| **Depth Viewer** | Jet colormap, tap-to-read depth, valueScale dari sidecar |
+| **Export** | Output JSON v4, YOLO labels, CSV, Identity |
+| **CameraX + Orbbec** | Capture foto + depth, D2C alignment, GPS |
+| **Auto-Save** | Silent save saat toggle mode, swipe side, atau back |
+| **Resume** | Folder scan resume dari Output JSON |
+
+## Dependencies
+
+| Library | License | Source |
+|---------|---------|--------|
+| AndroidX, Compose, CameraX, Room, Hilt | Apache 2.0 | Google Maven |
+| ONNX Runtime Android | MIT | Microsoft |
+| Orbbec SDK Android Wrapper | Apache 2.0 | [GitHub](https://github.com/orbbec/OrbbecSDK-Android-Wrapper) |
+| Orbbec SDK v2 | MIT | [GitHub](https://github.com/orbbec/OrbbecSDK_v2) |
 
 ## Build
 
@@ -105,3 +97,8 @@ UI (Compose) → ViewModel → UseCase → Repository → Room + Filesystem + SA
                                           ↓
                                     CameraX / Orbbec SDK / ONNX Runtime
 ```
+
+## Dokumentasi
+
+- [`docs/MIGRATION_STATUS.md`](docs/MIGRATION_STATUS.md) — Status migrasi dari web app
+- [`docs/PERF_GAIN.md`](docs/PERF_GAIN.md) — Analisis optimasi performa
