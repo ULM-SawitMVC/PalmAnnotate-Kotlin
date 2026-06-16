@@ -59,7 +59,8 @@ fun PalmAnnotateNavHost(
                 sessionId = runId,
                 onBack = { navController.popBackStack() },
                 onAddTree = { navController.navigate(Routes.capture(runId)) },
-                onOpenTree = { treeKey -> navController.navigate(Routes.annotation(treeKey)) },
+                // Carousel is now the primary annotation editor (tapping a tree opens it).
+                onOpenTree = { treeKey -> navController.navigate(Routes.carousel(treeKey)) },
                 onOpenCarousel = { treeKey -> navController.navigate(Routes.carousel(treeKey)) },
             )
         }
@@ -72,8 +73,8 @@ fun PalmAnnotateNavHost(
             CaptureFlowScreen(
                 sessionId = runId,
                 onTreeSaved = { treeKey ->
-                    // Replace the capture screen with the new tree's annotation.
-                    navController.navigate(Routes.annotation(treeKey)) {
+                    // Replace the capture screen with the new tree's carousel editor.
+                    navController.navigate(Routes.carousel(treeKey)) {
                         popUpTo(Routes.capture(runId)) { inclusive = true }
                     }
                 },
@@ -145,6 +146,13 @@ fun PalmAnnotateNavHost(
                 onDedup = { navController.navigate(Routes.dedup(treeKey)) },
                 onResults = { navController.navigate(Routes.results(treeKey)) },
                 onDepth = { navController.navigate(Routes.depth(treeKey)) },
+                onNextTree = { runId ->
+                    // Save current tree, then open capture for the next tree; drop this
+                    // tree's carousel off the stack so Back returns to the tree list.
+                    navController.navigate(Routes.capture(runId)) {
+                        popUpTo(Routes.SESSION_DETAIL) { inclusive = false }
+                    }
+                },
             )
         }
 

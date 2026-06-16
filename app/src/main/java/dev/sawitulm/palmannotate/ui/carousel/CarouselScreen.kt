@@ -1,5 +1,6 @@
 package dev.sawitulm.palmannotate.ui.carousel
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -62,21 +63,42 @@ class CarouselViewModel @Inject constructor(
     var isDetecting by mutableStateOf(false)
         private set
 
+    // Active sub-tool while in EDIT mode (REVIEW mode is always read-only / CanvasTool.VIEW).
+    var editTool by mutableStateOf(CanvasTool.SELECT)
+
+    // RUN id for this tree, resolved on load — needed to navigate to "capture next tree".
+    var runId by mutableStateOf<String?>(null)
+        private set
+
+    // Bumped each time a silent auto-save completes — drives a brief "Tersimpan ✓" pulse.
+    var savedTick by mutableStateOf(0L)
+        private set
+    // Unpersisted-edit flag so auto-save is a no-op when nothing changed (avoids
+    // re-writing identical label/SAF artifacts on every swipe or mode toggle).
+    private var dirty = false
+
     val currentSide: TreeSide?
         get() = session?.sides?.getOrNull(currentSideIndex)
 
     val totalSides: Int get() = session?.sides?.size ?: 0
 
+    /** Canvas tool for the current mode: read-only in REVIEW, the chosen tool in EDIT. */
+    val canvasTool: CanvasTool
+        get() = if (mode == CarouselMode.REVIEW) CanvasTool.VIEW else editTool
+
     fun load(treeKey: String) {
         viewModelScope.launch {
             isLoading = true
             session = repo.loadActiveSession(treeKey)
+            runId = repo.getTreeRunId(treeKey)
             isLoading = false
         }
     }
 
     fun selectSide(index: Int) {
         if (index in 0 until totalSides) {
+            // Persist edits made on the side we're leaving (swipe/dots) before switching.
+            autoSave()
             currentSideIndex = index
             selectedBboxId = null
             linkArmed = false
@@ -88,27 +110,61 @@ class CarouselViewModel @Inject constructor(
     }
 
     fun toggleBoxes() { showBoxes = !showBoxes }
-    fun toggleMode() { mode = if (mode == CarouselMode.REVIEW) CarouselMode.EDIT else CarouselMode.REVIEW }
+    fun toggleMode() {
+        // Auto-save when flipping Edit↔Review so boxes drawn in Edit are never lost.
+        autoSave()
+        mode = if (mode == CarouselMode.REVIEW) CarouselMode.EDIT else CarouselMode.REVIEW
+    }
+
+    /**
+     * Silent persistence (no busy overlay): writes DB + local artifacts synchronously and
+     * mirrors SAF in the background. No-op unless [dirty]. Called on side change / mode
+     * toggle / exit so the operator never has to remember to "Save".
+     */
+    fun autoSave() {
+        if (!dirty) return
+        val s = session ?: return
+        dirty = false
+        viewModelScope.launch {
+            val safTreeUri = exportFolder.folderUri.first()
+            repo.saveSession(s, safTreeUri)
+            savedTick = System.currentTimeMillis()
+        }
+    }
+
+    /** EDIT-mode sub-tool: flip between move/resize (SELECT) and draw-new-box (DRAW). */
+    fun toggleDrawTool() {
+        editTool = if (editTool == CanvasTool.DRAW) CanvasTool.SELECT else CanvasTool.DRAW
+    }
 
     fun changeBboxClass(bboxId: String, newClass: AnnotationClass) {
         val s = session ?: return
         session = SessionUseCases.setBboxClass(s, currentSideIndex, bboxId, newClass, propagate = true)
+        dirty = true
     }
 
     fun deleteBbox(bboxId: String) {
         val s = session ?: return
         session = SessionUseCases.deleteBbox(s, currentSideIndex, bboxId)
         selectedBboxId = null
+        dirty = true
     }
 
     fun addBbox(x1: Float, y1: Float, x2: Float, y2: Float) {
         val s = session ?: return
+        val side = s.sides.getOrNull(currentSideIndex) ?: return
+        // Auto-select the freshly drawn box so the operator can immediately tap a class
+        // (parity with the old annotation editor).
+        val newId = Bbox.nextId(side.bboxes, "b")
         session = SessionUseCases.addBbox(s, currentSideIndex, x1, y1, x2, y2)
+        selectedBboxId = newId
+        dirty = true
     }
 
     fun updateBbox(bboxId: String, x1: Float, y1: Float, x2: Float, y2: Float) {
         val s = session ?: return
         session = SessionUseCases.updateBbox(s, currentSideIndex, bboxId, x1, y1, x2, y2)
+        dirty = true
     }
 
     fun armLink() {
@@ -126,7 +182,43 @@ class CarouselViewModel @Inject constructor(
         if (srcBboxId != targetBboxId && srcSide != targetSide) {
             session = SessionUseCases.addManualLink(s, srcSide, srcBboxId, targetSide, targetBboxId)
             linkArmed = false
+            dirty = true
         }
+    }
+
+    /**
+     * Maps each linked bbox on [sideIndex] to a stable 1-based link-group number, derived
+     * from the tree's confirmed cross-side links (union-find). The SAME number appears on
+     * the matching bunch on the adjacent side, so the operator can see at a glance which
+     * boxes are linked together.
+     */
+    fun linkGroupFor(sideIndex: Int): Map<String, Int> {
+        val s = session ?: return emptyMap()
+        if (s.confirmedLinks.isEmpty()) return emptyMap()
+        val parent = HashMap<String, String>()
+        fun root(x: String): String {
+            var r = x
+            while ((parent[r] ?: r) != r) r = parent[r]!!
+            return r
+        }
+        fun union(a: String, b: String) {
+            parent.putIfAbsent(a, a); parent.putIfAbsent(b, b)
+            val ra = root(a); val rb = root(b)
+            if (ra != rb) parent[ra] = rb
+        }
+        fun key(side: Int, b: String) = "$side $b"
+        s.confirmedLinks.forEach { l -> union(key(l.sideA, l.bboxIdA), key(l.sideB, l.bboxIdB)) }
+        // Stable group numbering by sorted component root.
+        val groupNum = parent.keys.map { root(it) }.distinct().sorted()
+            .withIndex().associate { (i, r) -> r to i + 1 }
+        val result = HashMap<String, Int>()
+        parent.keys.forEach { k ->
+            val sep = k.indexOf(' ')
+            val side = k.substring(0, sep).toInt()
+            val boxId = k.substring(sep + 1)
+            if (side == sideIndex) result[boxId] = groupNum.getValue(root(k))
+        }
+        return result
     }
 
     fun save() {
@@ -185,6 +277,7 @@ class CarouselViewModel @Inject constructor(
                     originalBboxes = baseline,
                 )
                 session = s.copy(sides = updatedSides)
+                if (newBoxes.isNotEmpty()) dirty = true
             } catch (_: Exception) {
             } finally {
                 isDetecting = false
@@ -207,7 +300,7 @@ fun CarouselScreen(
     onDedup: () -> Unit = {},
     onResults: () -> Unit = {},
     onDepth: () -> Unit = {},
-    onNextTree: () -> Unit = {},
+    onNextTree: (runId: String) -> Unit = {},
     viewModel: CarouselViewModel = hiltViewModel(),
 ) {
     LaunchedEffect(sessionId) { viewModel.load(sessionId) }
@@ -225,6 +318,19 @@ fun CarouselScreen(
     var showMoreMenu by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
+    // System / gesture back also saves before leaving.
+    BackHandler { viewModel.saveAndExit { onBack() } }
+
+    // Brief "Tersimpan ✓" pulse whenever an auto-save completes.
+    var showSaved by remember { mutableStateOf(false) }
+    LaunchedEffect(viewModel.savedTick) {
+        if (viewModel.savedTick > 0L) {
+            showSaved = true
+            kotlinx.coroutines.delay(1300)
+            showSaved = false
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -239,7 +345,10 @@ fun CarouselScreen(
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                    // Save-then-leave so edits are never lost by tapping Back.
+                    IconButton(onClick = { viewModel.saveAndExit { onBack() } }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                    }
                 },
                 actions = {
                     // Detect
@@ -293,13 +402,20 @@ fun CarouselScreen(
                 showBoxes = viewModel.showBoxes,
                 linkArmed = viewModel.linkArmed,
                 isSave = viewModel.isSaving,
+                editMode = viewModel.mode == CarouselMode.EDIT,
+                editTool = viewModel.editTool,
+                onToggleDraw = { viewModel.toggleDrawTool() },
                 onClassChange = { id, cls -> viewModel.changeBboxClass(id, cls) },
                 onDelete = { viewModel.deleteBbox(it) },
                 onToggleBoxes = { viewModel.toggleBoxes() },
                 onArmLink = { viewModel.armLink() },
                 onCancelLink = { viewModel.linkArmed = false; viewModel.selectBbox(null) },
                 onSaveExit = { viewModel.saveAndExit { onBack() } },
-                onNextTree = { viewModel.saveAndExit { onNextTree() } },
+                onNextTree = {
+                    val rid = viewModel.runId
+                    if (rid != null) viewModel.saveAndExit { onNextTree(rid) }
+                    else viewModel.saveAndExit { onBack() }
+                },
             )
         },
     ) { padding ->
@@ -313,6 +429,9 @@ fun CarouselScreen(
                 modifier = Modifier.fillMaxSize().padding(padding),
             ) { page ->
                 val side = session!!.sides.getOrNull(page) ?: return@HorizontalPager
+                // bboxId → link-group number for this side (same number on the matching
+                // bunch on the adjacent side), so links are visible at a glance.
+                val linkMap = viewModel.linkGroupFor(page)
 
                 Box(Modifier.fillMaxSize().background(Color.Black)) {
                     AnnotationCanvas(
@@ -321,8 +440,9 @@ fun CarouselScreen(
                         selectedBboxId = if (page == viewModel.currentSideIndex) viewModel.selectedBboxId else null,
                         imageWidth = side.imageWidth.coerceAtLeast(1),
                         imageHeight = side.imageHeight.coerceAtLeast(1),
-                        tool = if (viewModel.mode == CarouselMode.EDIT) CanvasTool.SELECT else CanvasTool.SELECT,
+                        tool = viewModel.canvasTool,
                         showBoxes = viewModel.showBoxes,
+                        linkedBoxes = linkMap,
                         onBboxTap = { id ->
                             if (page != viewModel.currentSideIndex) {
                                 coroutineScope.launch { pagerState.animateScrollToPage(page) }
@@ -351,7 +471,8 @@ fun CarouselScreen(
                     ) {
                         Text(
                             "${side.bboxes.size} boxes" +
-                                (if (side.hasUnassigned) " · ${side.unassignedBboxCount} unassigned" else ""),
+                                (if (side.hasUnassigned) " · ${side.unassignedBboxCount} unassigned" else "") +
+                                (if (linkMap.isNotEmpty()) " · 🔗${linkMap.size} linked" else ""),
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                             style = MaterialTheme.typography.labelMedium,
                             color = if (side.hasUnassigned) Color(0xFFE4B84A) else Color.White,
@@ -401,6 +522,25 @@ fun CarouselScreen(
                     }
                 }
             }
+
+            // Auto-save confirmation pulse (brief, non-interactive).
+            if (showSaved) {
+                Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.BottomCenter) {
+                    Surface(
+                        modifier = Modifier.padding(bottom = 16.dp),
+                        shape = RoundedCornerShape(20.dp),
+                        color = Color(0xFFB8E04A),
+                    ) {
+                        Text(
+                            "Tersimpan ✓",
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF0C120C),
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -417,6 +557,9 @@ private fun CarouselBottomBar(
     showBoxes: Boolean,
     linkArmed: Boolean,
     isSave: Boolean,
+    editMode: Boolean,
+    editTool: CanvasTool,
+    onToggleDraw: () -> Unit,
     onClassChange: (String, AnnotationClass) -> Unit,
     onDelete: (String) -> Unit,
     onToggleBoxes: () -> Unit,
@@ -488,6 +631,19 @@ private fun CarouselBottomBar(
                     }
                 }
 
+                // Draw-new-box toggle — only meaningful while editing geometry.
+                if (editMode) {
+                    IconButton(onClick = onToggleDraw, modifier = Modifier.size(48.dp)) {
+                        Icon(
+                            Icons.Default.Crop,
+                            "Draw box",
+                            tint = if (editTool == CanvasTool.DRAW) MaterialTheme.colorScheme.primary
+                                   else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(26.dp),
+                        )
+                    }
+                }
+
                 Spacer(Modifier.weight(1f))
 
                 // Boxes toggle
@@ -507,7 +663,7 @@ private fun CarouselBottomBar(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                FilledTonalButton(
+                OutlinedButton(
                     onClick = onSaveExit,
                     modifier = Modifier.weight(1f).height(48.dp),
                 ) { Text("Save & Exit", fontSize = 15.sp) }

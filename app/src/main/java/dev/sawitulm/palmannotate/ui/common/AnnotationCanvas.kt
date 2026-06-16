@@ -108,7 +108,19 @@ private fun decodeDownsampled(
     }
 }
 
-enum class CanvasTool { SELECT, DRAW, PAN }
+enum class CanvasTool {
+    SELECT,
+    DRAW,
+    PAN,
+
+    /**
+     * Read-only viewer. Installs no zoom/pan and no drag-edit gestures, so a parent
+     * `HorizontalPager` (the carousel's swipe-between-sides) receives the horizontal drag
+     * instead of the canvas swallowing it. Tap-to-select still works (for assigning a
+     * class / linking without entering Edit mode).
+     */
+    VIEW,
+}
 
 /** Which part of a selected bbox the user grabbed. */
 enum class DragHandle { NONE, BODY, TL, TR, BL, BR, T, B, L, R }
@@ -129,6 +141,8 @@ fun AnnotationCanvas(
     imageHeight: Int,
     tool: CanvasTool = CanvasTool.SELECT,
     showBoxes: Boolean = true,
+    /** bboxId → 1-based link-group number; drawn as a badge so links are visible. */
+    linkedBoxes: Map<String, Int> = emptyMap(),
     onBboxTap: ((String) -> Unit)? = null,
     onBboxMoved: ((String, Float, Float, Float, Float) -> Unit)? = null,
     onBboxDrawn: ((x1: Float, y1: Float, x2: Float, y2: Float) -> Unit)? = null,
@@ -216,13 +230,15 @@ fun AnnotationCanvas(
     Canvas(
         modifier = modifier
             .fillMaxSize()
-            .transformable(state = transformState)
+            // No zoom/pan in VIEW mode: it would consume the horizontal drag and block the
+            // carousel's swipe-between-sides. Editing modes keep pinch-zoom/pan.
+            .then(if (tool != CanvasTool.VIEW) Modifier.transformable(state = transformState) else Modifier)
             // Tap-to-select. detectDragGestures (below) only fires after the touch-slop
             // drag threshold is crossed, so a plain tap would never select a box — which
             // made class assignment (annotation) and box linking (dedup) impossible.
-            // A dedicated tap detector restores single-tap selection in SELECT mode.
+            // A dedicated tap detector restores single-tap selection in SELECT/VIEW modes.
             .pointerInput(tool, bboxes) {
-                if (tool == CanvasTool.SELECT) {
+                if (tool == CanvasTool.SELECT || tool == CanvasTool.VIEW) {
                     detectTapGestures { tapScreen ->
                         val img = screenToImage(tapScreen.x, tapScreen.y)
                         val tapped = bboxes.lastOrNull { b ->
@@ -315,6 +331,9 @@ fun AnnotationCanvas(
                             change.consume(); offset += dragAmount
                         }
                     }
+                    // Read-only: install no drag detector so drags fall through to the
+                    // parent (carousel pager) for swipe-between-sides.
+                    CanvasTool.VIEW -> {}
                 }
             }
     ) {
@@ -395,6 +414,24 @@ fun AnnotationCanvas(
                 labelY + labelH - 3.dp.toPx(),
                 paint.apply { this.color = android.graphics.Color.WHITE },
             )
+
+            // Link badge: a green chip with the link-group number at the box's top-right
+            // corner. The same number appears on the matching bunch on the adjacent side,
+            // so the operator can see what is linked to what.
+            val linkGroup = linkedBoxes[bbox.id]
+            if (linkGroup != null) {
+                val linkColor = Color(0xFFB8E04A)
+                val br = 9.dp.toPx()
+                val bcx = tl.x + sz.width
+                val bcy = tl.y
+                drawCircle(color = Color.Black, radius = br + 1.5.dp.toPx(), center = Offset(bcx, bcy))
+                drawCircle(color = linkColor, radius = br, center = Offset(bcx, bcy))
+                paint.textSize = br * 1.5f
+                paint.color = android.graphics.Color.BLACK
+                val gt = linkGroup.toString()
+                val gtw = paint.measureText(gt)
+                drawContext.canvas.nativeCanvas.drawText(gt, bcx - gtw / 2f, bcy + br * 0.55f, paint)
+            }
 
             // Selection handles
             if (isSelected) {
