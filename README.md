@@ -1,4 +1,4 @@
-# PalmAnnotate Native — Migrasi
+# PalmAnnotate Native
 
 Rewrite dari PalmAnnotate (Capacitor WebView hybrid) ke **native Kotlin + Jetpack Compose**.
 
@@ -13,8 +13,7 @@ Rewrite dari PalmAnnotate (Capacitor WebView hybrid) ke **native Kotlin + Jetpac
 ## Struktur Project
 
 ```
-Migrasi/
-├── app/src/main/java/dev/sawitulm/palmannotate/
+app/src/main/java/dev/sawitulm/palmannotate/
 │   ├── PalmAnnotateApp.kt          ← Hilt Application
 │   ├── MainActivity.kt             ← Compose entry point
 │   ├── di/AppModule.kt             ← Hilt DI module
@@ -35,13 +34,16 @@ Migrasi/
 │       ├── navigation/              ← NavHost + routes
 │       ├── home/                    ← HomeScreen + HomeViewModel
 │       ├── session/                 ← SessionDetailScreen
-│       ├── capture/                 ← CaptureFlowScreen (CameraX)
-│       ├── annotation/              ← AnnotationScreen (canvas + tools)
-│       ├── results/                 ← ResultsScreen
-│       └── common/                  ← AnnotationCanvas, Dialogs
-├── app/src/test/                    ← Unit tests (domain logic)
+│       ├── capture/                 ← CaptureFlowScreen (CameraX + Orbbec)
+│       ├── annotation/              ← AnnotationScreen (canvas + tools + class buttons)
+│       ├── viewer/                  ← DepthViewerScreen (depth colormap + tap-to-read)
+│       ├── carousel/                ← CarouselScreen (fullscreen swipe viewer)
+│       ├── dedup/                   ← DeduplicationScreen (pair review + link/unlink)
+│       ├── results/                 ← ResultsScreen (summary + export)
+│       └── common/                  ← AnnotationCanvas, BitmapCache, Dialogs
+├── app/src/test/                    ← Unit tests (domain logic, YOLO parser, dll)
 ├── app/src/main/assets/models/      ← ONNX model + config
-├── app/libs/                        ← Orbbec SDK AAR (to be copied)
+├── app/libs/                        ← Orbbec SDK AAR
 ├── gradle/libs.versions.toml        ← Version catalog
 └── build.gradle.kts                 ← Root + app build files
 ```
@@ -75,7 +77,7 @@ Migrasi/
 
 | Modul | Priority | Notes |
 |---|---|---|
-| Copy Orbbec SDK AAR | HIGH | `cp android/app/libs/*.aar Migrasi/app/libs/` |
+| Copy Orbbec SDK AAR | DONE | AAR sudah ada di `app/libs/` |
 | Orbbec native integration | HIGH | Extract from `OrbbecPlugin.kt` → `OrbbecNativeManager` |
 | Image dimension loading | MEDIUM | Load actual w/h when loading session sides |
 | Autosave | MEDIUM | Debounced auto-save on mutation |
@@ -91,26 +93,20 @@ Migrasi/
 
 ## Build
 
-```bash
-cd Migrasi
-
-# Copy Orbbec AAR (if not yet done)
-cp ../android/app/libs/obsensor_*.aar app/libs/
-
-# Set JAVA_HOME — on THIS machine the C:\tools\jdk17 path in ../CLAUDE.md does NOT
-# exist; use the Android Studio bundled JBR instead (PowerShell):
-#   $env:JAVA_HOME = 'C:\Program Files\Android\Android Studio\jbr'
-#   $env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
-# (Android SDK is the real Studio SDK; see Migrasi/local.properties.)
+```powershell
+# Set environment
+$env:JAVA_HOME = 'C:\tools\jdk17\jdk-17.0.19+10'
+$env:ANDROID_HOME = 'C:\tools\android-sdk'
+$env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
 
 # Build
-./gradlew assembleDebug
+.\gradlew.bat :app:assembleDebug --no-daemon --max-workers=4
 
 # Install
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 
-# Tests
-./gradlew test
+# Test
+.\gradlew.bat :app:testDebugUnitTest --no-daemon
 ```
 
 ## Architecture

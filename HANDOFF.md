@@ -4,7 +4,7 @@
 
 ## Build state
 
-- **BUILD SUCCESSFUL** — `Migrasi/app/build/outputs/apk/debug/app-debug.apk`
+- **BUILD SUCCESSFUL** — `app/build/outputs/apk/debug/app-debug.apk`
 - **APK size:** 105,594,471 bytes (~105.6 MB)
 - **APK timestamp:** 2026-06-16 1:21:31 PM
 - **Tests:** 39/39 green (`testDebugUnitTest`)
@@ -30,9 +30,9 @@
 
 | File | Change |
 |---|---|
-| `Migrasi/app/src/main/java/dev/sawitulm/palmannotate/ui/viewer/DepthViewerScreen.kt` | Added valueScale reading from JSON sidecar |
-| `Migrasi/app/src/main/java/dev/sawitulm/palmannotate/domain/util/DepthUtil.kt` | Updated depthColor() to jet colormap |
-| `Migrasi/MIGRATION_STATUS.md` | Documented depth viewer fix |
+| `app/src/main/java/dev/sawitulm/palmannotate/ui/viewer/DepthViewerScreen.kt` | Added valueScale reading from JSON sidecar |
+| `app/src/main/java/dev/sawitulm/palmannotate/domain/util/DepthUtil.kt` | Updated depthColor() to jet colormap |
+| `MIGRATION_STATUS.md` | Documented depth viewer fix |
 
 ## Device status
 

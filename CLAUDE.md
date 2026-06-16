@@ -18,16 +18,15 @@ Native Kotlin + Jetpack Compose rewrite of PalmAnnotate (originally Capacitor We
 $env:JAVA_HOME = 'C:\tools\jdk17\jdk-17.0.19+10'
 $env:ANDROID_HOME = 'C:\tools\android-sdk'
 $env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
-cd 'D:\Work\Assisten-Dosen\PalmAnnotate-Android\Migrasi'
 .\gradlew.bat :app:assembleDebug --no-daemon --max-workers=4
 ```
 
-Output: `Migrasi/app/build/outputs/apk/debug/app-debug.apk`
+Output: `app/build/outputs/apk/debug/app-debug.apk`
 
 ### Install & Launch
 
 ```powershell
-& 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 install -r 'D:\Work\Assisten-Dosen\PalmAnnotate-Android\Migrasi\app\build\outputs\apk\debug\app-debug.apk'
+& 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 install -r 'app/build/outputs/apk/debug/app-debug.apk'
 & 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 shell am force-stop dev.sawitulm.palmannotate.debug
 & 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 shell monkey -p dev.sawitulm.palmannotate.debug -c android.intent.category.LAUNCHER 1
 ```
@@ -35,11 +34,8 @@ Output: `Migrasi/app/build/outputs/apk/debug/app-debug.apk`
 ### Run Tests
 
 ```powershell
-cd 'D:\Work\Assisten-Dosen\PalmAnnotate-Android\Migrasi'
 .\gradlew.bat :app:testDebugUnitTest --no-daemon
 ```
-
-Or use `_test.bat`.
 
 ## R8 Minification — DO NOT ENABLE
 

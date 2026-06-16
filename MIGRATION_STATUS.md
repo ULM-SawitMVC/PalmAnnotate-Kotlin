@@ -358,24 +358,18 @@ Legend: ✅ done & correct · 🟡 partial · ❌ missing
 14. ~~Annot-log baseline from detector~~ -- DONE (session 7): `detectCurrentSide` seeds `originalBboxes`.
 15. Output-JSON byte-diff vs JS app on real data (verification, device needed).
 
-## How to build / test (this machine)
-
-Use the helper batch files in `Migrasi/`:
-
-```cmd
-cd Migrasi
-cmd /c _build.bat    :: assembleDebug
-cmd /c _test.bat     :: testDebugUnitTest
-```
-
-Or manually from PowerShell:
+## How to build / test
 
 ```powershell
+# Set environment
 $env:JAVA_HOME = 'C:\tools\jdk17\jdk-17.0.19+10'
 $env:ANDROID_HOME = 'C:\tools\android-sdk'
 $env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
-cd Migrasi
+
+# Build
 .\gradlew.bat :app:assembleDebug --no-daemon --max-workers=4 --console=plain
+
+# Test
 .\gradlew.bat :app:testDebugUnitTest --no-daemon --console=plain
 ```
 
