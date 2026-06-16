@@ -2,94 +2,82 @@
 
 Rewrite dari PalmAnnotate (Capacitor WebView hybrid) ke **native Kotlin + Jetpack Compose**.
 
-> ⚠️ **Status sebenarnya ada di [`MIGRATION_STATUS.md`](MIGRATION_STATUS.md)** (audit
-> 2026-06-15). Tabel "Sudah Dibuat ✅" di bawah ini **terlalu optimistis** — beberapa
-> modul yang ditandai ✅ ternyata salah/placeholder (mis. `SuggestionEngine` dulu cuma
-> IoU, `OnnxDetector` stretch+assign-class, Output JSON belum byte-compatible) dan sudah
-> diperbaiki di sesi audit; fitur besar (model sesi multi-tree, Orbbec, carousel, depth
-> viewer, wiring save-lifecycle) **belum** selesai. Baca `MIGRATION_STATUS.md` untuk
-> daftar Done / Partial / Missing yang jujur dan urutan kerja berikutnya.
+> **Status lengkap ada di [`MIGRATION_STATUS.md`](MIGRATION_STATUS.md).**
 
 ## Struktur Project
 
 ```
 app/src/main/java/dev/sawitulm/palmannotate/
-│   ├── PalmAnnotateApp.kt          ← Hilt Application
-│   ├── MainActivity.kt             ← Compose entry point
-│   ├── di/AppModule.kt             ← Hilt DI module
-│   ├── domain/
-│   │   ├── model/                   ← Data models (Bbox, ActiveSession, dll)
-│   │   ├── dedup/                   ← UnionFind + SuggestionEngine
-│   │   ├── results/                 ← ResultsComputer
-│   │   └── quality/                 ← (placeholder)
-│   ├── data/
-│   │   ├── db/                      ← Room entities + DAOs
-│   │   ├── storage/                 ← AndroidStorageManager, SafMirror, SessionRepo
-│   │   ├── yolo/                    ← YoloParser (parse/serialize)
-│   │   ├── detection/               ← OnnxDetector (native inference)
-│   │   ├── camera/                  ← (placeholder: CameraX + Orbbec)
-│   │   └── export/                  ← (placeholder)
-│   └── ui/
-│       ├── theme/                   ← Material 3 theming (PalmColors)
-│       ├── navigation/              ← NavHost + routes
-│       ├── home/                    ← HomeScreen + HomeViewModel
-│       ├── session/                 ← SessionDetailScreen
-│       ├── capture/                 ← CaptureFlowScreen (CameraX + Orbbec)
-│       ├── annotation/              ← AnnotationScreen (canvas + tools + class buttons)
-│       ├── viewer/                  ← DepthViewerScreen (depth colormap + tap-to-read)
-│       ├── carousel/                ← CarouselScreen (fullscreen swipe viewer)
-│       ├── dedup/                   ← DeduplicationScreen (pair review + link/unlink)
-│       ├── results/                 ← ResultsScreen (summary + export)
-│       └── common/                  ← AnnotationCanvas, BitmapCache, Dialogs
-├── app/src/test/                    ← Unit tests (domain logic, YOLO parser, dll)
-├── app/src/main/assets/models/      ← ONNX model + config
-├── app/libs/                        ← Orbbec SDK AAR
-├── gradle/libs.versions.toml        ← Version catalog
-└── build.gradle.kts                 ← Root + app build files
+├── PalmAnnotateApp.kt              ← Hilt @HiltAndroidApp Application
+├── MainActivity.kt                 ← Compose entry point (@AndroidEntryPoint)
+├── di/
+│   └── AppModule.kt                ← Hilt DI module (singleton bindings)
+├── domain/
+│   ├── model/                      ← Data classes (Bbox, ActiveSession, TreeSide, etc.)
+│   ├── dedup/                      ← UnionFind + SuggestionEngine (real algorithm)
+│   ├── results/                    ← ResultsComputer (clusters, linkedCount, class counts)
+│   ├── quality/                    ← QualityCheck (capture QA validation)
+│   ├── usecase/                    ← SessionUseCases (bbox CRUD, link mgmt, mismatch resolve)
+│   └── util/                       ← DepthUtil, ColorUtil, OperationQueue
+├── data/
+│   ├── db/                         ← Room entities + DAOs + PalmAnnotateDatabase
+│   ├── storage/                    ← SessionRepository, AndroidStorageManager, SafMirrorStore,
+│   │                                 ExportFolderRepository, FolderResumeImporter, InputCache
+│   ├── yolo/                       ← YoloParser (parse/serialize YOLO labels)
+│   ├── detection/                  ← OnnxDetector (ONNX Runtime inference + NMS)
+│   ├── camera/                     ← OrbbecManager (Orbbec USB depth camera)
+│   ├── location/                   ← GpsProvider (background GPS)
+│   └── export/                     ← ExportManager (Output JSON / YOLO / CSV / Identity)
+├── ui/
+│   ├── theme/                      ← Material 3 theming (PalmColors, OnMediaColors)
+│   ├── navigation/                 ← NavHost + routes
+│   ├── home/                       ← HomeScreen + HomeViewModel
+│   ├── session/                    ← SessionDetailScreen
+│   ├── capture/                    ← CaptureFlowScreen (CameraX + Orbbec toggle)
+│   ├── annotation/                 ← AnnotationScreen (canvas + tools + detect + carousel entry)
+│   ├── viewer/                     ← DepthViewerScreen (jet colormap + tap-to-read)
+│   ├── carousel/                   ← CarouselScreen (fullscreen swipe viewer)
+│   ├── dedup/                      ← DeduplicationScreen (two-canvas pair review)
+│   ├── results/                    ← ResultsScreen (summary + export + QA gate)
+│   └── common/                     ← AnnotationCanvas, AppHeader, Dialogs,
+│                                      KeyboardShortcuts, ToastHost
+└── app/src/test/                   ← Unit tests (39 tests: DomainTests + FolderResumeTests)
 ```
 
 ## Sudah Dibuat ✅
 
-| Modul | Status | File |
-|---|---|---|
-| Gradle build system | ✅ | `build.gradle.kts`, `libs.versions.toml` |
-| Domain models | ✅ | `AnnotationClass`, `Bbox`, `TreeSide`, `CrossSideLink`, `ActiveSession`, `Results` |
-| Union-Find | ✅ | `UnionFind.kt` (path compression + union by rank) |
-| Suggestion engine | ✅ | `SuggestionEngine.kt` (IoU + cross-side pairs) |
-| YOLO parser | ✅ | `YoloParser.kt` (parse/serialize round-trip) |
-| Results computer | ✅ | `ResultsComputer.kt` (clusters + counts) |
-| Room database | ✅ | Entities, DAOs, Database class |
-| Storage layer | ✅ | `AndroidStorageManager`, `SafMirrorStore` |
-| Session repository | ✅ | `SessionRepository` (Room + filesystem + SAF) |
-| ONNX detector | ✅ | `OnnxDetector` (native inference + NMS) |
-| UI: Home | ✅ | Session list, create, delete |
-| UI: Session Detail | ✅ | Side list, annotate/results navigation |
-| UI: Capture Flow | ✅ | CameraX preview, capture, metadata form |
-| UI: Annotation | ✅ | Canvas, bbox tools, class picker, side nav |
-| UI: Results | ✅ | Counts, per-class, per-side, export |
-| Theming | ✅ | Material 3 dark/light + PalmColors tokens |
-| Navigation | ✅ | Compose Navigation with all routes |
-| DI | ✅ | Hilt modules |
-| Unit tests | ✅ | 20+ tests covering all domain logic |
-| ONNX model | ✅ | `ffb-detector.onnx` copied |
-
-## Belum Dibuat / Next Steps
-
-| Modul | Priority | Notes |
-|---|---|---|
-| Copy Orbbec SDK AAR | DONE | AAR sudah ada di `app/libs/` |
-| Orbbec native integration | HIGH | Extract from `OrbbecPlugin.kt` → `OrbbecNativeManager` |
-| Image dimension loading | MEDIUM | Load actual w/h when loading session sides |
-| Autosave | MEDIUM | Debounced auto-save on mutation |
-| Dedup UI screen | MEDIUM | Side-by-side canvas for linking |
-| Carousel screen | MEDIUM | Swipe-based phone annotation |
-| Depth viewer | LOW | Depth sidecar visualization |
-| Quality check | LOW | Annotation validation rules |
-| CSV export | LOW | Flat bunch export |
-| Identity JSON export | LOW | Per-box identity export |
-| Sessions index (JSON) | MEDIUM | Portable `sessions.json` for SAF |
-| Splash screen | LOW | Brand launch screen |
-| ProGuard testing | LOW | Verify R8 + Orbbec keep rules on device |
+| Modul | File |
+|---|---|
+| Gradle build system | `build.gradle.kts`, `libs.versions.toml` |
+| Domain models | `AnnotationClass`, `Bbox`, `TreeSide`, `CrossSideLink`, `ActiveSession`, `Results`, `OutputSchema` |
+| Union-Find | `UnionFind.kt` (path compression + union by rank) |
+| Suggestion engine | `SuggestionEngine.kt` (real algorithm: seam-band, size-ratio, weighted score, mutual-best) |
+| YOLO parser | `YoloParser.kt` (parse/serialize round-trip, clamp, 6-dp) |
+| Results computer | `ResultsComputer.kt` (clusters, linkedCount, class counts, "other" bucket) |
+| Quality check | `QualityCheck.kt` (capture QA validation) |
+| Session use cases | `SessionUseCases.kt` (bbox CRUD, link mgmt, mismatch detect/resolve) |
+| Operation queue | `OperationQueue.kt` (serialized saves) |
+| Room database | `Entities.kt`, `PalmAnnotateDatabase.kt` (v2, cascade delete) |
+| Storage layer | `AndroidStorageManager`, `SafMirrorStore`, `ExportFolderRepository`, `FolderResumeImporter`, `InputCache` |
+| Session repository | `SessionRepository` (Room + filesystem + SAF mirror) |
+| ONNX detector | `OnnxDetector` (letterbox, single-class UNASSIGNED, class-agnostic NMS) |
+| GPS provider | `GpsProvider` (background location) |
+| Export manager | `ExportManager` (Output JSON v4 / YOLO / CSV / Identity) |
+| Orbbec camera | `OrbbecManager` (USB RGB-D, D2C alignment, jet colormap preview) |
+| UI: Home | Session list, create, delete, export folder picker |
+| UI: Session Detail | Tree list, annotate/carousel entry |
+| UI: Capture Flow | CameraX + Orbbec toggle, GPS, QA gate, review-all retake |
+| UI: Annotation | Canvas, bbox tools, detect button, carousel entry, OperationQueue saves |
+| UI: Carousel | HorizontalPager, review/edit mode, link arm, detect button |
+| UI: Dedup | Two-canvas seam-anchored surface, suggestion chips, pair navigation |
+| UI: Depth Viewer | Jet colormap, tap-to-read, valueScale from sidecar |
+| UI: Results | Summary + export buttons + QA gate dialog |
+| Theming | Material 3 dark/light + PalmColors + OnMediaColors |
+| Navigation | Compose Navigation with all routes |
+| DI | Hilt modules |
+| Unit tests | 39 tests (DomainTests + FolderResumeTests) |
+| ONNX model | `ffb-detector.onnx` + `detector.config.json` |
+| Orbbec SDK | `obsensor_v2.0.6_2026031801_release.aar` |
 
 ## Build
 

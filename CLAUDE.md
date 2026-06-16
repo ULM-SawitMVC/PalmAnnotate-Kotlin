@@ -56,27 +56,32 @@ app/src/main/java/dev/sawitulm/palmannotate/
 │   ├── model/                   ← Data classes (Bbox, ActiveSession, TreeSide, etc.)
 │   ├── dedup/                   ← UnionFind + SuggestionEngine
 │   ├── results/                 ← ResultsComputer
-│   └── util/                    ← DepthUtil (jet colormap, percentile range)
+│   ├── quality/                 ← QualityCheck (capture QA validation)
+│   ├── usecase/                 ← SessionUseCases (bbox CRUD, link mgmt, mismatch resolve)
+│   └── util/                    ← DepthUtil, ColorUtil, OperationQueue
 ├── data/
 │   ├── db/                      ← Room entities + DAOs + PalmAnnotateDatabase
-│   ├── storage/                 ← SessionRepository, AndroidStorageManager, SafMirror
+│   ├── storage/                 ← SessionRepository, AndroidStorageManager, SafMirrorStore,
+│   │                              ExportFolderRepository, FolderResumeImporter, InputCache
 │   ├── yolo/                    ← YoloParser (parse/serialize YOLO labels)
 │   ├── detection/               ← OnnxDetector (native ONNX Runtime inference)
 │   ├── camera/                  ← OrbbecManager (Orbbec USB depth camera)
-│   └── export/                  ← ExportManager (ZIP export)
+│   ├── location/                ← GpsProvider (background GPS)
+│   └── export/                  ← ExportManager (Output JSON / YOLO / CSV / Identity)
 ├── ui/
-│   ├── theme/                   ← Material 3 theming (PalmColors)
+│   ├── theme/                   ← Material 3 theming (PalmColors, OnMediaColors)
 │   ├── navigation/              ← NavHost + routes
 │   ├── home/                    ← HomeScreen + HomeViewModel
 │   ├── session/                 ← SessionDetailScreen
-│   ├── capture/                 ← CaptureFlowScreen (CameraX + Orbbec)
-│   ├── annotation/              ← AnnotationScreen (canvas + tools + class buttons)
+│   ├── capture/                 ← CaptureFlowScreen (CameraX + Orbbec toggle)
+│   ├── annotation/              ← AnnotationScreen (canvas + tools + detect + carousel entry)
 │   ├── viewer/                  ← DepthViewerScreen (depth colormap + tap-to-read)
 │   ├── carousel/                ← CarouselScreen (fullscreen swipe viewer)
-│   ├── dedup/                   ← DeduplicationScreen (pair review + link/unlink)
+│   ├── dedup/                   ← DeduplicationScreen (two-canvas pair review)
 │   ├── results/                 ← ResultsScreen (summary + export)
-│   └── common/                  ← AnnotationCanvas, BitmapCache, Dialogs
-└── app/src/test/                ← Unit tests (domain logic, YOLO parser, etc.)
+│   └── common/                  ← AnnotationCanvas, AppHeader, Dialogs,
+│                                   KeyboardShortcuts, ToastHost
+└── app/src/test/                ← Unit tests (DomainTests + FolderResumeTests)
 ```
 
 ### Key Patterns
@@ -175,4 +180,4 @@ adb logcat | grep -E "DedupPerf|CanvasPerf|SessionRepo|DepthViewer"
 | `MIGRATION_STATUS.md` | Migration progress (Done / Partial / Missing) |
 | `PERF_GAIN.md` | Dedup performance optimization analysis |
 | `HANDOFF.md` | Session handoff notes |
-| `README.md` | Project overview (partially outdated) |
+| `README.md` | Project overview |

@@ -263,7 +263,7 @@ is unreadable/empty, and surface `saveError` in the UI.
   show up in a normal file manager when an export folder is selected. App-external store
   remains the source of truth.
 
-## Status by area (vs `../System_Requirements.md` §27)
+## Status by area
 
 Legend: ✅ done & correct · 🟡 partial · ❌ missing
 
