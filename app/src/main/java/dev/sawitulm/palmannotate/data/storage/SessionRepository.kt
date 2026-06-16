@@ -122,6 +122,10 @@ class SessionRepository(
         val treeKey = UUID.randomUUID().toString()
         // Tree row + its sides in ONE transaction so a concurrent reader can never observe
         // a tree that has no sides yet (which a racing save could then persist as the truth).
+        // The nextId advance MUST also be inside this transaction: if the app crashes after
+        // the tree is committed but before nextId is updated, the next "Add Tree" would
+        // reuse the same id and create a duplicate.
+        val nextId = maxOf(run.nextId, treeId + 1)
         db.withTransaction {
             treeDao.upsert(
                 TreeEntity(
@@ -132,6 +136,9 @@ class SessionRepository(
                 )
             )
             persistSidesDb(treeKey, sides)
+            // Advance the tree-id counter. MUST be an UPDATE, not upsert(REPLACE): replacing
+            // the existing run row cascade-deletes the tree we just inserted (FK onDelete=CASCADE).
+            sessionDao.update(run.copy(nextId = nextId, updatedAt = now))
         }
 
         // Persist metadata JSON (and SAF mirror if configured).
@@ -143,11 +150,6 @@ class SessionRepository(
 
         writeSideArtifacts(treeName, split, sides, safTreeUri)
 
-        // Advance the tree-id counter past the highest used id. MUST be an UPDATE,
-        // not upsert(REPLACE): replacing the existing run row cascade-deletes the
-        // tree we just inserted above (trees FK onDelete=CASCADE).
-        val nextId = maxOf(run.nextId, treeId + 1)
-        sessionDao.update(run.copy(nextId = nextId, updatedAt = now))
         treeKey
     }
 

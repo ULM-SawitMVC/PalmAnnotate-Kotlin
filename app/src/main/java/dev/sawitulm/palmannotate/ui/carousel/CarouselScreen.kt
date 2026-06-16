@@ -35,8 +35,10 @@ import dev.sawitulm.palmannotate.domain.usecase.SessionUseCases
 import dev.sawitulm.palmannotate.domain.util.OperationQueue
 import dev.sawitulm.palmannotate.ui.common.AnnotationCanvas
 import dev.sawitulm.palmannotate.ui.common.CanvasTool
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -60,6 +62,12 @@ class CarouselViewModel @Inject constructor(
     var isLoading by mutableStateOf(true)
     var isSaving by mutableStateOf(false)
     var linkArmed by mutableStateOf(false)
+    /** Pending link source — mirrors dedup's pendingBboxId/pendingSide pattern.
+     *  Set when user selects a box and taps Link; cleared on link creation or cancel. */
+    var pendingLinkBboxId by mutableStateOf<String?>(null)
+        private set
+    var pendingLinkSide by mutableIntStateOf(-1)
+        private set
     var isDetecting by mutableStateOf(false)
         private set
 
@@ -101,7 +109,8 @@ class CarouselViewModel @Inject constructor(
             autoSave()
             currentSideIndex = index
             selectedBboxId = null
-            linkArmed = false
+            // Keep linkArmed across swipes — the pendingLinkBboxId/Side track the source.
+            // Link is completed or cancelled in onBboxTap / cancelLink.
         }
     }
 
@@ -170,20 +179,33 @@ class CarouselViewModel @Inject constructor(
     fun armLink() {
         selectedBboxId?.let {
             linkArmed = true
+            pendingLinkBboxId = it
+            pendingLinkSide = currentSideIndex
         }
     }
 
-    fun createLink(targetBboxId: String) {
+    fun cancelLink() {
+        linkArmed = false
+        pendingLinkBboxId = null
+        pendingLinkSide = -1
+        selectedBboxId = null
+    }
+
+    /** Create a link between pending source and [targetBboxId] on the current side.
+     *  Mirrors DedupViewModel.onBboxTap second-tap logic. */
+    fun completeLink(targetBboxId: String) {
         if (!linkArmed) return
         val s = session ?: return
-        val srcBboxId = selectedBboxId ?: return
-        val srcSide = currentSideIndex
-        val targetSide = if (srcSide < totalSides - 1) srcSide + 1 else srcSide - 1
-        if (srcBboxId != targetBboxId && srcSide != targetSide) {
-            session = SessionUseCases.addManualLink(s, srcSide, srcBboxId, targetSide, targetBboxId)
-            linkArmed = false
-            dirty = true
-        }
+        val srcId = pendingLinkBboxId ?: return
+        val srcSide = pendingLinkSide
+        val tgtSide = currentSideIndex
+        if (srcSide == tgtSide) return           // must be different sides
+        if (srcId == targetBboxId) return         // can't link a box to itself
+        session = SessionUseCases.addManualLink(s, srcSide, srcId, tgtSide, targetBboxId)
+        linkArmed = false
+        pendingLinkBboxId = null
+        pendingLinkSide = -1
+        dirty = true
     }
 
     /**
@@ -234,7 +256,7 @@ class CarouselViewModel @Inject constructor(
         opq.enqueue("save-carousel") {
             val safTreeUri = exportFolder.folderUri.first()
             repo.saveSession(s, safTreeUri)
-            onDone()
+            withContext(Dispatchers.Main) { onDone() }
         }
     }
 
@@ -409,7 +431,7 @@ fun CarouselScreen(
                 onDelete = { viewModel.deleteBbox(it) },
                 onToggleBoxes = { viewModel.toggleBoxes() },
                 onArmLink = { viewModel.armLink() },
-                onCancelLink = { viewModel.linkArmed = false; viewModel.selectBbox(null) },
+                onCancelLink = { viewModel.cancelLink() },
                 onSaveExit = { viewModel.saveAndExit { onBack() } },
                 onNextTree = {
                     val rid = viewModel.runId
@@ -449,7 +471,14 @@ fun CarouselScreen(
                                 viewModel.selectSide(page)
                             }
                             if (viewModel.linkArmed && id != null) {
-                                viewModel.createLink(id)
+                                // Same pattern as dedup: second tap on different side → link.
+                                // Same side → cancel link, select the tapped box instead.
+                                if (page != viewModel.pendingLinkSide) {
+                                    viewModel.completeLink(id)
+                                } else {
+                                    viewModel.cancelLink()
+                                    viewModel.selectBbox(id)
+                                }
                             } else {
                                 viewModel.selectBbox(id)
                             }
