@@ -7,7 +7,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
-import dev.sawitulm.palmannotate.ui.annotation.AnnotationScreen
+// import dev.sawitulm.palmannotate.ui.annotation.AnnotationScreen  // dead — carousel is primary
 import dev.sawitulm.palmannotate.ui.capture.CaptureFlowScreen
 import dev.sawitulm.palmannotate.ui.carousel.CarouselScreen
 import dev.sawitulm.palmannotate.ui.dedup.DeduplicationScreen
@@ -82,19 +82,20 @@ fun PalmAnnotateNavHost(
             )
         }
 
-        composable(
-            route = Routes.ANNOTATION,
-            arguments = listOf(navArgument("treeKey") { type = NavType.StringType }),
-        ) { entry ->
-            val treeKey = entry.arguments?.getString("treeKey") ?: return@composable
-            AnnotationScreen(
-                sessionId = treeKey,
-                onBack = { navController.popBackStack() },
-                onViewResults = { navController.navigate(Routes.results(treeKey)) },
-                onOpenDedup = { navController.navigate(Routes.dedup(treeKey)) },
-                onOpenCarousel = { navController.navigate(Routes.carousel(treeKey)) },
-            )
-        }
+        // AnnotationScreen route disabled — CarouselScreen is now the primary annotation editor.
+        // composable(
+        //     route = Routes.ANNOTATION,
+        //     arguments = listOf(navArgument("treeKey") { type = NavType.StringType }),
+        // ) { entry ->
+        //     val treeKey = entry.arguments?.getString("treeKey") ?: return@composable
+        //     AnnotationScreen(
+        //         sessionId = treeKey,
+        //         onBack = { navController.popBackStack() },
+        //         onViewResults = { navController.navigate(Routes.results(treeKey)) },
+        //         onOpenDedup = { navController.navigate(Routes.dedup(treeKey)) },
+        //         onOpenCarousel = { navController.navigate(Routes.carousel(treeKey)) },
+        //     )
+        // }
 
         composable(
             route = Routes.RESULTS,
