@@ -178,6 +178,7 @@ class CarouselViewModel @Inject constructor(
 
     fun armLink() {
         selectedBboxId?.let {
+            android.util.Log.d("LinkBug", "armLink: src=$it side=$currentSideIndex")
             linkArmed = true
             pendingLinkBboxId = it
             pendingLinkSide = currentSideIndex
@@ -185,6 +186,7 @@ class CarouselViewModel @Inject constructor(
     }
 
     fun cancelLink() {
+        android.util.Log.d("LinkBug", "cancelLink")
         linkArmed = false
         pendingLinkBboxId = null
         pendingLinkSide = -1
@@ -194,13 +196,14 @@ class CarouselViewModel @Inject constructor(
     /** Create a link between pending source and [targetBboxId] on the current side.
      *  Mirrors DedupViewModel.onBboxTap second-tap logic. */
     fun completeLink(targetBboxId: String) {
+        android.util.Log.d("LinkBug", "completeLink: target=$targetBboxId srcSide=$pendingLinkSide tgtSide=$currentSideIndex linkArmed=$linkArmed srcId=$pendingLinkBboxId")
         if (!linkArmed) return
         val s = session ?: return
         val srcId = pendingLinkBboxId ?: return
         val srcSide = pendingLinkSide
         val tgtSide = currentSideIndex
         if (srcSide == tgtSide) return           // must be different sides
-        if (srcId == targetBboxId) return         // can't link a box to itself
+        // Note: srcId == targetBboxId is OK — IDs like "b0" repeat across sides.
         session = SessionUseCases.addManualLink(s, srcSide, srcId, tgtSide, targetBboxId)
         linkArmed = false
         pendingLinkBboxId = null
@@ -466,16 +469,17 @@ fun CarouselScreen(
                         showBoxes = viewModel.showBoxes,
                         linkedBoxes = linkMap,
                         onBboxTap = { id ->
+                            android.util.Log.d("LinkBug", "onBboxTap page=$page currentSide=${viewModel.currentSideIndex} linkArmed=${viewModel.linkArmed} pendingSide=${viewModel.pendingLinkSide} id=$id")
                             if (page != viewModel.currentSideIndex) {
                                 coroutineScope.launch { pagerState.animateScrollToPage(page) }
                                 viewModel.selectSide(page)
                             }
                             if (viewModel.linkArmed && id != null) {
-                                // Same pattern as dedup: second tap on different side → link.
-                                // Same side → cancel link, select the tapped box instead.
                                 if (page != viewModel.pendingLinkSide) {
+                                    android.util.Log.d("LinkBug", "→ completeLink($id)")
                                     viewModel.completeLink(id)
                                 } else {
+                                    android.util.Log.d("LinkBug", "→ cancelLink (same side)")
                                     viewModel.cancelLink()
                                     viewModel.selectBbox(id)
                                 }
