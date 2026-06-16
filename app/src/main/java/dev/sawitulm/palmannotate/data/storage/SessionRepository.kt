@@ -7,9 +7,12 @@ import dev.sawitulm.palmannotate.data.db.*
 import dev.sawitulm.palmannotate.data.export.ExportManager
 import dev.sawitulm.palmannotate.data.yolo.YoloParser
 import dev.sawitulm.palmannotate.domain.model.*
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -41,7 +44,21 @@ class SessionRepository(
     private val saf: SafMirrorStore,
     private val db: PalmAnnotateDatabase,
 ) {
-    companion object { private const val TAG = "SessionRepo" }
+    companion object {
+        private const val TAG = "SessionRepo"
+        private val ISO_FORMAT = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
+            timeZone = TimeZone.getTimeZone("UTC")
+        }
+    }
+
+    /**
+     * Background scope for the best-effort SAF mirror. Single-threaded so mirror
+     * jobs serialise (no interleaving writes to the same file) while staying OFF
+     * the UI save path — the DB + local files are already the source of truth, so
+     * the user never waits ~11 s for DocumentsContract I/O. See [mirrorSafArtifacts].
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    private val safScope = CoroutineScope(SupervisorJob() + Dispatchers.IO.limitedParallelism(1))
 
     // ─── Runs (home list) ──────────────────────────────────────────────────────
 
@@ -153,9 +170,7 @@ class SessionRepository(
     }
 
     private fun buildMetadataJson(metadata: TreeMetadata?, treeName: String, run: SessionEntity, treeId: Int): JSONObject {
-        val ts = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
-            timeZone = TimeZone.getTimeZone("UTC")
-        }.format(Date())
+        val ts = ISO_FORMAT.format(Date())
         return JSONObject().apply {
             put("name", treeName)
             put("variety", metadata?.variety ?: run.variety)
@@ -287,23 +302,52 @@ class SessionRepository(
         }
     }
 
-    /** Write YOLO labels, annot-log, and the SAF image mirror. Run OUTSIDE any transaction. */
+    /**
+     * Write a tree's side artifacts. Splits into:
+     *  - LOCAL (label .txt + annot-log to internal storage): the source of truth, FAST
+     *    (~1–3 ms/side), written synchronously so callers can rely on it on return.
+     *  - SAF mirror (label + annot-log + image): slow DocumentsContract I/O
+     *    (measured ~11 s for 4 sides), fired on [safScope] so it never blocks the
+     *    save/UI. SAF is an explicit best-effort mirror; the local store is the truth.
+     */
     private fun writeSideArtifacts(treeName: String, split: String, sides: List<TreeSide>, safTreeUri: Uri?) {
+        val t0 = System.currentTimeMillis()
+        writeLocalArtifacts(treeName, split, sides)
+        Log.d(TAG, "writeLocalArtifacts ${sides.size} sides took ${System.currentTimeMillis() - t0}ms")
+        if (safTreeUri != null) {
+            safScope.launch { mirrorSafArtifacts(treeName, split, sides, safTreeUri) }
+        }
+    }
+
+    /** Source-of-truth local files (YOLO label + annot-log). Synchronous, fast. */
+    private fun writeLocalArtifacts(treeName: String, split: String, sides: List<TreeSide>) {
+        for (side in sides) {
+            if (side.imageWidth > 0 && side.imageHeight > 0) {
+                val yoloText = YoloParser.serialize(side.bboxes, side.imageWidth, side.imageHeight)
+                runCatching { storage.writeText(storage.labelFile(treeName, side.sideIndex), yoloText) }
+            }
+            runCatching {
+                storage.writeText(storage.annotLogFile(treeName, side.sideIndex), buildAnnotLog(treeName, split, side))
+            }
+        }
+    }
+
+    /** Best-effort SAF mirror (label + annot-log + image). Slow; run on [safScope]. */
+    private fun mirrorSafArtifacts(treeName: String, split: String, sides: List<TreeSide>, safTreeUri: Uri) {
+        val t0 = System.currentTimeMillis()
         for (side in sides) {
             if (side.imageWidth > 0 && side.imageHeight > 0) {
                 val yoloText = YoloParser.serialize(side.bboxes, side.imageWidth, side.imageHeight)
                 runCatching {
-                    storage.writeText(storage.labelFile(treeName, side.sideIndex), yoloText)
-                    if (safTreeUri != null) {
-                        saf.writeText(safTreeUri, "Output TXT/field/${treeName}_${side.sideIndex + 1}.txt", yoloText)
-                    }
+                    saf.writeText(safTreeUri, "Output TXT/field/${treeName}_${side.sideIndex + 1}.txt", yoloText)
                 }
             }
-            writeAnnotLog(treeName, split, side, safTreeUri)
-            if (safTreeUri != null && side.imageUri != null) {
-                // Images never change after capture — mirror once, then skip. Re-reading and
-                // re-writing several MB through SAF on every save (links/classes change, the
-                // photo does not) was the main "save feels heavy" cost.
+            runCatching {
+                saf.writeText(safTreeUri, "dataset/annotlog/field/${treeName}_${side.sideIndex + 1}.json",
+                    buildAnnotLog(treeName, split, side))
+            }
+            if (side.imageUri != null) {
+                // Images never change after capture — mirror once, then skip.
                 val mirrorPath = "dataset/images/field/${treeName}_${side.sideIndex + 1}.jpg"
                 if (!saf.exists(safTreeUri, mirrorPath)) {
                     runCatching {
@@ -315,6 +359,7 @@ class SessionRepository(
                 }
             }
         }
+        Log.d(TAG, "mirrorSafArtifacts $treeName (${sides.size} sides) took ${System.currentTimeMillis() - t0}ms [background]")
     }
 
     // ─── Output JSON ─────────────────────────────────────────────────────────────
@@ -322,13 +367,24 @@ class SessionRepository(
     suspend fun saveOutputJson(session: ActiveSession, result: TreeResults, safTreeUri: Uri? = null) =
         withContext(Dispatchers.IO) {
             val jsonText = ExportManager.generateOutputJson(session, result).toString(2)
+            // Local file + DB completion flag are the source of truth — written synchronously
+            // so the caller can navigate immediately after this returns.
             storage.writeText(storage.outputJsonFile(session.treeName), jsonText)
-            if (safTreeUri != null) saf.writeText(safTreeUri, "Output JSON/${session.treeName}.json", jsonText)
             // Mark the tree complete (the JS "Compute & Mark Complete" green check).
             // UPDATE, not upsert(REPLACE): REPLACE would cascade-delete the tree's
             // sides/links (annotations) when flipping the complete flag.
             treeDao.getByKey(session.sessionId)?.let { treeDao.update(it.copy(isComplete = true, updatedAt = System.currentTimeMillis())) }
+            // The SAF mirror is best-effort — push it off the critical path so finishing a
+            // tree (and moving to the next capture) never waits on DocumentsContract I/O.
+            if (safTreeUri != null) {
+                safScope.launch { saf.writeText(safTreeUri, "Output JSON/${session.treeName}.json", jsonText) }
+            }
         }
+
+    /** The run (session) id that owns [treeKey] — for "next capture" / "back to tree list" nav. */
+    suspend fun getTreeRunId(treeKey: String): String? = withContext(Dispatchers.IO) {
+        treeDao.getByKey(treeKey)?.sessionId
+    }
 
     // sessions.json index dropped on native (resume is folder-scan based)
 
@@ -353,20 +409,15 @@ class SessionRepository(
             })
         }
 
-    private fun writeAnnotLog(treeName: String, split: String, side: TreeSide, safTreeUri: Uri? = null) {
-        runCatching {
-            val log = JSONObject().apply {
-                put("treeName", treeName); put("sideIndex", side.sideIndex); put("split", split)
-                put("savedAt", System.currentTimeMillis())
-                put("suggestions", annotLogArray(side.originalBboxes))
-                put("final", annotLogArray(side.bboxes))
-            }
-            val text = log.toString(2)
-            storage.writeText(storage.annotLogFile(treeName, side.sideIndex), text)
-            if (safTreeUri != null) {
-                saf.writeText(safTreeUri, "dataset/annotlog/field/${treeName}_${side.sideIndex + 1}.json", text)
-            }
+    /** Build the annot-log JSON text for a side (written to both local + SAF). */
+    private fun buildAnnotLog(treeName: String, split: String, side: TreeSide): String {
+        val log = JSONObject().apply {
+            put("treeName", treeName); put("sideIndex", side.sideIndex); put("split", split)
+            put("savedAt", System.currentTimeMillis())
+            put("suggestions", annotLogArray(side.originalBboxes))
+            put("final", annotLogArray(side.bboxes))
         }
+        return log.toString(2)
     }
 
     private fun annotLogArray(boxes: List<Bbox>): JSONArray = JSONArray().apply {

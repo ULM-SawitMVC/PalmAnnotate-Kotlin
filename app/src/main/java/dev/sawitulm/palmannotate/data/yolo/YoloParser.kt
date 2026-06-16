@@ -2,6 +2,7 @@ package dev.sawitulm.palmannotate.data.yolo
 
 import dev.sawitulm.palmannotate.domain.model.AnnotationClass
 import dev.sawitulm.palmannotate.domain.model.Bbox
+import java.util.Locale
 
 /**
  * YOLO label file parser and serializer.
@@ -20,12 +21,16 @@ object YoloParser {
      * @param imgH  Image height in pixels.
      * @return List of parsed bboxes (invalid lines silently skipped).
      */
+    /** Pre-compiled whitespace regex for line splitting. */
+    private val WS = Regex("\\s+")
+
     fun parse(text: String?, imgW: Int, imgH: Int): List<Bbox> {
         if (text.isNullOrBlank()) return emptyList()
+        if (imgW <= 0 || imgH <= 0) return emptyList()
         val bboxes = mutableListOf<Bbox>()
         var idx = 0
         for (line in text.lineSequence()) {
-            val parts = line.trim().split(Regex("\\s+"))
+            val parts = line.trim().split(WS)
             if (parts.size < 5) continue
             val classId = parts[0].toIntOrNull() ?: continue
             if (classId !in 0..3) continue  // only valid annotation classes
@@ -59,6 +64,7 @@ object YoloParser {
      * UNASSIGNED boxes are excluded (YOLO needs integer class 0–3).
      */
     fun serialize(bboxes: List<Bbox>, imgW: Int, imgH: Int): String {
+        if (imgW <= 0 || imgH <= 0) return ""
         return bboxes
             .filter { it.classId in 0..3 }
             .joinToString("\n") { b ->
@@ -70,6 +76,8 @@ object YoloParser {
             }
     }
 
-    /** Format a float to 6 decimal places (matching JS toFixed(6)). */
-    private fun Float.f6(): String = String.format("%.6f", this)
+    /** Format a float to 6 decimal places (matching JS toFixed(6)).
+     *  MUST use Locale.US to guarantee '.' as decimal separator regardless of device locale.
+     *  Without this, YOLO labels on German/French devices would use ',' and become unparseable. */
+    private fun Float.f6(): String = String.format(Locale.US, "%.6f", this)
 }

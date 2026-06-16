@@ -7,6 +7,7 @@ package dev.sawitulm.palmannotate.domain.dedup
  * where each cluster represents a unique physical fruit bunch.
  *
  * Features: path compression + union by rank for O(α(n)) amortised ops.
+ * Maintains a reverse index (root → member set) for O(1) cluster lookup.
  */
 class UnionFind(nodes: Collection<String>) {
 
@@ -15,8 +16,12 @@ class UnionFind(nodes: Collection<String>) {
     private val rank: MutableMap<String, Int> =
         nodes.associateWith { 0 }.toMutableMap()
 
+    /** Reverse index: root → mutable set of members. Updated on every union. */
+    private val members: MutableMap<String, MutableSet<String>> =
+        nodes.associateWith { mutableSetOf(it) }.toMutableMap()
+
     /** Number of distinct sets. */
-    val size: Int get() = parent.keys.count { find(it) == it }
+    val size: Int get() = members.size
 
     /**
      * Find the root representative of the set containing [x].
@@ -33,6 +38,7 @@ class UnionFind(nodes: Collection<String>) {
     /**
      * Merge the sets containing [a] and [b].
      * Uses union by rank to keep trees shallow.
+     * Updates the reverse index in O(1).
      */
     fun union(a: String, b: String) {
         val ra = find(a)
@@ -41,31 +47,38 @@ class UnionFind(nodes: Collection<String>) {
 
         val rankA = rank[ra] ?: 0
         val rankB = rank[rb] ?: 0
-        when {
-            rankA < rankB -> { parent[ra] = rb }
-            rankA > rankB -> { parent[rb] = ra }
-            else -> { parent[rb] = ra; rank[ra] = rankA + 1 }
+        val (smaller, larger) = if (rankA < rankB) ra to rb else rb to ra
+        // Attach smaller tree under larger root.
+        parent[smaller] = larger
+        if (rankA == rankB) rank[larger] = (rank[larger] ?: 0) + 1
+
+        // Merge member sets: smaller into larger (amortised O(1) per element).
+        val largerSet = members[larger] ?: mutableSetOf<String>().also { members[larger] = it }
+        val smallerSet = members.remove(smaller) ?: emptySet()
+        largerSet.addAll(smallerSet)
+        // Update reverse pointers for all migrated members.
+        for (node in smallerSet) {
+            // Already path-compressed by find() calls above; just ensure parent points to larger.
+            parent[node] = larger
         }
     }
 
     /**
      * Return all elements in the same set as [x], including [x] itself.
+     * O(1) lookup via the reverse index.
      */
     fun getCluster(x: String): List<String> {
         val root = find(x)
-        return parent.keys.filter { find(it) == root }
+        return members[root]?.toList() ?: listOf(x)
     }
 
     /**
      * Return all clusters as a map from root → member list.
      */
     fun clusters(): Map<String, List<String>> {
-        val groups = mutableMapOf<String, MutableList<String>>()
-        for (node in parent.keys) {
-            val root = find(node)
-            groups.getOrPut(root) { mutableListOf() }.add(node)
-        }
-        return groups
+        // Ensure all path pointers are compressed for clean root keys.
+        for (node in parent.keys) find(node)
+        return members.mapValues { it.value.toList() }
     }
 
     /**

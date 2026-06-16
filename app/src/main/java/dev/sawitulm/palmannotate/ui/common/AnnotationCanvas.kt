@@ -54,6 +54,28 @@ private object BitmapCache {
 }
 
 /**
+ * Cache key that includes the file's last-modified time + size, not just the URI.
+ *
+ * Image paths are derived from the tree name (e.g. `…/DAMIMAS_A21B_0001_1.jpg`).
+ * After a tree is deleted and a fresh one is captured, the id resets so the new
+ * photo lands at the SAME path. Keying the bitmap cache by URI alone then served
+ * the deleted tree's stale bitmap. Folding mtime+size into the key makes an
+ * overwritten or recreated file miss the cache and re-decode the new content.
+ */
+private fun bitmapCacheKey(uriString: String): String {
+    return try {
+        val path = android.net.Uri.parse(uriString).path
+        if (path != null) {
+            val f = File(path)
+            if (f.exists()) return "$uriString|${f.lastModified()}|${f.length()}"
+        }
+        uriString
+    } catch (_: Exception) {
+        uriString
+    }
+}
+
+/**
  * Decode an image (content:// or file path) on a background thread, downsampled so its
  * largest dimension is <= [maxDimension]. Keeps memory + decode time low for the dedup
  * pager. Bbox coordinates are in original-image space and are scaled at draw time, so the
@@ -119,7 +141,10 @@ fun AnnotationCanvas(
     val context = LocalContext.current
     val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, imageUriString) {
         val uriStr = imageUriString ?: run { value = null; return@produceState }
-        val cached = BitmapCache.get(uriStr)
+        // Key by URI + file mtime/size so a reused path (delete + recapture with a
+        // reset tree id) doesn't serve the previous tree's stale bitmap.
+        val cacheKey = withContext(Dispatchers.IO) { bitmapCacheKey(uriStr) }
+        val cached = BitmapCache.get(cacheKey)
         if (cached != null) {
             Log.d(CANVAS_TAG, "Image CACHE HIT - uri=${uriStr.takeLast(50)}")
             value = cached
@@ -128,8 +153,8 @@ fun AnnotationCanvas(
             val loadStart = System.currentTimeMillis()
             value = null
             value = withContext(Dispatchers.IO) {
-                decodeDownsampled(context, uriStr, maxDimension = 1600)?.also { 
-                    BitmapCache.put(uriStr, it) 
+                decodeDownsampled(context, uriStr, maxDimension = 1600)?.also {
+                    BitmapCache.put(cacheKey, it)
                     val loadTime = System.currentTimeMillis() - loadStart
                     Log.d(CANVAS_TAG, "Image LOAD END - uri=${uriStr.takeLast(50)}, time=${loadTime}ms")
                 }

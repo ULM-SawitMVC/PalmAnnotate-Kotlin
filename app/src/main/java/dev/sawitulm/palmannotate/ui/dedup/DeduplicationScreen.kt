@@ -280,9 +280,11 @@ class DedupViewModel @Inject constructor(
 
     fun saveAndContinue(onDone: () -> Unit) {
         val s = session ?: return
+        val tap = System.currentTimeMillis()
         viewModelScope.launch {
             val safTreeUri = exportFolder.folderUri.first()
             repo.saveSession(s, safTreeUri)
+            android.util.Log.d("SavePerf", "dedup saveAndContinue: tap→nav = ${System.currentTimeMillis() - tap}ms (felt)")
             onDone()
         }
     }

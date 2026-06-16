@@ -4,6 +4,7 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Serializes async work so navigation/save/compute/next-tree never interleave.
@@ -12,6 +13,11 @@ import java.util.concurrent.atomic.AtomicInteger
 class OperationQueue {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /** Monotonically incrementing counter for unique linkId generation. */
+    private val _nextLinkId = AtomicInteger(0)
+
+    fun nextLinkId(): String = "lnk-${_nextLinkId.incrementAndGet()}"
+
     private var lastJob: Job = Job().also { it.complete() } // already-completed seed
 
     private val _busy = MutableStateFlow(false)
@@ -59,6 +65,13 @@ class OperationQueue {
         lastJob = Job().also { it.complete() }
         _busy.value = false
         _busyLabel.value = ""
+    }
+
+    /** Cancel all pending work and release the coroutine scope. Call when the
+     *  owning ViewModel/screen is disposed to prevent coroutine leaks. */
+    fun dispose() {
+        cancel()
+        scope.cancel()
     }
 }
 

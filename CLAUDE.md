@@ -126,10 +126,21 @@ adb logcat | grep -E "DedupPerf|CanvasPerf|SessionRepo|DepthViewer"
 
 | Tag | Component |
 |-----|-----------|
+| `SavePerf` | **User-felt** save latency (tap → busy-overlay clears). Log lives at the wait the user sees, not inside the repo — the DB was 10ms yet the user waited 12s. |
 | `DedupPerf` | DeduplicationScreen composable + ViewModel |
 | `CanvasPerf` | AnnotationCanvas image loading |
-| `SessionRepo` | SessionRepository save operations |
+| `SessionRepo` | SessionRepository: DB txn, `writeLocalArtifacts` (sync, truth), `mirrorSafArtifacts` (background) |
 | `DepthViewer` | Depth viewer loading + tap-to-read |
+
+### Save path (important)
+
+`saveSession` writes the **DB + local label/annot-log synchronously** (the source of
+truth, ~15ms) and fires the **SAF mirror on a background `safScope`** (best-effort,
+never awaited). SAF was the entire ~11.6s "save feels slow" cost. `SafMirrorStore`
+caches directory handles + child listings and overwrites files in place (no
+delete+create), and infers MIME from the extension (a `.txt` written as
+`application/json` was being saved as `.txt.json` and spawning `(N)` duplicates).
+See `PERF_GAIN.md`. **Do not move the SAF mirror back onto the blocking save path.**
 
 ## Device Testing
 

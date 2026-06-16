@@ -100,7 +100,26 @@ fun PalmAnnotateNavHost(
             arguments = listOf(navArgument("treeKey") { type = NavType.StringType }),
         ) { entry ->
             val treeKey = entry.arguments?.getString("treeKey") ?: return@composable
-            ResultsScreen(sessionId = treeKey, onBack = { navController.popBackStack() })
+            ResultsScreen(
+                sessionId = treeKey,
+                onBack = { navController.popBackStack() },
+                onCaptureNext = { runId ->
+                    // Drop this tree's annotation/dedup/results off the stack, keep the
+                    // session detail underneath, and open capture for the next tree.
+                    navController.navigate(Routes.capture(runId)) {
+                        popUpTo(Routes.SESSION_DETAIL) { inclusive = false }
+                    }
+                },
+                onTreeList = { runId ->
+                    // Return to the existing session detail (tree list); fall back to a
+                    // fresh navigation if it isn't on the back stack for some reason.
+                    if (!navController.popBackStack(Routes.SESSION_DETAIL, inclusive = false)) {
+                        navController.navigate(Routes.sessionDetail(runId)) {
+                            popUpTo(Routes.HOME) { inclusive = false }
+                        }
+                    }
+                },
+            )
         }
 
         composable(

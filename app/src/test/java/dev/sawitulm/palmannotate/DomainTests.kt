@@ -4,10 +4,14 @@ import dev.sawitulm.palmannotate.data.yolo.YoloParser
 import dev.sawitulm.palmannotate.domain.dedup.SuggestionEngine
 import dev.sawitulm.palmannotate.domain.dedup.UnionFind
 import dev.sawitulm.palmannotate.domain.model.*
+import dev.sawitulm.palmannotate.domain.quality.QualityCheck
 import dev.sawitulm.palmannotate.domain.results.ResultsComputer
 import dev.sawitulm.palmannotate.domain.usecase.SessionUseCases
+import dev.sawitulm.palmannotate.domain.util.OperationQueue
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
+import java.util.Locale
 
 // ════════════════════════════════════════════════════════════════════════════════
 // YoloParser
@@ -235,5 +239,342 @@ class SessionUseCasesBboxTest {
         assertEquals(1, after.confirmedLinks.size)
         assertEquals("L1", after.confirmedLinks[0].linkId)
         assertTrue(after.sides[0].bboxes.none { it.id == "b0" })
+    }
+
+    @Test fun `addManualLink generates unique linkIds`() {
+        var s = session(listOf(
+            side(0, listOf(box("b0"), box("b1"), box("b2"))),
+            side(1, listOf(box("b0"), box("b1"), box("b2"))),
+        ))
+        s = SessionUseCases.addManualLink(s, 0, "b0", 1, "b0")
+        s = SessionUseCases.addManualLink(s, 0, "b1", 1, "b1")
+        s = SessionUseCases.addManualLink(s, 0, "b2", 1, "b2")
+        assertEquals(3, s.confirmedLinks.size)
+        val ids = s.confirmedLinks.map { it.linkId }.toSet()
+        assertEquals("all linkIds unique", 3, ids.size)
+    }
+
+    @Test fun `delete then re-add link does not collide`() {
+        var s = session(listOf(
+            side(0, listOf(box("b0"), box("b1"))),
+            side(1, listOf(box("b0"), box("b1"))),
+        ))
+        s = SessionUseCases.addManualLink(s, 0, "b0", 1, "b0")
+        val firstId = s.confirmedLinks[0].linkId
+        s = SessionUseCases.removeLink(s, firstId)
+        assertTrue(s.confirmedLinks.isEmpty())
+        s = SessionUseCases.addManualLink(s, 0, "b0", 1, "b0")
+        assertNotEquals("new linkId must differ", firstId, s.confirmedLinks[0].linkId)
+    }
+
+    @Test fun `propagateClassFromBox changes all cluster members`() {
+        val s = session(
+            sides = listOf(
+                side(0, listOf(Bbox("b0", 0, "B1", 0f, 0f, 100f, 100f))),
+                side(1, listOf(Bbox("b0", 2, "B3", 0f, 0f, 100f, 100f))),
+            ),
+            links = listOf(CrossSideLink.create("L0", 0, "b0", 1, "b0")),
+        )
+        // Change side 0 b0 to B2, should propagate to side 1 b0
+        val updated = SessionUseCases.setBboxClass(s, 0, "b0", AnnotationClass.B2)
+        assertEquals(1, updated.sides[0].bboxes[0].classId) // B2
+        assertEquals(1, updated.sides[1].bboxes[0].classId) // B2 propagated
+    }
+
+    @Test fun `setBboxClass with propagate=false does not change cluster`() {
+        val s = session(
+            sides = listOf(
+                side(0, listOf(Bbox("b0", 0, "B1", 0f, 0f, 100f, 100f))),
+                side(1, listOf(Bbox("b0", 2, "B3", 0f, 0f, 100f, 100f))),
+            ),
+            links = listOf(CrossSideLink.create("L0", 0, "b0", 1, "b0")),
+        )
+        val updated = SessionUseCases.setBboxClass(s, 0, "b0", AnnotationClass.B2, propagate = false)
+        assertEquals(1, updated.sides[0].bboxes[0].classId) // B2
+        assertEquals(2, updated.sides[1].bboxes[0].classId) // B3 unchanged
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// YoloParser — edge cases (locale, zero dims, NaN/Inf)  [T1]
+// ════════════════════════════════════════════════════════════════════════════════
+
+class YoloParserEdgeTest {
+    /** The B1 bug: f6() must emit '.' decimals regardless of the device locale,
+     *  otherwise European locales (',' separator) produce labels YOLO can't parse. */
+    @Test fun `serialize is locale-agnostic`() {
+        val original = Locale.getDefault()
+        try {
+            Locale.setDefault(Locale.GERMANY) // ',' decimal separator
+            val text = YoloParser.serialize(listOf(Bbox("b0", 0, "B1", 450f, 900f, 550f, 1100f)), 1000, 2000)
+            assertFalse("must not contain comma decimals", text.contains(","))
+            assertTrue("must use dot decimals", text.contains("."))
+            // Round-trips back through parse cleanly.
+            assertEquals(1, YoloParser.parse(text, 1000, 2000).size)
+        } finally {
+            Locale.setDefault(original)
+        }
+    }
+
+    @Test fun `serialize with zero dimensions returns empty`() {
+        val boxes = listOf(Bbox("b0", 0, "B1", 10f, 10f, 20f, 20f))
+        assertEquals("", YoloParser.serialize(boxes, 0, 1000))
+        assertEquals("", YoloParser.serialize(boxes, 1000, 0))
+    }
+
+    @Test fun `parse with zero dimensions returns empty`() {
+        assertEquals(0, YoloParser.parse("0 0.5 0.5 0.1 0.2", 0, 1000).size)
+        assertEquals(0, YoloParser.parse("0 0.5 0.5 0.1 0.2", 1000, 0).size)
+    }
+
+    @Test fun `parse tolerates extra whitespace and tabs`() {
+        val bboxes = YoloParser.parse("0\t0.5   0.5  0.1\t0.2", 1000, 1000)
+        assertEquals(1, bboxes.size)
+    }
+
+    @Test fun `parse skips NaN and Inf coordinates`() {
+        assertEquals(0, YoloParser.parse("0 NaN 0.5 0.1 0.2\n0 Infinity 0.5 0.1 0.2", 1000, 1000).size)
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// UnionFind — edge cases  [T2, E6]
+// ════════════════════════════════════════════════════════════════════════════════
+
+class UnionFindEdgeTest {
+    @Test fun `empty node collection yields no clusters`() {
+        val uf = UnionFind(emptyList())
+        assertEquals(0, uf.clusters().size)
+    }
+
+    @Test fun `unknown node is its own singleton`() {
+        val uf = UnionFind(listOf("a"))
+        // find on an unseen node should be self-rooted, not crash.
+        assertEquals("z", uf.find("z"))
+        assertEquals(listOf("z"), uf.getCluster("z"))
+    }
+
+    @Test fun `single node cluster`() {
+        val uf = UnionFind(listOf("a"))
+        assertEquals(1, uf.getCluster("a").size)
+        assertEquals(1, uf.clusters().size)
+    }
+
+    @Test fun `union is idempotent`() {
+        val uf = UnionFind(listOf("a", "b"))
+        uf.union("a", "b"); uf.union("a", "b"); uf.union("b", "a")
+        assertEquals(1, uf.clusters().size)
+        assertEquals(2, uf.getCluster("a").size)
+    }
+
+    @Test fun `large chain collapses to one cluster`() {
+        val nodes = (0 until 500).map { "n$it" }
+        val uf = UnionFind(nodes)
+        for (i in 0 until 499) uf.union("n$i", "n${i + 1}")
+        assertEquals(1, uf.clusters().size)
+        assertEquals(500, uf.getCluster("n0").size)
+        assertTrue(uf.connected("n0", "n499"))
+    }
+
+    @Test fun `getCluster reflects unions after the fact`() {
+        val uf = UnionFind(listOf("a", "b", "c"))
+        assertEquals(1, uf.getCluster("a").size)
+        uf.union("a", "b")
+        assertEquals(2, uf.getCluster("a").size)
+        uf.union("b", "c")
+        assertEquals(3, uf.getCluster("a").size)
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SuggestionEngine — edge cases  [T3, E7]
+// ════════════════════════════════════════════════════════════════════════════════
+
+class SuggestionEngineEdgeTest {
+    private val img = SuggestionEngine.Img(1000, 1000)
+    private fun b1(id: String, x1: Float, y1: Float, x2: Float, y2: Float) = Bbox(id, 0, "B1", x1, y1, x2, y2)
+
+    @Test fun `empty side A yields no suggestions`() {
+        val b = listOf(b1("b", 850f, 400f, 950f, 500f))
+        assertEquals(0, SuggestionEngine.suggestPairs(emptyList(), img, b, img).size)
+    }
+
+    @Test fun `empty side B yields no suggestions`() {
+        val a = listOf(b1("a", 50f, 400f, 150f, 500f))
+        assertEquals(0, SuggestionEngine.suggestPairs(a, img, emptyList(), img).size)
+    }
+
+    @Test fun `both sides empty yields no suggestions`() {
+        assertEquals(0, SuggestionEngine.suggestPairs(emptyList(), img, emptyList(), img).size)
+    }
+
+    @Test fun `zero-area box near seam does not crash`() {
+        val a = listOf(b1("a", 50f, 400f, 50f, 400f))   // degenerate, zero area
+        val b = listOf(b1("b", 850f, 400f, 950f, 500f))
+        // Must not throw (division by zero guarded by eps); result may be empty.
+        val pairs = SuggestionEngine.suggestPairs(a, img, b, img)
+        assertTrue(pairs.size <= 1)
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// ResultsComputer — edge cases  [T4, E8]
+// ════════════════════════════════════════════════════════════════════════════════
+
+class ResultsComputerEdgeTest {
+    private fun makeSide(i: Int, bboxes: List<Bbox>) = TreeSide(i, "Side ${i+1}", null, null, 1000, 1000, bboxes, emptyList())
+    private fun bbox(id: String, classId: Int) = Bbox(id, classId, AnnotationClass.fromId(classId).displayName, 0f, 0f, 100f, 100f)
+    private fun session(sides: List<TreeSide>, links: List<CrossSideLink> = emptyList()) =
+        ActiveSession("s1", "t1", "field", sides, emptyList(), links, null)
+
+    @Test fun `empty session has zero counts`() {
+        val r = ResultsComputer.compute(session(emptyList()))
+        assertEquals(0, r.rawCount); assertEquals(0, r.uniqueCount); assertEquals(0, r.linkedCount)
+    }
+
+    @Test fun `side with no bboxes`() {
+        val r = ResultsComputer.compute(session(listOf(makeSide(0, emptyList()))))
+        assertEquals(0, r.rawCount); assertEquals(0, r.uniqueCount)
+    }
+
+    @Test fun `single side never has links so unique equals raw`() {
+        val r = ResultsComputer.compute(session(listOf(makeSide(0, listOf(bbox("b0",0), bbox("b1",1), bbox("b2",2))))))
+        assertEquals(3, r.rawCount); assertEquals(3, r.uniqueCount); assertEquals(0, r.linkedCount)
+    }
+
+    @Test fun `all unassigned bboxes`() {
+        val r = ResultsComputer.compute(session(listOf(makeSide(0, listOf(
+            Bbox.unassigned("b0", 0f, 0f, 100f, 100f),
+            Bbox.unassigned("b1", 200f, 200f, 300f, 300f),
+        )))))
+        assertEquals(2, r.rawCount); assertEquals(2, r.unassignedCount)
+        assertEquals(2, r.classCounts[AnnotationClass.UNASSIGNED])
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// QualityCheck  [T5, E9]
+// ════════════════════════════════════════════════════════════════════════════════
+
+class QualityCheckTest {
+    // Note: imageUri is left null (android.net.Uri is unavailable in plain JVM unit tests),
+    // so analyzeTree always emits an `image_missing` WARN. Assertions target the specific
+    // issue code / status floor under test rather than a pristine OK.
+    private fun side(i: Int, bboxes: List<Bbox>) =
+        TreeSide(i, "Side ${i + 1}", null, null, 1000, 1000, bboxes, emptyList())
+    private fun bbox(id: String, classId: Int, x1: Float = 0f, y1: Float = 0f, x2: Float = 100f, y2: Float = 100f) =
+        Bbox(id, classId, AnnotationClass.fromId(classId).displayName, x1, y1, x2, y2)
+    private fun session(sides: List<TreeSide>, links: List<CrossSideLink> = emptyList(), metadata: TreeMetadata? = null) =
+        ActiveSession("s1", "t1", "field", sides, emptyList(), links, metadata)
+
+    // ─── Capture pre-save ───
+    @Test fun `capture all good is OK`() {
+        val r = QualityCheck.analyzeCaptureShots(4, 4, 4, hasGps = true, hasVariety = true, hasBlock = true)
+        assertEquals(QualityCheck.Level.OK, r.status)
+        assertTrue(r.issues.isEmpty())
+    }
+
+    @Test fun `capture missing variety is ERROR`() {
+        val r = QualityCheck.analyzeCaptureShots(4, 4, 4, hasGps = true, hasVariety = false, hasBlock = true)
+        assertEquals(QualityCheck.Level.ERROR, r.status)
+        assertTrue(r.issues.any { it.code == "metadata_variety_missing" })
+    }
+
+    @Test fun `capture missing sides is ERROR, missing gps only WARN`() {
+        val missingSides = QualityCheck.analyzeCaptureShots(2, 4, 2, hasGps = true, hasVariety = true, hasBlock = true)
+        assertEquals(QualityCheck.Level.ERROR, missingSides.status)
+        val noGps = QualityCheck.analyzeCaptureShots(4, 4, 4, hasGps = false, hasVariety = true, hasBlock = true)
+        assertEquals(QualityCheck.Level.WARN, noGps.status)
+    }
+
+    // ─── Tree QA ───
+    @Test fun `empty session surfaces variety error and no crash`() {
+        val r = QualityCheck.analyzeTree(session(emptyList()))
+        assertEquals(QualityCheck.Level.ERROR, r.status) // variety missing
+        assertEquals(0, r.metrics["totalSides"])
+    }
+
+    @Test fun `tree with metadata and links has no ERROR issues`() {
+        val r = QualityCheck.analyzeTree(session(
+            sides = listOf(
+                side(0, listOf(bbox("b0", 0))),
+                side(1, listOf(bbox("b0", 0))),
+            ),
+            links = listOf(CrossSideLink.create("L0", 0, "b0", 1, "b0")),
+            metadata = TreeMetadata(variety = "Tenera", block = "A1"),
+        ))
+        assertTrue("no error-level issues", r.issues.none { it.level == QualityCheck.Level.ERROR })
+        assertEquals(0, r.metrics["mismatches"])
+    }
+
+    @Test fun `class mismatch across linked cluster is ERROR`() {
+        val r = QualityCheck.analyzeTree(session(
+            sides = listOf(
+                side(0, listOf(bbox("b0", 0))),  // B1
+                side(1, listOf(bbox("b0", 2))),  // B3
+            ),
+            links = listOf(CrossSideLink.create("L0", 0, "b0", 1, "b0")),
+            metadata = TreeMetadata(variety = "Tenera", block = "A1"),
+        ))
+        assertEquals(QualityCheck.Level.ERROR, r.status)
+        assertTrue(r.issues.any { it.code == "annotation_class_mismatch" })
+    }
+
+    @Test fun `unassigned bbox raises a warning`() {
+        val r = QualityCheck.analyzeTree(session(
+            sides = listOf(side(0, listOf(Bbox.unassigned("b0", 0f, 0f, 100f, 100f)))),
+            metadata = TreeMetadata(variety = "Tenera", block = "A1"),
+        ))
+        assertTrue(r.issues.any { it.code == "annotation_unassigned" })
+        assertEquals(1, r.metrics["unassigned"])
+    }
+
+    @Test fun `tiny bbox raises an info-level issue`() {
+        val r = QualityCheck.analyzeTree(session(
+            sides = listOf(side(0, listOf(bbox("b0", 0, 0f, 0f, 5f, 5f)))),
+            metadata = TreeMetadata(variety = "Tenera", block = "A1"),
+        ))
+        assertTrue(r.issues.any { it.code == "annotation_tiny_bbox" && it.level == QualityCheck.Level.INFO })
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// OperationQueue  [T7]
+// ════════════════════════════════════════════════════════════════════════════════
+
+class OperationQueueTest {
+    @Test fun `enqueued blocks run in FIFO order`() = runBlocking {
+        val q = OperationQueue()
+        val order = mutableListOf<Int>()
+        q.enqueue { order.add(1) }
+        q.enqueue { order.add(2) }
+        q.enqueueAndWait { order.add(3) } // waits for the whole chain
+        assertEquals(listOf(1, 2, 3), order)
+        q.dispose()
+    }
+
+    @Test fun `enqueueAndWait propagates busy flag and clears it`() = runBlocking {
+        val q = OperationQueue()
+        assertFalse(q.isBusy)
+        q.enqueueAndWait("saving") { assertTrue("busy during work", q.isBusy) }
+        assertFalse("busy cleared after work", q.isBusy)
+        assertEquals("", q.busyLabel.value)
+        q.dispose()
+    }
+
+    @Test fun `nextLinkId is monotonic and unique`() {
+        val q = OperationQueue()
+        val ids = (0 until 100).map { q.nextLinkId() }
+        assertEquals("all unique", 100, ids.toSet().size)
+        assertEquals("lnk-1", ids.first())
+        assertEquals("lnk-100", ids.last())
+        q.dispose()
+    }
+
+    @Test fun `dispose after cancel does not throw`() {
+        val q = OperationQueue()
+        q.enqueue { /* never awaited */ }
+        q.cancel()
+        q.dispose() // must be safe to call
     }
 }

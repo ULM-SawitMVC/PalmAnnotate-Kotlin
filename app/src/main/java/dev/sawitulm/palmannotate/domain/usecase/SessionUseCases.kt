@@ -230,7 +230,7 @@ object SessionUseCases {
             !(touchesA || touchesB)
         }
 
-        val linkId = "lnk-${session.confirmedLinks.size + 1}"
+        val linkId = "lnk-${System.nanoTime()}"
         val newLink = CrossSideLink.create(linkId, sA, bA, sB, bB)
         return session.copy(confirmedLinks = filtered + newLink, dirty = true)
     }

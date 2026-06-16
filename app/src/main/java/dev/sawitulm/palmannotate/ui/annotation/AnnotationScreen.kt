@@ -131,9 +131,14 @@ class AnnotationViewModel @Inject constructor(
 
     fun save() {
         val s = session ?: return
+        // Felt latency = how long the busy overlay blocks the user: from tap until the
+        // enqueued block returns (opq toggles busy around it). This is the number the
+        // USER experiences — distinct from the on-paper DB time. Keep the log here.
+        val tap = System.currentTimeMillis()
         opq.enqueue("save-annotation") {
             val safTreeUri = exportFolder.folderUri.first()
             repo.saveSession(s, safTreeUri)
+            android.util.Log.d("SavePerf", "save(): tap→busy-clear = ${System.currentTimeMillis() - tap}ms (felt)")
         }
     }
 

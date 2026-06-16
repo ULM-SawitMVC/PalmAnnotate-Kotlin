@@ -19,8 +19,10 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dev.sawitulm.palmannotate.data.db.SessionEntity
 import dev.sawitulm.palmannotate.data.db.TreeEntity
+import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
@@ -36,6 +38,7 @@ import javax.inject.Inject
 @HiltViewModel
 class SessionDetailViewModel @Inject constructor(
     private val repo: SessionRepository,
+    private val exportFolder: ExportFolderRepository,
 ) : ViewModel() {
 
     var run by mutableStateOf<SessionEntity?>(null)
@@ -54,7 +57,12 @@ class SessionDetailViewModel @Inject constructor(
 
     fun deleteTree(treeKey: String) {
         viewModelScope.launch {
-            repo.deleteTree(treeKey)
+            // Pass the export-folder URI so the SAF mirror copies (images, labels,
+            // Output JSON/TXT) are deleted too. Without this the export folder kept the
+            // tree's files, and a later recapture (id reset → same path) was then SKIPPED
+            // by the "mirror once if absent" guard, leaving the OLD photo in the export.
+            val safTreeUri = exportFolder.folderUri.first()
+            repo.deleteTree(treeKey, safTreeUri)
             run?.let { run = repo.getRun(it.sessionId) } // refresh nextId
         }
     }

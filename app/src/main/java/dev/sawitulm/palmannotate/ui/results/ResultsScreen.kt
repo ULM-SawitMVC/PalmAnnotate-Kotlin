@@ -8,6 +8,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -54,6 +55,9 @@ class ResultsViewModel @Inject constructor(
         private set
     var results by mutableStateOf<TreeResults?>(null)
         private set
+    /** Run (session) id that owns this tree — for "next capture" / "tree list" nav. */
+    var runId by mutableStateOf<String?>(null)
+        private set
     var isComputing by mutableStateOf(false)
         private set
     var isExporting by mutableStateOf(false)
@@ -72,12 +76,29 @@ class ResultsViewModel @Inject constructor(
             isComputing = true
             val s = repo.loadActiveSession(treeKey)
             session = s
+            runId = repo.getTreeRunId(treeKey)
             if (s != null) {
                 // compute() walks union-find over every box — keep it off the main thread so
                 // opening Results never janks (the screen showed a spinner meanwhile anyway).
                 results = withContext(Dispatchers.Default) { ResultsComputer.compute(s) }
             }
             isComputing = false
+        }
+    }
+
+    /**
+     * Finish this tree: persist the Output JSON (+ mark complete), then run [onNavigate].
+     * Output JSON local write + DB flag are synchronous; the SAF mirror is backgrounded,
+     * so this returns fast and navigation (next capture / tree list) feels instant.
+     */
+    fun finishAndThen(onNavigate: () -> Unit) {
+        val s = session ?: return
+        val r = results ?: return
+        viewModelScope.launch {
+            val safTreeUri = exportFolder.folderUri.first()
+            repo.saveOutputJson(s, r, safTreeUri)
+            exportStatus = "Output JSON tersimpan"
+            onNavigate()
         }
     }
 
@@ -184,12 +205,15 @@ class ResultsViewModel @Inject constructor(
 fun ResultsScreen(
     sessionId: String,
     onBack: () -> Unit,
+    onCaptureNext: (runId: String) -> Unit = {},
+    onTreeList: (runId: String) -> Unit = {},
     viewModel: ResultsViewModel = hiltViewModel(),
 ) {
     LaunchedEffect(sessionId) { viewModel.load(sessionId) }
 
     val session = viewModel.session
     val results = viewModel.results
+    var showExportSheet by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -257,26 +281,30 @@ fun ResultsScreen(
                     }
                 }
 
-                // ─── Export ─────────────────────────────────────────────
+                // ─── Finish: continue the workflow ──────────────────────
+                // The two genuinely useful actions: move to the next capture, or go
+                // back to the tree list. Both persist the Output JSON first (so the
+                // tree is "saved by default" on finish). The many export formats are
+                // tucked into a "more" sheet since they're rarely used and Output JSON
+                // is written automatically here.
                 item {
-                    SectionCard("Export") {
+                    SectionCard("Selesai") {
                         if (viewModel.isExporting) {
                             LinearProgressIndicator(Modifier.fillMaxWidth().padding(bottom = 10.dp))
                         }
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            ActionButton("Output JSON", Icons.Default.DataObject, primary = true, busy = viewModel.isExporting, Modifier.weight(1f)) { viewModel.exportOutputJson() }
-                            ActionButton("YOLO .txt", Icons.Default.Description, primary = false, busy = viewModel.isExporting, Modifier.weight(1f)) { viewModel.exportYolo() }
-                        }
-                        Spacer(Modifier.height(10.dp))
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            ActionButton("CSV", Icons.Default.TableChart, primary = false, busy = viewModel.isExporting, Modifier.weight(1f)) { viewModel.exportCsv() }
-                            ActionButton("Identity", Icons.Default.Fingerprint, primary = false, busy = viewModel.isExporting, Modifier.weight(1f)) { viewModel.exportIdentity() }
+                            ActionButton("Foto Berikutnya", Icons.Default.PhotoCamera, primary = true, busy = viewModel.isExporting, Modifier.weight(1f)) {
+                                viewModel.runId?.let { rid -> viewModel.finishAndThen { onCaptureNext(rid) } }
+                            }
+                            ActionButton("Daftar Pohon", Icons.AutoMirrored.Filled.List, primary = false, busy = viewModel.isExporting, Modifier.weight(1f)) {
+                                viewModel.runId?.let { rid -> viewModel.finishAndThen { onTreeList(rid) } }
+                            }
                         }
                         Spacer(Modifier.height(8.dp))
-                        TextButton(onClick = { viewModel.saveOutputJson() }, modifier = Modifier.fillMaxWidth()) {
-                            Icon(Icons.Default.Save, null, Modifier.size(18.dp))
+                        TextButton(onClick = { showExportSheet = true }, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Default.Share, null, Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("Save Output Again")
+                            Text("Ekspor lainnya…")
                         }
                     }
                 }
@@ -289,6 +317,34 @@ fun ResultsScreen(
                             action = { TextButton(onClick = { viewModel.clearStatus() }) { Text("OK") } },
                         ) { Text(msg) }
                     }
+                }
+            }
+        }
+    }
+
+    // "More exports" bottom sheet — rarely-used formats, kept out of the main flow.
+    if (showExportSheet) {
+        ModalBottomSheet(onDismissRequest = { showExportSheet = false }) {
+            Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 28.dp)) {
+                Text(
+                    "Ekspor Lainnya",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    "Output JSON sudah tersimpan otomatis saat Selesai. Gunakan ini untuk mengekspor format lain ke folder ekspor.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp, bottom = 14.dp),
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    ActionButton("Output JSON", Icons.Default.DataObject, primary = false, busy = viewModel.isExporting, Modifier.weight(1f)) { showExportSheet = false; viewModel.exportOutputJson() }
+                    ActionButton("YOLO .txt", Icons.Default.Description, primary = false, busy = viewModel.isExporting, Modifier.weight(1f)) { showExportSheet = false; viewModel.exportYolo() }
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    ActionButton("CSV", Icons.Default.TableChart, primary = false, busy = viewModel.isExporting, Modifier.weight(1f)) { showExportSheet = false; viewModel.exportCsv() }
+                    ActionButton("Identity", Icons.Default.Fingerprint, primary = false, busy = viewModel.isExporting, Modifier.weight(1f)) { showExportSheet = false; viewModel.exportIdentity() }
                 }
             }
         }

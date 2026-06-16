@@ -29,6 +29,7 @@ import dev.sawitulm.palmannotate.data.storage.SessionRepository
 import dev.sawitulm.palmannotate.ui.common.NewSessionDialog
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -90,7 +91,12 @@ class HomeViewModel @Inject constructor(
     }
 
     fun deleteRun(sessionId: String) {
-        viewModelScope.launch { repo.deleteRun(sessionId) }
+        viewModelScope.launch {
+            // Pass the export-folder URI so SAF mirror copies are removed too (same
+            // orphan-file issue as tree delete).
+            val safTreeUri = exportFolder.folderUri.first()
+            repo.deleteRun(sessionId, safTreeUri)
+        }
     }
 
     fun setFolder(uri: android.net.Uri) {
