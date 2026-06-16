@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <external-files-path name="palmannotate_root" path="PalmAnnotate/" />
+    <external-files-path name="palmannotate_images" path="PalmAnnotate/images/" />
+    <external-files-path name="palmannotate_exports" path="PalmAnnotate/exports/" />
+</paths>
