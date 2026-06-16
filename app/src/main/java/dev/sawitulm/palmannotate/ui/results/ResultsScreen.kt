@@ -1,6 +1,7 @@
 package dev.sawitulm.palmannotate.ui.results
 
 import android.net.Uri
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -39,6 +40,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
+
+private const val TAG = "ResultsVM"
 
 // ════════════════════════════════════════════════════════════════════════════════
 // ViewModel
@@ -95,9 +98,17 @@ class ResultsViewModel @Inject constructor(
         val s = session ?: return
         val r = results ?: return
         viewModelScope.launch {
-            val safTreeUri = exportFolder.folderUri.first()
-            repo.saveOutputJson(s, r, safTreeUri)
-            exportStatus = "Output JSON tersimpan"
+            try {
+                val safTreeUri = exportFolder.folderUri.first()
+                repo.saveOutputJson(s, r, safTreeUri)
+                exportStatus = "Output JSON tersimpan"
+            } catch (e: Exception) {
+                // A failed finish must NOT crash nor silently advance: surface it and stay
+                // so the operator can retry rather than leave the tree unmarked/unsaved.
+                Log.e(TAG, "finishAndThen failed", e)
+                exportStatus = e.localizedMessage ?: "Gagal menyimpan Output JSON"
+                return@launch
+            }
             onNavigate()
         }
     }
@@ -106,8 +117,14 @@ class ResultsViewModel @Inject constructor(
         val s = session ?: return
         viewModelScope.launch {
             isComputing = true
-            results = withContext(Dispatchers.Default) { ResultsComputer.compute(s) }
-            isComputing = false
+            try {
+                results = withContext(Dispatchers.Default) { ResultsComputer.compute(s) }
+            } catch (e: Exception) {
+                Log.e(TAG, "compute failed", e)
+                exportStatus = e.localizedMessage ?: "Compute failed"
+            } finally {
+                isComputing = false
+            }
         }
     }
 
@@ -115,9 +132,14 @@ class ResultsViewModel @Inject constructor(
         val s = session ?: return
         val r = results ?: return
         viewModelScope.launch {
-            val safTreeUri = exportFolder.folderUri.first()
-            repo.saveOutputJson(s, r, safTreeUri)
-            exportStatus = "Output JSON saved"
+            try {
+                val safTreeUri = exportFolder.folderUri.first()
+                repo.saveOutputJson(s, r, safTreeUri)
+                exportStatus = "Output JSON saved"
+            } catch (e: Exception) {
+                Log.e(TAG, "saveOutputJson failed", e)
+                exportStatus = e.localizedMessage ?: "Save failed"
+            }
         }
     }
 
@@ -143,6 +165,9 @@ class ResultsViewModel @Inject constructor(
                 try {
                     action(safUri)
                     exportStatus = "$actionLabel exported"
+                } catch (e: Exception) {
+                    Log.e(TAG, "$actionLabel export failed", e)
+                    exportStatus = e.localizedMessage ?: "$actionLabel export failed"
                 } finally { isExporting = false }
             }
         }
@@ -186,6 +211,10 @@ class ResultsViewModel @Inject constructor(
             viewModelScope.launch {
                 isExporting = true
                 try { pendingExportAction?.invoke() }
+                catch (e: Exception) {
+                    Log.e(TAG, "gated export failed", e)
+                    exportStatus = e.localizedMessage ?: "Export failed"
+                }
                 finally { isExporting = false; pendingExportAction = null }
             }
         } else {

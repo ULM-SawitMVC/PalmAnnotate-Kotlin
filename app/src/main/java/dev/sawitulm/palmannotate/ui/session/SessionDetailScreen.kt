@@ -17,6 +17,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import android.util.Log
 import dev.sawitulm.palmannotate.data.db.SessionEntity
 import dev.sawitulm.palmannotate.data.db.TreeEntity
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
@@ -57,13 +58,17 @@ class SessionDetailViewModel @Inject constructor(
 
     fun deleteTree(treeKey: String) {
         viewModelScope.launch {
-            // Pass the export-folder URI so the SAF mirror copies (images, labels,
-            // Output JSON/TXT) are deleted too. Without this the export folder kept the
-            // tree's files, and a later recapture (id reset → same path) was then SKIPPED
-            // by the "mirror once if absent" guard, leaving the OLD photo in the export.
-            val safTreeUri = exportFolder.folderUri.first()
-            repo.deleteTree(treeKey, safTreeUri)
-            run?.let { run = repo.getRun(it.sessionId) } // refresh nextId
+            try {
+                // Pass the export-folder URI so the SAF mirror copies (images, labels,
+                // Output JSON/TXT) are deleted too. Without this the export folder kept the
+                // tree's files, and a later recapture (id reset → same path) was then SKIPPED
+                // by the "mirror once if absent" guard, leaving the OLD photo in the export.
+                val safTreeUri = exportFolder.folderUri.first()
+                repo.deleteTree(treeKey, safTreeUri)
+                run?.let { run = repo.getRun(it.sessionId) } // refresh nextId
+            } catch (e: Exception) {
+                Log.e("SessionDetailVM", "deleteTree failed", e)
+            }
         }
     }
 }

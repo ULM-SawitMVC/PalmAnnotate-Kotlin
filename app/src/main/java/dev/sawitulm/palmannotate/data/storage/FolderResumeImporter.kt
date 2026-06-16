@@ -168,8 +168,11 @@ class FolderResumeImporter @Inject constructor(
                 bboxes = s.bboxes.map { Bbox(it.id, it.classId, it.className, it.x1, it.y1, it.x2, it.y2) },
             )
         }
-        val links = parsed.confirmedLinks.map {
-            CrossSideLink.create(it.linkId, it.sideA, it.bboxIdA, it.sideB, it.bboxIdB)
+        // createOrNull (not create): one degenerate link in an imported Output JSON must
+        // skip only that link — not throw and drop the whole tree from resume (scanOne is
+        // wrapped in runCatching upstream, so a throw here = silent loss of the tree).
+        val links = parsed.confirmedLinks.mapNotNull {
+            CrossSideLink.createOrNull(it.linkId, it.sideA, it.bboxIdA, it.sideB, it.bboxIdB)
         }
         return ScannedTree(
             treeName = parsed.treeName, treeId = treeId, split = parsed.split,

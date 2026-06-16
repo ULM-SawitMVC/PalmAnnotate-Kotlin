@@ -38,5 +38,23 @@ data class CrossSideLink(
                 CrossSideLink(linkId, side2, bboxId2, side1, bboxId1)
             }
         }
+
+        /**
+         * Tolerant variant for data that crosses a trust boundary (persisted DB rows,
+         * imported Output JSON). Returns null — instead of throwing from [create]'s
+         * `init` require — for a degenerate link: a self-link (same side) or a blank
+         * endpoint id. Lets callers skip the one bad link rather than crashing the
+         * whole tree load (loadActiveSession) or silently dropping the whole tree on
+         * folder resume.
+         */
+        fun createOrNull(
+            linkId: String,
+            side1: Int, bboxId1: String,
+            side2: Int, bboxId2: String,
+        ): CrossSideLink? {
+            if (side1 == side2) return null
+            if (bboxId1.isBlank() || bboxId2.isBlank()) return null
+            return create(linkId, side1, bboxId1, side2, bboxId2)
+        }
     }
 }

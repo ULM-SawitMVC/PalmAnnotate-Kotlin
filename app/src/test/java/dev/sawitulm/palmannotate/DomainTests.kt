@@ -169,6 +169,9 @@ class TreeSideTest {
 class CrossSideLinkTest {
     @Test fun `link auto-orients`() { val link = CrossSideLink.create("L0", 2, "b1", 0, "b0"); assertEquals(0, link.sideA); assertEquals("b0", link.bboxIdA); assertEquals(2, link.sideB); assertEquals("b1", link.bboxIdB) }
     @Test(expected = IllegalArgumentException::class) fun `link rejects sideA greater than sideB`() { CrossSideLink("L0", 2, "b0", 0, "b1") }
+    @Test fun `createOrNull skips self-link instead of throwing`() { assertNull(CrossSideLink.createOrNull("L0", 1, "b0", 1, "b1")) }
+    @Test fun `createOrNull skips blank endpoint id`() { assertNull(CrossSideLink.createOrNull("L0", 0, "", 1, "b1")); assertNull(CrossSideLink.createOrNull("L0", 0, "b0", 1, "  ")) }
+    @Test fun `createOrNull orients a valid link`() { val l = CrossSideLink.createOrNull("L0", 2, "b1", 0, "b0"); assertNotNull(l); assertEquals(0, l!!.sideA); assertEquals(2, l.sideB) }
 }
 
 // ════════════════════════════════════════════════════════════════════════════════

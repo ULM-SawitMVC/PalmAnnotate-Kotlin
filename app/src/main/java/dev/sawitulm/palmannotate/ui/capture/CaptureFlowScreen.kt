@@ -491,13 +491,23 @@ fun CaptureFlowScreen(
 ) {
     val context = LocalContext.current
     var hasCameraPermission by remember { mutableStateOf(false) }
+    // Request camera + location together. Android shows the dialogs sequentially
+    // (camera first, then GPS), so location no longer needs manual enabling in Settings.
     val permLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted -> hasCameraPermission = granted }
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        hasCameraPermission = results[Manifest.permission.CAMERA] == true
+    }
 
     LaunchedEffect(sessionId) {
         viewModel.load(sessionId)
-        permLauncher.launch(Manifest.permission.CAMERA)
+        permLauncher.launch(
+            arrayOf(
+                Manifest.permission.CAMERA,
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION,
+            )
+        )
     }
 
     // Auto-start Orbbec preview when switching to Orbbec source

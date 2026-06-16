@@ -1,5 +1,6 @@
 package dev.sawitulm.palmannotate.domain.util
 
+import android.util.Log
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -12,7 +13,28 @@ import kotlin.coroutines.cancellation.CancellationException
  */
 class OperationQueue {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private companion object { const val TAG = "OperationQueue" }
+
+    // A handler so an exception that escapes a queued block (e.g. a failed save) is
+    // logged, NOT delivered to the thread's default uncaught handler — which on
+    // Android crashes the whole app. Belt-and-suspenders with the in-block catch below.
+    private val errorHandler = CoroutineExceptionHandler { _, e ->
+        Log.e(TAG, "Uncaught exception in queued operation", e)
+    }
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + errorHandler)
+
+    /** Run [block], swallowing failures (logged) so a single op can never crash the app.
+     *  CancellationException is rethrown so structured cancellation still works. */
+    private suspend fun runGuarded(label: String, block: suspend () -> Unit) {
+        try {
+            block()
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Throwable) {
+            Log.e(TAG, "Operation '$label' failed", e)
+        }
+    }
     /** Monotonically incrementing counter for unique linkId generation. */
     private val _nextLinkId = AtomicInteger(0)
 
@@ -33,7 +55,7 @@ class OperationQueue {
             _busy.value = true
             _busyLabel.value = label
             try {
-                block()
+                runGuarded(label, block)
             } finally {
                 _busy.value = false
                 _busyLabel.value = ""
@@ -48,7 +70,7 @@ class OperationQueue {
             _busy.value = true
             _busyLabel.value = label
             try {
-                block()
+                runGuarded(label, block)
             } finally {
                 _busy.value = false
                 _busyLabel.value = ""

@@ -3,6 +3,7 @@ package dev.sawitulm.palmannotate.ui.home
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.content.Intent
+import android.util.Log
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -87,15 +88,28 @@ class HomeViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     fun createRun(variety: String, block: String, sideCount: Int, autoId: Boolean, onDone: (String) -> Unit) {
-        viewModelScope.launch { onDone(repo.createRun(variety, block, sideCount, autoId)) }
+        viewModelScope.launch {
+            val id = try {
+                repo.createRun(variety, block, sideCount, autoId)
+            } catch (e: Exception) {
+                // Navigation must not fire (nor the app crash) on a failed create.
+                Log.e("HomeVM", "createRun failed", e)
+                return@launch
+            }
+            onDone(id)
+        }
     }
 
     fun deleteRun(sessionId: String) {
         viewModelScope.launch {
-            // Pass the export-folder URI so SAF mirror copies are removed too (same
-            // orphan-file issue as tree delete).
-            val safTreeUri = exportFolder.folderUri.first()
-            repo.deleteRun(sessionId, safTreeUri)
+            try {
+                // Pass the export-folder URI so SAF mirror copies are removed too (same
+                // orphan-file issue as tree delete).
+                val safTreeUri = exportFolder.folderUri.first()
+                repo.deleteRun(sessionId, safTreeUri)
+            } catch (e: Exception) {
+                Log.e("HomeVM", "deleteRun failed", e)
+            }
         }
     }
 

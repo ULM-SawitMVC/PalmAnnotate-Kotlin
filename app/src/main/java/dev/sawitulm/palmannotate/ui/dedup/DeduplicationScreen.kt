@@ -268,8 +268,13 @@ class DedupViewModel @Inject constructor(
     fun save() {
         val s = session ?: return
         viewModelScope.launch {
-            val safTreeUri = exportFolder.folderUri.first()
-            repo.saveSession(s, safTreeUri)
+            try {
+                val safTreeUri = exportFolder.folderUri.first()
+                repo.saveSession(s, safTreeUri)
+            } catch (e: Exception) {
+                Log.e(TAG, "dedup save failed", e)
+                errorMessage = e.localizedMessage ?: "Save failed"
+            }
         }
     }
 
@@ -280,11 +285,17 @@ class DedupViewModel @Inject constructor(
 
     fun saveAndContinue(onDone: () -> Unit) {
         val s = session ?: return
-        val tap = System.currentTimeMillis()
         viewModelScope.launch {
-            val safTreeUri = exportFolder.folderUri.first()
-            repo.saveSession(s, safTreeUri)
-            // android.util.Log.d("SavePerf", "dedup saveAndContinue: tap→nav = ${System.currentTimeMillis() - tap}ms (felt)")
+            try {
+                val safTreeUri = exportFolder.folderUri.first()
+                repo.saveSession(s, safTreeUri)
+            } catch (e: Exception) {
+                // Don't navigate forward on a failed save — surface the error so the
+                // operator can retry rather than losing dedup work to a silent crash.
+                Log.e(TAG, "dedup saveAndContinue failed", e)
+                errorMessage = e.localizedMessage ?: "Save failed"
+                return@launch
+            }
             onDone()
         }
     }
@@ -294,8 +305,14 @@ class DedupViewModel @Inject constructor(
         val resolved = SessionUseCases.resolveAllMismatches(s, choices)
         session = resolved
         viewModelScope.launch {
-            val safTreeUri = exportFolder.folderUri.first()
-            repo.saveSession(resolved, safTreeUri)
+            try {
+                val safTreeUri = exportFolder.folderUri.first()
+                repo.saveSession(resolved, safTreeUri)
+            } catch (e: Exception) {
+                Log.e(TAG, "dedup resolveAllMismatchesAndSave failed", e)
+                errorMessage = e.localizedMessage ?: "Save failed"
+                return@launch
+            }
             onDone()
         }
     }

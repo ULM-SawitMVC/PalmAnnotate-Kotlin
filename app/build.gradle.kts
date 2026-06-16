@@ -58,6 +58,13 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+
+    androidResources {
+        // The Orbbec AAR ships its extension .so files under assets/ (not jniLibs),
+        // so abiFilters does NOT strip them. The app is arm64-v8a only, so the
+        // bundled 32-bit copies (~17 MB) are dead weight — skip that asset subtree.
+        ignoreAssetsPatterns += "armeabi-v7a"
+    }
 }
 
 dependencies {

@@ -200,8 +200,10 @@ class SessionRepository(
                 bboxes = bboxes, originalBboxes = bboxes,
             )
         }
-        val links = linkDao.getByTree(treeKey).map {
-            CrossSideLink.create(it.linkId, it.sideA, it.bboxIdA, it.sideB, it.bboxIdB)
+        // createOrNull (not create): a degenerate persisted link — e.g. a self-link from
+        // legacy/corrupt data — must skip that row, never crash opening the tree.
+        val links = linkDao.getByTree(treeKey).mapNotNull {
+            CrossSideLink.createOrNull(it.linkId, it.sideA, it.bboxIdA, it.sideB, it.bboxIdB)
         }
         ActiveSession(
             sessionId = treeKey, treeName = tree.treeName, split = tree.split,
