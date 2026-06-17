@@ -6,8 +6,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import dev.sawitulm.palmannotate.R
 import dev.sawitulm.palmannotate.data.storage.InputCache
 import dev.sawitulm.palmannotate.domain.model.AnnotationClass
 import dev.sawitulm.palmannotate.domain.usecase.SessionUseCases.MismatchCluster
@@ -32,19 +34,19 @@ fun NewSessionDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Start Session") },
+        title = { Text(stringResource(R.string.dialog_start_session)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    "Variety and Block are locked for every tree in this session.",
+                    stringResource(R.string.dialog_session_lock_hint),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 OutlinedTextField(
                     value = variety,
                     onValueChange = { variety = it; varietyError = false },
-                    label = { Text("Tree Variety *") },
-                    placeholder = { Text("e.g. DAMIMAS") },
+                    label = { Text(stringResource(R.string.dialog_variety_label)) },
+                    placeholder = { Text(stringResource(R.string.dialog_variety_placeholder)) },
                     isError = varietyError,
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
@@ -52,13 +54,13 @@ fun NewSessionDialog(
                 OutlinedTextField(
                     value = block,
                     onValueChange = { block = it; blockError = false },
-                    label = { Text("Block *") },
-                    placeholder = { Text("e.g. A21B") },
+                    label = { Text(stringResource(R.string.dialog_block_label)) },
+                    placeholder = { Text(stringResource(R.string.dialog_block_placeholder)) },
                     isError = blockError,
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Text("Photos per Tree", style = MaterialTheme.typography.labelMedium)
+                Text(stringResource(R.string.dialog_photos_per_tree), style = MaterialTheme.typography.labelMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     for (n in listOf(4, 8)) {
                         FilterChip(
@@ -70,8 +72,8 @@ fun NewSessionDialog(
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text("Auto ID Mode", style = MaterialTheme.typography.bodyMedium)
-                        Text("Tree ID increments (0001, 0002, …)", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(stringResource(R.string.dialog_auto_id), style = MaterialTheme.typography.bodyMedium)
+                        Text(stringResource(R.string.dialog_auto_id_hint), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Switch(checked = autoId, onCheckedChange = { autoId = it })
                 }
@@ -92,9 +94,9 @@ fun NewSessionDialog(
                         onCreate(variety.trim(), block.trim(), sideCount, autoId)
                     }
                 },
-            ) { Text("Start") }
+            ) { Text(stringResource(R.string.action_start)) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } },
     )
 }
 
@@ -114,11 +116,11 @@ fun ConfirmDeleteDialog(
         text = { Text(message) },
         confirmButton = {
             TextButton(onClick = { onDismiss(); onConfirm() }) {
-                Text("Delete", color = MaterialTheme.colorScheme.error)
+                Text(stringResource(R.string.action_delete), color = MaterialTheme.colorScheme.error)
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
         },
     )
 }
@@ -143,18 +145,18 @@ fun MismatchResolveModal(
 
     AlertDialog(
         onDismissRequest = onCancel,
-        title = { Text("Bunch Class Resolution") },
+        title = { Text(stringResource(R.string.mismatch_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "${mismatches.size} bunch${if (mismatches.size > 1) "es" else ""} have inconsistent classes across sides. Choose the correct class for each bunch.",
+                    stringResource(R.string.mismatch_body, mismatches.size),
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 for ((i, m) in mismatches.withIndex()) {
                     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text(
-                                "Bunch #${i + 1}",
+                                stringResource(R.string.mismatch_bunch, i + 1),
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
                             )
@@ -166,7 +168,7 @@ fun MismatchResolveModal(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                 ) {
                                     Text(
-                                        "Side ${member.first + 1}",
+                                        stringResource(R.string.mismatch_side, member.first + 1),
                                         style = MaterialTheme.typography.bodySmall,
                                     )
                                     Text(
@@ -181,7 +183,7 @@ fun MismatchResolveModal(
                             }
                             Spacer(Modifier.height(4.dp))
                             // Class choice buttons (B1/B2/B3/B4)
-                            Text("Choose final class:", style = MaterialTheme.typography.labelSmall)
+                            Text(stringResource(R.string.mismatch_choose), style = MaterialTheme.typography.labelSmall)
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 for (cls in AnnotationClass.assignableEntries) {
                                     val isSelected = picks[m.rootKey] == cls.id
@@ -214,10 +216,10 @@ fun MismatchResolveModal(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onResolveAll(picks.toMap()) }) { Text("Apply & Continue") }
+            TextButton(onClick = { onResolveAll(picks.toMap()) }) { Text(stringResource(R.string.mismatch_apply)) }
         },
         dismissButton = {
-            TextButton(onClick = onCancel) { Text("Cancel") }
+            TextButton(onClick = onCancel) { Text(stringResource(R.string.action_cancel)) }
         },
     )
 }
@@ -234,10 +236,10 @@ fun QualityGateModal(
 ) {
     AlertDialog(
         onDismissRequest = onBack,
-        title = { Text("Quality Check") },
+        title = { Text(stringResource(R.string.quality_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("The following issues were found:", style = MaterialTheme.typography.bodyMedium)
+                Text(stringResource(R.string.quality_issues_header), style = MaterialTheme.typography.bodyMedium)
                 for (issue in issues) {
                     Text(
                         "· $issue",
@@ -246,14 +248,14 @@ fun QualityGateModal(
                     )
                 }
                 Spacer(Modifier.height(4.dp))
-                Text("Export anyway?", style = MaterialTheme.typography.bodyMedium)
+                Text(stringResource(R.string.quality_export_anyway_q), style = MaterialTheme.typography.bodyMedium)
             }
         },
         confirmButton = {
-            TextButton(onClick = onContinue) { Text("Export anyway") }
+            TextButton(onClick = onContinue) { Text(stringResource(R.string.quality_export_anyway)) }
         },
         dismissButton = {
-            TextButton(onClick = onBack) { Text("Back to fix") }
+            TextButton(onClick = onBack) { Text(stringResource(R.string.quality_back_to_fix)) }
         },
     )
 }

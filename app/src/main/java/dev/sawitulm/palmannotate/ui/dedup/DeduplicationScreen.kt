@@ -1,6 +1,7 @@
 package dev.sawitulm.palmannotate.ui.dedup
 
 import android.util.Log
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -21,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -30,6 +32,9 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dev.sawitulm.palmannotate.R
+import dev.sawitulm.palmannotate.ui.common.LocalToasts
+import dev.sawitulm.palmannotate.ui.theme.PalmColors
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
 import dev.sawitulm.palmannotate.domain.dedup.SuggestionEngine
@@ -366,31 +371,39 @@ fun DeduplicationScreen(
     val rightSide = viewModel.rightSide
     val isPortrait = LocalConfiguration.current.screenWidthDp < 600
 
+    // Persist confirmed links before leaving — Back used to pop without saving, so reviewed
+    // links were lost unless the operator pressed Compute. Now Back saves then exits (with a
+    // brief "Links saved" toast); a failed save surfaces via errorMessage instead of navigating.
+    val toasts = LocalToasts.current
+    val savedMsg = stringResource(R.string.dedup_saved)
+    fun saveThenExit() = viewModel.saveAndContinue { toasts.success(savedMsg); onBack() }
+    BackHandler { saveThenExit() }
+
     var showMismatch by remember { mutableStateOf(false) }
     val mismatches = remember(session) { viewModel.currentMismatches() }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(session?.treeName ?: "Deduplication") },
+                title = { Text(session?.treeName ?: stringResource(R.string.dedup_title)) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                    IconButton(onClick = { saveThenExit() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_back)) }
                 },
                 actions = {
                     IconButton(onClick = { viewModel.toggleDirection() }) {
                         Icon(
                             if (viewModel.clockwise) Icons.Default.RotateRight else Icons.Default.RotateLeft,
-                            contentDescription = if (viewModel.clockwise) "Capture: clockwise" else "Capture: counter-clockwise",
+                            contentDescription = stringResource(if (viewModel.clockwise) R.string.cd_capture_clockwise else R.string.cd_capture_counter_clockwise),
                         )
                     }
                     IconButton(onClick = { viewModel.runSuggestions() }) {
-                        Icon(Icons.Default.AutoAwesome, "Suggest")
+                        Icon(Icons.Default.AutoAwesome, stringResource(R.string.cd_suggest))
                     }
                     IconButton(onClick = {
                         if (mismatches.isNotEmpty()) showMismatch = true
                         else viewModel.resolveAllMismatchesAndSave { onCompute() }
                     }) {
-                        Icon(Icons.Default.CheckCircle, "Compute")
+                        Icon(Icons.Default.CheckCircle, stringResource(R.string.cd_compute))
                     }
                 },
             )
@@ -403,16 +416,16 @@ fun DeduplicationScreen(
         } else if (viewModel.errorMessage != null || leftSide == null || rightSide == null) {
             Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(Icons.Default.Warning, "Error", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(48.dp))
+                    Icon(Icons.Default.Warning, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(48.dp))
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        viewModel.errorMessage ?: "Insufficient data for deduplication.",
+                        viewModel.errorMessage ?: stringResource(R.string.dedup_error_generic),
                         style = MaterialTheme.typography.bodyLarge,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.padding(horizontal = 24.dp),
                     )
                     Spacer(Modifier.height(16.dp))
-                    OutlinedButton(onClick = onBack) { Text("Go Back") }
+                    OutlinedButton(onClick = onBack) { Text(stringResource(R.string.action_go_back)) }
                 }
             }
         } else {
@@ -459,8 +472,8 @@ fun DeduplicationScreen(
                 PairNav(
                     pairIndex = viewModel.currentPairIndex,
                     totalPairs = totalPairs,
-                    leftLabel = "Side ${viewModel.leftSideIndex + 1}",
-                    rightLabel = "Side ${viewModel.rightSideIndex + 1}",
+                    leftLabel = stringResource(R.string.dedup_side, viewModel.leftSideIndex + 1),
+                    rightLabel = stringResource(R.string.dedup_side, viewModel.rightSideIndex + 1),
                     // Each chevron reveals the neighbour it points at; the swipe motion and the
                     // arrow always agree. Progression around the tree (next pair) therefore runs
                     // via the LEFT chevron when clockwise and the RIGHT chevron when counter-cw.
@@ -482,7 +495,7 @@ fun DeduplicationScreen(
 
                     if (lSide == null || rSide == null) {
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text("No data for this pair")
+                            Text(stringResource(R.string.dedup_no_pair_data))
                         }
                         return@HorizontalPager
                     }
@@ -497,7 +510,7 @@ fun DeduplicationScreen(
                     if (isPortrait) {
                         Column(modifier = Modifier.fillMaxSize()) {
                             DedupHalfCanvas(
-                                label = "Side ${lIdx + 1}",
+                                label = stringResource(R.string.dedup_side, lIdx + 1),
                                 side = lSide,
                                 linkedIds = linkedIds,
                                 selectedId = viewModel.selectedSideB,
@@ -505,9 +518,9 @@ fun DeduplicationScreen(
                                 onTap = { viewModel.onBboxTap(lIdx, it) },
                                 modifier = Modifier.weight(1f).fillMaxWidth(),
                             )
-                            HorizontalDivider(color = Color(0xFFB8E04A), thickness = 2.dp)
+                            HorizontalDivider(color = PalmColors.Accent, thickness = 2.dp)
                             DedupHalfCanvas(
-                                label = "Side ${rIdx + 1}",
+                                label = stringResource(R.string.dedup_side, rIdx + 1),
                                 side = rSide,
                                 linkedIds = linkedIds,
                                 selectedId = viewModel.selectedSideA,
@@ -519,7 +532,7 @@ fun DeduplicationScreen(
                     } else {
                         Row(modifier = Modifier.fillMaxSize()) {
                             DedupHalfCanvas(
-                                label = "Side ${lIdx + 1}",
+                                label = stringResource(R.string.dedup_side, lIdx + 1),
                                 side = lSide,
                                 linkedIds = linkedIds,
                                 selectedId = viewModel.selectedSideB,
@@ -527,9 +540,9 @@ fun DeduplicationScreen(
                                 onTap = { viewModel.onBboxTap(lIdx, it) },
                                 modifier = Modifier.weight(1f).fillMaxHeight(),
                             )
-                            VerticalDivider(color = Color(0xFFB8E04A), thickness = 2.dp)
+                            VerticalDivider(color = PalmColors.Accent, thickness = 2.dp)
                             DedupHalfCanvas(
-                                label = "Side ${rIdx + 1}",
+                                label = stringResource(R.string.dedup_side, rIdx + 1),
                                 side = rSide,
                                 linkedIds = linkedIds,
                                 selectedId = viewModel.selectedSideA,
@@ -590,14 +603,14 @@ private fun PairNav(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = onPrev) {
-                Icon(Icons.Default.ChevronLeft, "Previous pair")
+                Icon(Icons.Default.ChevronLeft, stringResource(R.string.cd_prev_pair))
             }
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text("$leftLabel  ↔  $rightLabel", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                Text("Pair ${pairIndex + 1} / $totalPairs", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(stringResource(R.string.dedup_pair_labels, leftLabel, rightLabel), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleSmall)
+                Text(stringResource(R.string.dedup_pair_of, pairIndex + 1, totalPairs), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             IconButton(onClick = onNext) {
-                Icon(Icons.Default.ChevronRight, "Next pair")
+                Icon(Icons.Default.ChevronRight, stringResource(R.string.cd_next_pair))
             }
         }
     }
@@ -646,14 +659,14 @@ private fun DedupHalfCanvas(
             Surface(
                 modifier = Modifier.align(Alignment.Center).padding(8.dp),
                 shape = RoundedCornerShape(8.dp),
-                color = Color(0xFFB8E04A).copy(alpha = 0.9f),
+                color = PalmColors.LinkHighlight.copy(alpha = 0.92f),
             ) {
                 Text(
-                    "← Tap matching box →",
+                    stringResource(R.string.dedup_tap_matching),
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                    fontSize = 13.sp,
+                    style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.Bold,
-                    color = Color(0xFF0C120C),
+                    color = PalmColors.OnLinkHighlight,
                 )
             }
         }
@@ -683,16 +696,16 @@ private fun BottomPanels(
                 TextButton(onClick = onToggleSuggestions) {
                     Icon(
                         if (showSuggestions) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                        "Toggle",
+                        null,
                         modifier = Modifier.size(18.dp),
                     )
                     Spacer(Modifier.width(4.dp))
-                    Text("Suggestions (${suggestions.size})", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text(stringResource(R.string.dedup_suggestions, suggestions.size), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge)
                 }
                 val autoCount = suggestions.count { it.category == "auto" }
                 if (autoCount > 0) {
                     TextButton(onClick = onAcceptAll) {
-                        Text("Accept All Auto ($autoCount)", fontSize = 12.sp)
+                        Text(stringResource(R.string.dedup_accept_all_auto, autoCount), style = MaterialTheme.typography.labelLarge)
                     }
                 }
             }
@@ -711,18 +724,18 @@ private fun BottomPanels(
             // Confirmed links
             if (confirmedLinks.isNotEmpty()) {
                 Spacer(Modifier.height(4.dp))
-                Text("Confirmed Links (${confirmedLinks.size})", fontWeight = FontWeight.Bold, fontSize = 13.sp, modifier = Modifier.padding(start = 8.dp))
+                Text(stringResource(R.string.dedup_confirmed_links, confirmedLinks.size), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(start = 8.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     for (link in confirmedLinks) {
                         InputChip(
                             selected = true,
                             onClick = { onRemoveLink(link.linkId) },
-                            label = { Text("${link.bboxIdA}↔${link.bboxIdB}", fontSize = 11.sp) },
-                            trailingIcon = { Icon(Icons.Default.Close, "Remove", modifier = Modifier.size(14.dp)) },
-                            modifier = Modifier.height(28.dp),
+                            label = { Text("${link.bboxIdA}↔${link.bboxIdB}", style = MaterialTheme.typography.labelMedium) },
+                            trailingIcon = { Icon(Icons.Default.Close, stringResource(R.string.cd_remove_link), modifier = Modifier.size(16.dp)) },
+                            modifier = Modifier.height(40.dp),
                         )
                     }
                 }
@@ -739,51 +752,52 @@ private fun SuggestionChip(
 ) {
     val scorePct = (sug.score * 100).toInt()
     val tint = when {
-        sug.category == "auto" -> Color(0xFF2DD47B)
-        scorePct >= 50 -> Color(0xFFE4B84A)
+        sug.category == "auto" -> PalmColors.Success
+        scorePct >= 50 -> PalmColors.Warning
         else -> MaterialTheme.colorScheme.error
     }
     Surface(
         shape = RoundedCornerShape(8.dp),
         border = ButtonDefaults.outlinedButtonBorder(enabled = true),
-        modifier = Modifier.widthIn(max = 200.dp),
+        modifier = Modifier.widthIn(min = 132.dp, max = 200.dp),
     ) {
-        Column(Modifier.padding(6.dp)) {
+        Column(Modifier.padding(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "${sug.bboxIdA} ↔ ${sug.bboxIdB}",
                     fontWeight = FontWeight.Bold,
-                    fontSize = 11.sp,
+                    style = MaterialTheme.typography.labelMedium,
                     modifier = Modifier.weight(1f),
                 )
-                Text("$scorePct%", fontSize = 11.sp, color = tint, fontWeight = FontWeight.Bold)
+                Text("$scorePct%", style = MaterialTheme.typography.labelMedium, color = tint, fontWeight = FontWeight.Bold)
             }
             Text(
                 sug.category.uppercase(),
-                fontSize = 9.sp,
+                style = MaterialTheme.typography.labelSmall,
                 color = tint,
             )
             // Signal badges
             sug.signals?.let { sig ->
-                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(3.dp), modifier = Modifier.padding(top = 2.dp)) {
                     SignalBadge("S", sig.seam)
                     SignalBadge("V", sig.vert)
                     SignalBadge("Z", sig.size)
                     SignalBadge("C", sig.cls)
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Spacer(Modifier.height(2.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 TextButton(
                     onClick = { onConfirm(sug) },
-                    modifier = Modifier.height(24.dp),
-                    contentPadding = PaddingValues(horizontal = 6.dp),
-                ) { Text("Accept", fontSize = 10.sp) }
+                    modifier = Modifier.weight(1f).height(40.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp),
+                ) { Text(stringResource(R.string.dedup_accept), style = MaterialTheme.typography.labelMedium) }
                 TextButton(
                     onClick = { onReject(sug) },
-                    modifier = Modifier.height(24.dp),
-                    contentPadding = PaddingValues(horizontal = 6.dp),
+                    modifier = Modifier.weight(1f).height(40.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp),
                     colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                ) { Text("Reject", fontSize = 10.sp) }
+                ) { Text(stringResource(R.string.dedup_reject), style = MaterialTheme.typography.labelMedium) }
             }
         }
     }
@@ -792,9 +806,9 @@ private fun SuggestionChip(
 @Composable
 private fun SignalBadge(label: String, value: Float) {
     val c = when {
-        value >= 0.75f -> Color(0xFF2DD47B)
-        value >= 0.5f -> Color(0xFFE4B84A)
-        else -> Color(0xFFF06060)
+        value >= 0.75f -> PalmColors.Success
+        value >= 0.5f -> PalmColors.Warning
+        else -> PalmColors.Danger
     }
     Surface(
         shape = RoundedCornerShape(3.dp),
@@ -802,9 +816,9 @@ private fun SignalBadge(label: String, value: Float) {
     ) {
         Text(
             "$label ${(value * 100).toInt()}",
-            fontSize = 8.sp,
+            style = MaterialTheme.typography.labelSmall,
             color = c,
-            modifier = Modifier.padding(horizontal = 2.dp),
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
             fontWeight = FontWeight.Bold,
         )
     }

@@ -19,6 +19,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -27,6 +29,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dev.sawitulm.palmannotate.R
+import dev.sawitulm.palmannotate.ui.theme.PalmColors
 import dev.sawitulm.palmannotate.data.detection.OnnxDetector
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
@@ -358,7 +362,7 @@ fun CarouselScreen(
             TopAppBar(
                 title = {
                     Column {
-                        Text(session?.treeName ?: "Annotate", maxLines = 1, fontSize = 16.sp)
+                        Text(session?.treeName ?: stringResource(R.string.carousel_title_fallback), maxLines = 1, style = MaterialTheme.typography.titleMedium)
                         Text(
                             "${pagerState.currentPage + 1} / $totalSides",
                             style = MaterialTheme.typography.bodySmall,
@@ -369,7 +373,7 @@ fun CarouselScreen(
                 navigationIcon = {
                     // Save-then-leave so edits are never lost by tapping Back.
                     IconButton(onClick = { viewModel.saveAndExit { onBack() } }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_back))
                     }
                 },
                 actions = {
@@ -381,33 +385,38 @@ fun CarouselScreen(
                         if (viewModel.isDetecting) {
                             CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
                         } else {
-                            Icon(Icons.Default.AutoAwesome, "Detect")
+                            Icon(Icons.Default.AutoAwesome, stringResource(R.string.cd_detect))
                         }
                     }
                     // Mode toggle
                     FilterChip(
                         selected = viewModel.mode == CarouselMode.EDIT,
                         onClick = { viewModel.toggleMode() },
-                        label = { Text(viewModel.mode.label, fontSize = 12.sp) },
-                        modifier = Modifier.height(30.dp),
+                        label = {
+                            Text(
+                                stringResource(if (viewModel.mode == CarouselMode.EDIT) R.string.carousel_mode_edit else R.string.carousel_mode_review),
+                                style = MaterialTheme.typography.labelLarge,
+                            )
+                        },
+                        modifier = Modifier.heightIn(min = 40.dp).padding(horizontal = 2.dp),
                     )
                     // More menu
                     IconButton(onClick = { showMoreMenu = true }) {
-                        Icon(Icons.Default.MoreVert, "More")
+                        Icon(Icons.Default.MoreVert, stringResource(R.string.cd_more))
                     }
                     DropdownMenu(expanded = showMoreMenu, onDismissRequest = { showMoreMenu = false }) {
                         DropdownMenuItem(
-                            text = { Text("Deduplication") },
+                            text = { Text(stringResource(R.string.menu_deduplication)) },
                             onClick = { showMoreMenu = false; onDedup() },
                             leadingIcon = { Icon(Icons.Default.Link, null) },
                         )
                         DropdownMenuItem(
-                            text = { Text("Results") },
+                            text = { Text(stringResource(R.string.menu_results)) },
                             onClick = { showMoreMenu = false; onResults() },
                             leadingIcon = { Icon(Icons.Default.Assessment, null) },
                         )
                         DropdownMenuItem(
-                            text = { Text("Depth & RAW viewer") },
+                            text = { Text(stringResource(R.string.menu_depth_viewer)) },
                             onClick = { showMoreMenu = false; onDepth() },
                             leadingIcon = { Icon(Icons.Default.Thermostat, null) },
                         )
@@ -491,18 +500,19 @@ fun CarouselScreen(
                     )
 
                     // Bbox count overlay
+                    val countText = stringResource(R.string.carousel_boxes_count, side.bboxes.size)
+                    val unassignedText = if (side.hasUnassigned) " · " + stringResource(R.string.carousel_boxes_unassigned, side.unassignedBboxCount) else ""
+                    val linkedText = if (linkMap.isNotEmpty()) " · " + stringResource(R.string.carousel_boxes_linked, linkMap.size) else ""
                     Surface(
                         modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
                         shape = RoundedCornerShape(4.dp),
                         color = Color.Black.copy(alpha = 0.7f),
                     ) {
                         Text(
-                            "${side.bboxes.size} boxes" +
-                                (if (side.hasUnassigned) " · ${side.unassignedBboxCount} unassigned" else "") +
-                                (if (linkMap.isNotEmpty()) " · 🔗${linkMap.size} linked" else ""),
+                            countText + unassignedText + linkedText,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                             style = MaterialTheme.typography.labelMedium,
-                            color = if (side.hasUnassigned) Color(0xFFE4B84A) else Color.White,
+                            color = if (side.hasUnassigned) PalmColors.Warning else Color.White,
                         )
                     }
 
@@ -511,14 +521,14 @@ fun CarouselScreen(
                         Surface(
                             modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 100.dp),
                             shape = RoundedCornerShape(8.dp),
-                            color = Color(0xFFB8E04A).copy(alpha = 0.9f),
+                            color = PalmColors.LinkHighlight.copy(alpha = 0.92f),
                         ) {
                             Text(
-                                "← Swipe to adjacent side → Tap matching bunch",
+                                stringResource(R.string.carousel_link_hint),
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                fontSize = 13.sp,
+                                style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.Bold,
-                                color = Color(0xFF0C120C),
+                                color = PalmColors.OnLinkHighlight,
                             )
                         }
                     }
@@ -542,7 +552,7 @@ fun CarouselScreen(
                                 .size(if (i == pagerState.currentPage) 8.dp else 6.dp)
                                 .clip(CircleShape)
                                 .background(
-                                    if (i == pagerState.currentPage) Color(0xFFB8E04A)
+                                    if (i == pagerState.currentPage) PalmColors.Accent
                                     else Color.White.copy(alpha = 0.4f)
                                 ),
                         )
@@ -556,15 +566,21 @@ fun CarouselScreen(
                     Surface(
                         modifier = Modifier.padding(bottom = 16.dp),
                         shape = RoundedCornerShape(20.dp),
-                        color = Color(0xFFB8E04A),
+                        color = PalmColors.Accent,
                     ) {
-                        Text(
-                            "Tersimpan ✓",
+                        Row(
                             modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color(0xFF0C120C),
-                        )
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Default.Check, null, tint = PalmColors.OnAccent, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                stringResource(R.string.carousel_saved),
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = PalmColors.OnAccent,
+                            )
+                        }
                     }
                 }
             }
@@ -604,26 +620,33 @@ private fun CarouselBottomBar(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                val hasSelection = selectedBboxId != null
                 for (cls in AnnotationClass.assignableEntries) {
                     val isSelected = selectedBboxId?.let { id ->
                         session?.sides?.getOrNull(currentSideIndex)?.bboxes?.find { it.id == id }?.classId == cls.id
                     } == true
+                    // Dim when no box is selected (tapping a class is a no-op then). When a box
+                    // IS selected, show the full class colour and ring the box's current class.
+                    val container = if (hasSelection) cls.composeColor else cls.composeColor.copy(alpha = 0.4f)
+                    // Pick black/white by the class colour's luminance so the label always reads
+                    // (white on amber B3 failed contrast before).
+                    val labelColor = if (cls.composeColor.luminance() > 0.5f) Color.Black else Color.White
                     Surface(
                         modifier = Modifier
                             .height(48.dp)
                             .widthIn(min = 52.dp)
                             .clip(RoundedCornerShape(8.dp))
-                            .clickable {
+                            .clickable(enabled = hasSelection) {
                                 selectedBboxId?.let { onClassChange(it, cls) }
                             },
-                        color = cls.composeColor.copy(alpha = if (isSelected) 1f else 0.5f),
+                        color = container,
                         shape = RoundedCornerShape(8.dp),
                         border = if (isSelected) ButtonDefaults.outlinedButtonBorder(enabled = true) else null,
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Text(
                                 cls.displayName,
-                                color = Color.White,
+                                color = labelColor,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 15.sp,
                                 textAlign = TextAlign.Center,
@@ -640,13 +663,13 @@ private fun CarouselBottomBar(
                     enabled = selectedBboxId != null,
                     modifier = Modifier.size(48.dp),
                 ) {
-                    Icon(Icons.Default.Delete, "Delete", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(26.dp))
+                    Icon(Icons.Default.Delete, stringResource(R.string.action_delete), tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(26.dp))
                 }
 
                 // Link (arm / cancel if armed)
                 if (linkArmed) {
                     TextButton(onClick = onCancelLink, modifier = Modifier.height(48.dp)) {
-                        Text("Cancel Link", fontSize = 14.sp, color = MaterialTheme.colorScheme.error)
+                        Text(stringResource(R.string.carousel_cancel_link), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.error)
                     }
                 } else {
                     IconButton(
@@ -654,7 +677,7 @@ private fun CarouselBottomBar(
                         enabled = selectedBboxId != null,
                         modifier = Modifier.size(48.dp),
                     ) {
-                        Icon(Icons.Default.Link, "Link", modifier = Modifier.size(26.dp))
+                        Icon(Icons.Default.Link, stringResource(R.string.cd_link), modifier = Modifier.size(26.dp))
                     }
                 }
 
@@ -663,7 +686,7 @@ private fun CarouselBottomBar(
                     IconButton(onClick = onToggleDraw, modifier = Modifier.size(48.dp)) {
                         Icon(
                             Icons.Default.Crop,
-                            "Draw box",
+                            stringResource(R.string.cd_draw_box),
                             tint = if (editTool == CanvasTool.DRAW) MaterialTheme.colorScheme.primary
                                    else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(26.dp),
@@ -677,7 +700,7 @@ private fun CarouselBottomBar(
                 IconButton(onClick = onToggleBoxes, modifier = Modifier.size(48.dp)) {
                     Icon(
                         if (showBoxes) Icons.Default.Visibility else Icons.Default.VisibilityOff,
-                        "Boxes",
+                        stringResource(R.string.cd_toggle_boxes),
                         modifier = Modifier.size(26.dp),
                     )
                 }
@@ -693,11 +716,11 @@ private fun CarouselBottomBar(
                 OutlinedButton(
                     onClick = onSaveExit,
                     modifier = Modifier.weight(1f).height(48.dp),
-                ) { Text("Save & Exit", fontSize = 15.sp) }
+                ) { Text(stringResource(R.string.carousel_save_exit), style = MaterialTheme.typography.labelLarge) }
                 Button(
                     onClick = onNextTree,
                     modifier = Modifier.weight(1f).height(48.dp),
-                ) { Text("Next Tree", fontSize = 15.sp) }
+                ) { Text(stringResource(R.string.carousel_next_tree), style = MaterialTheme.typography.labelLarge) }
             }
         }
     }

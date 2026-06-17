@@ -11,9 +11,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import dev.sawitulm.palmannotate.R
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -94,17 +96,17 @@ fun SessionDetailScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Session") },
+                title = { Text(stringResource(R.string.session_title)) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_back)) }
                 },
             )
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = onAddTree,
-                icon = { Icon(Icons.Default.Add, "Add tree") },
-                text = { Text("Add Tree") },
+                icon = { Icon(Icons.Default.Add, null) },
+                text = { Text(stringResource(R.string.session_add_tree)) },
             )
         },
     ) { padding ->
@@ -121,12 +123,12 @@ fun SessionDetailScreen(
                 item { LockBadge(run!!) }
                 item { RunStats(run!!, trees) }
                 item {
-                    Text("Trees", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.session_trees_header), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 }
                 if (trees.isEmpty()) {
                     item {
                         Text(
-                            "No trees yet. Tap \"Add Tree\" to capture the first one.",
+                            stringResource(R.string.session_empty),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -162,9 +164,9 @@ private fun LockBadge(run: SessionEntity) {
                     color = MaterialTheme.colorScheme.onSecondaryContainer,
                 )
                 Text(
-                    "Locked for this session",
+                    stringResource(R.string.session_locked),
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f),
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
                 )
             }
         }
@@ -175,9 +177,9 @@ private fun LockBadge(run: SessionEntity) {
 private fun RunStats(run: SessionEntity, trees: List<TreeEntity>) {
     val photos = trees.sumOf { it.sideCount }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Stat("Trees", trees.size.toString(), Modifier.weight(1f))
-        Stat("Photos", photos.toString(), Modifier.weight(1f))
-        Stat("Next ID", if (run.autoId) "%04d".format(run.nextId) else "—", Modifier.weight(1f))
+        Stat(stringResource(R.string.home_stat_trees), trees.size.toString(), Modifier.weight(1f))
+        Stat(stringResource(R.string.session_stat_photos), photos.toString(), Modifier.weight(1f))
+        Stat(stringResource(R.string.session_stat_next_id), if (run.autoId) "%04d".format(run.nextId) else "—", Modifier.weight(1f))
     }
 }
 
@@ -204,25 +206,32 @@ private fun TreeRow(tree: TreeEntity, onAnnotate: () -> Unit, onCarousel: () -> 
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f).clickable(onClick = onAnnotate)) {
                 Text(tree.treeName, fontWeight = FontWeight.Medium, maxLines = 1)
-                Text("${tree.sideCount} sides${if (tree.isComplete) " · complete" else ""}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    stringResource(
+                        if (tree.isComplete) R.string.session_tree_sides_complete else R.string.session_tree_sides,
+                        tree.sideCount,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
-            if (tree.isComplete) Icon(Icons.Default.CheckCircle, "Complete", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+            if (tree.isComplete) Icon(Icons.Default.CheckCircle, stringResource(R.string.cd_complete), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(4.dp))
             IconButton(onClick = onCarousel) {
-                Icon(Icons.Default.ViewCarousel, "Carousel", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                Icon(Icons.Default.ViewCarousel, stringResource(R.string.cd_open_carousel), modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             IconButton(onClick = { confirm = true }) {
-                Icon(Icons.Default.Delete, "Delete", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+                Icon(Icons.Default.Delete, stringResource(R.string.action_delete), tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
             }
         }
     }
     if (confirm) {
         AlertDialog(
             onDismissRequest = { confirm = false },
-            title = { Text("Delete tree?") },
-            text = { Text("${tree.treeName} and its ${tree.sideCount} photos will be removed.") },
-            confirmButton = { TextButton(onClick = { confirm = false; onDelete() }) { Text("Delete", color = MaterialTheme.colorScheme.error) } },
-            dismissButton = { TextButton(onClick = { confirm = false }) { Text("Cancel") } },
+            title = { Text(stringResource(R.string.session_delete_tree_title)) },
+            text = { Text(stringResource(R.string.session_delete_tree_body, tree.treeName, tree.sideCount)) },
+            confirmButton = { TextButton(onClick = { confirm = false; onDelete() }) { Text(stringResource(R.string.action_delete), color = MaterialTheme.colorScheme.error) } },
+            dismissButton = { TextButton(onClick = { confirm = false }) { Text(stringResource(R.string.action_cancel)) } },
         )
     }
 }

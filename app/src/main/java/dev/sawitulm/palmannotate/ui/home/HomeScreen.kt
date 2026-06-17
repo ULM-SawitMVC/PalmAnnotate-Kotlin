@@ -16,9 +16,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import dev.sawitulm.palmannotate.R
+import dev.sawitulm.palmannotate.ui.common.LocalToasts
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -147,12 +150,11 @@ fun HomeScreen(
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
+    val toasts = LocalToasts.current
     val runs by viewModel.runs.collectAsState()
     val stats by viewModel.stats.collectAsState()
     val groups by viewModel.groups.collectAsState()
     val folderName by viewModel.folderName.collectAsState()
-    val snackbarHostState = remember { SnackbarHostState() }
-    val scope = rememberCoroutineScope()
 
     val folderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree(),
@@ -164,10 +166,8 @@ fun HomeScreen(
             )
             // Persist the folder, then resume-by-scan any PalmAnnotate/ data it holds.
             viewModel.setFolderAndResume(uri) { imported ->
-                scope.launch {
-                    val msg = if (imported > 0) "Resumed $imported tree${if (imported == 1) "" else "s"} from folder" else "New folder set"
-                    snackbarHostState.showSnackbar(msg)
-                }
+                if (imported > 0) toasts.success(context.getString(R.string.home_folder_resumed, imported))
+                else toasts.info(context.getString(R.string.home_folder_new))
             }
         }
     }
@@ -176,13 +176,12 @@ fun HomeScreen(
     var expandedGroup by remember { mutableStateOf<String?>(null) }
 
     Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = {
                     Column {
-                        Text("PalmAnnotate", fontWeight = FontWeight.Bold)
-                        Text("Oil Palm · Offline", style = MaterialTheme.typography.bodySmall)
+                        Text(stringResource(R.string.app_name), fontWeight = FontWeight.Bold)
+                        Text(stringResource(R.string.app_tagline), style = MaterialTheme.typography.bodySmall)
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -194,8 +193,8 @@ fun HomeScreen(
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = { showNewDialog = true },
-                icon = { Icon(Icons.Default.Add, "New") },
-                text = { Text("New Session") },
+                icon = { Icon(Icons.Default.Add, null) },
+                text = { Text(stringResource(R.string.home_new_session)) },
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary,
             )
@@ -218,9 +217,9 @@ fun HomeScreen(
                 item {
                     ElevatedCard(Modifier.fillMaxWidth()) {
                         Row(Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                            StatItem("Sessions", stats.totalSessions)
-                            StatItem("Trees", stats.totalTrees)
-                            StatItem("Groups", stats.totalGroups)
+                            StatItem(stringResource(R.string.home_stat_sessions), stats.totalSessions)
+                            StatItem(stringResource(R.string.home_stat_trees), stats.totalTrees)
+                            StatItem(stringResource(R.string.home_stat_groups), stats.totalGroups)
                         }
                     }
                 }
@@ -230,9 +229,9 @@ fun HomeScreen(
                 item {
                     ElevatedCard(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(24.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Icon(Icons.Default.Forest, "Tree", Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
-                            Text("No sessions yet", style = MaterialTheme.typography.titleMedium)
-                            Text("Tap \"New Session\" to start documenting trees.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Icon(Icons.Default.Forest, null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
+                            Text(stringResource(R.string.home_empty_title), style = MaterialTheme.typography.titleMedium)
+                            Text(stringResource(R.string.home_empty_body), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                         }
                     }
                 }
@@ -278,29 +277,29 @@ private fun ExportFolderCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     Icons.Default.Folder,
-                    contentDescription = "Export folder",
+                    contentDescription = null,
                     tint = if (isSet) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
                 )
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("Export folder", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.home_export_folder), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                     Text(
-                        folderName ?: "Not set — files are kept privately inside the app",
+                        folderName ?: stringResource(R.string.home_export_folder_unset),
                         style = MaterialTheme.typography.bodySmall,
                         color = if (isSet) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
                     )
                 }
                 TextButton(onClick = onChoose) {
-                    Text(if (isSet) "Change" else "Choose")
+                    Text(stringResource(if (isSet) R.string.home_export_folder_change else R.string.home_export_folder_choose))
                 }
                 if (isSet) {
-                    TextButton(onClick = onClear) { Text("Clear") }
+                    TextButton(onClick = onClear) { Text(stringResource(R.string.home_export_folder_clear)) }
                 }
             }
             if (!isSet) {
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Choose a public folder so your captured images, metadata, and export files are also saved somewhere you can browse with a file manager or another app.",
+                    stringResource(R.string.home_export_folder_hint),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -324,17 +323,17 @@ private fun GroupHeader(group: SessionGroup, isExpanded: Boolean, onToggle: () -
         colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
     ) {
         Row(Modifier.padding(12.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.Folder, "Group", tint = MaterialTheme.colorScheme.onSecondaryContainer)
+            Icon(Icons.Default.Folder, null, tint = MaterialTheme.colorScheme.onSecondaryContainer)
             Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
                 Text("${group.variety} · ${group.block}", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSecondaryContainer)
                 Text(
-                    "${group.runs.size} session${if (group.runs.size > 1) "s" else ""} · ${group.totalTrees} trees",
+                    stringResource(R.string.home_group_summary, group.runs.size, group.totalTrees),
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f),
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
                 )
             }
-            Icon(if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, "Toggle", tint = MaterialTheme.colorScheme.onSecondaryContainer)
+            Icon(if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null, tint = MaterialTheme.colorScheme.onSecondaryContainer)
         }
     }
 }
@@ -344,18 +343,24 @@ private fun RunCard(run: RunSummary, onClick: () -> Unit, onDelete: () -> Unit) 
     var confirmDelete by remember { mutableStateOf(false) }
     val dateFormat = remember { SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault()) }
 
-    ElevatedCard(Modifier.fillMaxWidth().padding(start = 16.dp).clickable(onClick = onClick)) {
-        Row(Modifier.padding(12.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+    // Flattened sub-row (not a nested ElevatedCard): a tonal surface indented under its
+    // group header, so the group→run relationship reads as a list, not card-in-card.
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(start = 16.dp).clickable(onClick = onClick),
+        tonalElevation = 1.dp,
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Row(Modifier.padding(start = 14.dp, top = 10.dp, bottom = 10.dp, end = 4.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("${run.variety} · ${run.block}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium, maxLines = 1)
-                Text("${run.treeCount} trees · ${run.sideCount} photos/tree", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(stringResource(R.string.home_run_summary, run.treeCount, run.sideCount), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(dateFormat.format(Date(run.updatedAt)), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             IconButton(onClick = { confirmDelete = true }) {
-                Icon(Icons.Default.Delete, "Delete", tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
+                Icon(Icons.Default.Delete, stringResource(R.string.action_delete), tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
             }
             IconButton(onClick = onClick) {
-                Icon(Icons.AutoMirrored.Filled.ArrowForward, "Open", modifier = Modifier.size(18.dp))
+                Icon(Icons.AutoMirrored.Filled.ArrowForward, null, modifier = Modifier.size(20.dp))
             }
         }
     }
@@ -363,10 +368,10 @@ private fun RunCard(run: RunSummary, onClick: () -> Unit, onDelete: () -> Unit) 
     if (confirmDelete) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
-            title = { Text("Delete Session?") },
-            text = { Text("\"${run.variety} · ${run.block}\" and its ${run.treeCount} tree(s) will be removed, including stored photos/outputs.") },
-            confirmButton = { TextButton(onClick = { confirmDelete = false; onDelete() }) { Text("Delete", color = MaterialTheme.colorScheme.error) } },
-            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
+            title = { Text(stringResource(R.string.home_delete_session_title)) },
+            text = { Text(stringResource(R.string.home_delete_session_body, "${run.variety} · ${run.block}", run.treeCount)) },
+            confirmButton = { TextButton(onClick = { confirmDelete = false; onDelete() }) { Text(stringResource(R.string.action_delete), color = MaterialTheme.colorScheme.error) } },
+            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text(stringResource(R.string.action_cancel)) } },
         )
     }
 }

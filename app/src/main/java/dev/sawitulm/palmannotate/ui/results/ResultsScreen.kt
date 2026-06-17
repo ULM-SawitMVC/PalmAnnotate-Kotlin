@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -26,6 +27,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dev.sawitulm.palmannotate.R
+import dev.sawitulm.palmannotate.ui.common.LocalToasts
 import dev.sawitulm.palmannotate.data.export.ExportManager
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
 import dev.sawitulm.palmannotate.data.storage.SafMirrorStore
@@ -101,12 +104,12 @@ class ResultsViewModel @Inject constructor(
             try {
                 val safTreeUri = exportFolder.folderUri.first()
                 repo.saveOutputJson(s, r, safTreeUri)
-                exportStatus = "Output JSON tersimpan"
+                exportStatus = "Output JSON saved"
             } catch (e: Exception) {
                 // A failed finish must NOT crash nor silently advance: surface it and stay
                 // so the operator can retry rather than leave the tree unmarked/unsaved.
                 Log.e(TAG, "finishAndThen failed", e)
-                exportStatus = e.localizedMessage ?: "Gagal menyimpan Output JSON"
+                exportStatus = e.localizedMessage ?: "Could not save Output JSON"
                 return@launch
             }
             onNavigate()
@@ -244,12 +247,22 @@ fun ResultsScreen(
     val results = viewModel.results
     var showExportSheet by remember { mutableStateOf(false) }
 
+    // Surface export/save status through the single app-level toast host instead of an
+    // awkward Snackbar wedged into the scrolling content.
+    val toasts = LocalToasts.current
+    LaunchedEffect(viewModel.exportStatus) {
+        viewModel.exportStatus?.let { msg ->
+            toasts.info(msg)
+            viewModel.clearStatus()
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(session?.treeName ?: "Results") },
+                title = { Text(session?.treeName ?: stringResource(R.string.results_title)) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_back)) }
                 },
             )
         },
@@ -273,24 +286,29 @@ fun ResultsScreen(
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp),
             ) {
-                // ─── Hero stat cards ────────────────────────────────────
+                // ─── Headline result + supporting figures ───────────────
+                // One emphasized number (the answer the operator came for), then two calmer
+                // supporting stats — not three equal "hero metric" cards.
                 item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Max),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    ) {
-                        StatCard("Unique Bunches", r.uniqueCount.toString(), Icons.Default.Grain, accent = true, Modifier.weight(1f).fillMaxHeight())
-                        StatCard("Total Detections", r.rawCount.toString(), Icons.Default.CenterFocusStrong, accent = false, Modifier.weight(1f).fillMaxHeight())
-                        StatCard("Linked Duplicates", r.linkedCount.toString(), Icons.Default.Link, accent = false, Modifier.weight(1f).fillMaxHeight())
+                    PrimaryResult(
+                        label = stringResource(R.string.results_unique_bunches),
+                        value = r.uniqueCount.toString(),
+                    )
+                }
+                item {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        MiniStat(stringResource(R.string.results_total_detections), r.rawCount.toString(), Icons.Default.CenterFocusStrong, Modifier.weight(1f))
+                        MiniStat(stringResource(R.string.results_linked_duplicates), r.linkedCount.toString(), Icons.Default.Link, Modifier.weight(1f))
                     }
                 }
 
                 // ─── By-Class breakdown ─────────────────────────────────
                 item {
-                    SectionCard("By Class") {
+                    SectionCard(stringResource(R.string.results_by_class)) {
+                        val otherLabel = stringResource(R.string.results_other)
                         classOrder.forEach { cls ->
                             val count = r.classCounts[cls] ?: 0
-                            val label = if (cls == AnnotationClass.UNASSIGNED) "Other" else cls.displayName
+                            val label = if (cls == AnnotationClass.UNASSIGNED) otherLabel else cls.displayName
                             CountBarRow(cls.composeColor, label, count, count.toFloat() / classMax)
                         }
                     }
@@ -298,7 +316,7 @@ fun ResultsScreen(
 
                 // ─── By-Side breakdown ──────────────────────────────────
                 item {
-                    SectionCard("By Side") {
+                    SectionCard(stringResource(R.string.results_by_side)) {
                         sess.sides.forEachIndexed { i, side ->
                             CountBarRow(
                                 MaterialTheme.colorScheme.primary,
@@ -317,15 +335,15 @@ fun ResultsScreen(
                 // tucked into a "more" sheet since they're rarely used and Output JSON
                 // is written automatically here.
                 item {
-                    SectionCard("Selesai") {
+                    SectionCard(stringResource(R.string.results_finish)) {
                         if (viewModel.isExporting) {
                             LinearProgressIndicator(Modifier.fillMaxWidth().padding(bottom = 10.dp))
                         }
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            ActionButton("Foto Berikutnya", Icons.Default.PhotoCamera, primary = true, busy = viewModel.isExporting, Modifier.weight(1f)) {
+                            ActionButton(stringResource(R.string.results_capture_next), Icons.Default.PhotoCamera, primary = true, busy = viewModel.isExporting, Modifier.weight(1f)) {
                                 viewModel.runId?.let { rid -> viewModel.finishAndThen { onCaptureNext(rid) } }
                             }
-                            ActionButton("Daftar Pohon", Icons.AutoMirrored.Filled.List, primary = false, busy = viewModel.isExporting, Modifier.weight(1f)) {
+                            ActionButton(stringResource(R.string.results_tree_list), Icons.AutoMirrored.Filled.List, primary = false, busy = viewModel.isExporting, Modifier.weight(1f)) {
                                 viewModel.runId?.let { rid -> viewModel.finishAndThen { onTreeList(rid) } }
                             }
                         }
@@ -333,18 +351,8 @@ fun ResultsScreen(
                         TextButton(onClick = { showExportSheet = true }, modifier = Modifier.fillMaxWidth()) {
                             Icon(Icons.Default.Share, null, Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
-                            Text("Ekspor lainnya…")
+                            Text(stringResource(R.string.results_more_exports))
                         }
-                    }
-                }
-
-                // ─── Status message ─────────────────────────────────────
-                item {
-                    viewModel.exportStatus?.let { msg ->
-                        Snackbar(
-                            modifier = Modifier.fillMaxWidth(),
-                            action = { TextButton(onClick = { viewModel.clearStatus() }) { Text("OK") } },
-                        ) { Text(msg) }
                     }
                 }
             }
@@ -356,24 +364,24 @@ fun ResultsScreen(
         ModalBottomSheet(onDismissRequest = { showExportSheet = false }) {
             Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, bottom = 28.dp)) {
                 Text(
-                    "Ekspor Lainnya",
+                    stringResource(R.string.results_more_exports_title),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    "Output JSON sudah tersimpan otomatis saat Selesai. Gunakan ini untuk mengekspor format lain ke folder ekspor.",
+                    stringResource(R.string.results_more_exports_hint),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp, bottom = 14.dp),
                 )
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    ActionButton("Output JSON", Icons.Default.DataObject, primary = false, busy = viewModel.isExporting, Modifier.weight(1f)) { showExportSheet = false; viewModel.exportOutputJson() }
-                    ActionButton("YOLO .txt", Icons.Default.Description, primary = false, busy = viewModel.isExporting, Modifier.weight(1f)) { showExportSheet = false; viewModel.exportYolo() }
+                    ActionButton(stringResource(R.string.results_export_output_json), Icons.Default.DataObject, primary = false, busy = viewModel.isExporting, Modifier.weight(1f)) { showExportSheet = false; viewModel.exportOutputJson() }
+                    ActionButton(stringResource(R.string.results_export_yolo), Icons.Default.Description, primary = false, busy = viewModel.isExporting, Modifier.weight(1f)) { showExportSheet = false; viewModel.exportYolo() }
                 }
                 Spacer(Modifier.height(10.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    ActionButton("CSV", Icons.Default.TableChart, primary = false, busy = viewModel.isExporting, Modifier.weight(1f)) { showExportSheet = false; viewModel.exportCsv() }
-                    ActionButton("Identity", Icons.Default.Fingerprint, primary = false, busy = viewModel.isExporting, Modifier.weight(1f)) { showExportSheet = false; viewModel.exportIdentity() }
+                    ActionButton(stringResource(R.string.results_export_csv), Icons.Default.TableChart, primary = false, busy = viewModel.isExporting, Modifier.weight(1f)) { showExportSheet = false; viewModel.exportCsv() }
+                    ActionButton(stringResource(R.string.results_export_identity), Icons.Default.Fingerprint, primary = false, busy = viewModel.isExporting, Modifier.weight(1f)) { showExportSheet = false; viewModel.exportIdentity() }
                 }
             }
         }
@@ -389,26 +397,41 @@ fun ResultsScreen(
     }
 }
 
+/** The headline figure: one emphasized number on a calm surface (not one of three equal cards). */
 @Composable
-private fun StatCard(label: String, value: String, icon: ImageVector, accent: Boolean, modifier: Modifier = Modifier) {
-    Card(
-        modifier = modifier,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+private fun PrimaryResult(label: String, value: String) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = MaterialTheme.shapes.large,
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Icon(
-                icon, null,
-                modifier = Modifier.size(20.dp),
-                tint = if (accent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(10.dp))
-            Text(
-                value,
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-                color = if (accent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-            )
-            Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Row(Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(label, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(4.dp))
+                Text(value, style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+            }
+            Icon(Icons.Default.Grain, null, modifier = Modifier.size(40.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f))
+        }
+    }
+}
+
+/** A compact supporting stat (icon + label over a value) — secondary to the headline. */
+@Composable
+private fun MiniStat(label: String, value: String, icon: ImageVector, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        tonalElevation = 1.dp,
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.width(6.dp))
+                Text(label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(value, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -420,11 +443,12 @@ private fun SectionCard(title: String, content: @Composable ColumnScope.() -> Un
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     ) {
         Column(Modifier.padding(16.dp)) {
+            // Normal-case heading (was an all-caps tracked "eyebrow").
             Text(
-                title.uppercase(),
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                title,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
             )
             Spacer(Modifier.height(10.dp))
             content()

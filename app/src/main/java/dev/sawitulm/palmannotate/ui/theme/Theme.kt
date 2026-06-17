@@ -32,6 +32,13 @@ object PalmColors {
     val Accent = Color(0xFFB8E04A)     // --c-accent
     val OnAccent = Color(0xFF0C120C)   // --c-on-accent: dark text on lime
 
+    // Semantic aliases (read-better names for the tokens above — use these in screens
+    // instead of raw Color(0xFF…) literals so the palette stays the single source of truth).
+    val Success = Emerald              // confirmed / captured / saved
+    val Danger = Red                   // delete / error / reject
+    val LinkHighlight = Accent         // cross-side link chips & "tap matching box" cues
+    val OnLinkHighlight = OnAccent     // dark text on the lime link cues
+
     // On-media (does NOT flip in light mode — controls over camera/photo)
     val OnMediaText = Color.White.copy(alpha = 0.9f)      // --c-on-media
     val OnMediaBorder = Color.White.copy(alpha = 0.35f)   // --c-on-media-border
@@ -172,7 +179,7 @@ fun PalmAnnotateTheme(
 
     MaterialTheme(
         colorScheme = colorScheme,
-        typography = Typography(),
+        typography = PalmTypography,
         content = content,
     )
 }

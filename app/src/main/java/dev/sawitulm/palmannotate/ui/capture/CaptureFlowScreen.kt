@@ -6,7 +6,6 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Base64
 import android.util.Log
-import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -41,6 +40,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -51,6 +51,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import coil.compose.rememberAsyncImagePainter
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dev.sawitulm.palmannotate.R
+import dev.sawitulm.palmannotate.ui.common.LocalToasts
+import dev.sawitulm.palmannotate.ui.theme.PalmColors
 import dev.sawitulm.palmannotate.data.camera.OrbbecManager
 import dev.sawitulm.palmannotate.data.db.SessionEntity
 import dev.sawitulm.palmannotate.data.location.GpsProvider
@@ -490,6 +493,7 @@ fun CaptureFlowScreen(
     viewModel: CaptureFlowViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
+    val toasts = LocalToasts.current
     var hasCameraPermission by remember { mutableStateOf(false) }
     // Request camera + location together. Android shows the dialogs sequentially
     // (camera first, then GPS), so location no longer needs manual enabling in Settings.
@@ -522,13 +526,13 @@ fun CaptureFlowScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Capture — View ${viewModel.currentSide + 1}/${viewModel.sideCount}") },
+                title = { Text(stringResource(R.string.capture_title, viewModel.currentSide + 1, viewModel.sideCount)) },
                 navigationIcon = {
                     IconButton(onClick = {
                         viewModel.stopOrbbecPreview()
                         onCancel()
                     }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Cancel")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_cancel))
                     }
                 },
                 actions = {
@@ -536,9 +540,9 @@ fun CaptureFlowScreen(
                     FilterChip(
                         selected = isOrbbec,
                         onClick = { viewModel.selectSource(if (isOrbbec) CaptureSource.PHONE_CAMERA else CaptureSource.ORBBEC) },
-                        label = { Text(if (isOrbbec) "Orbbec" else "Phone", fontSize = 12.sp) },
-                        leadingIcon = { Icon(if (isOrbbec) Icons.Default.Usb else Icons.Default.CameraAlt, null, Modifier.size(16.dp)) },
-                        modifier = Modifier.height(30.dp),
+                        label = { Text(stringResource(if (isOrbbec) R.string.capture_source_orbbec else R.string.capture_source_phone), style = MaterialTheme.typography.labelLarge) },
+                        leadingIcon = { Icon(if (isOrbbec) Icons.Default.Usb else Icons.Default.CameraAlt, null, Modifier.size(18.dp)) },
+                        modifier = Modifier.heightIn(min = 40.dp).padding(end = 4.dp),
                     )
                 },
             )
@@ -560,19 +564,23 @@ fun CaptureFlowScreen(
                 Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text("🔒 ${run.variety} · ${run.block}", style = MaterialTheme.typography.titleSmall)
-                    Text(
-                        viewModel.gpsStatus ?: "Locating…",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Lock, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.width(6.dp))
+                    Column {
+                        Text(stringResource(R.string.capture_locked_format, run.variety, run.block), style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            viewModel.gpsStatus ?: stringResource(R.string.capture_locating),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
                 if (!run.autoId) {
                     OutlinedTextField(
                         value = viewModel.manualId,
                         onValueChange = { viewModel.manualId = it.filter { c -> c.isDigit() } },
-                        label = { Text("Tree ID") },
+                        label = { Text(stringResource(R.string.capture_tree_id)) },
                         singleLine = true,
                         modifier = Modifier.width(110.dp),
                     )
@@ -584,7 +592,7 @@ fun CaptureFlowScreen(
                 if (viewModel.phase == CapturePhase.REVIEW_ALL) {
                     viewModel.saveError?.let { err ->
                         Text(
-                            text = "Save error: $err",
+                            text = stringResource(R.string.capture_save_error, err),
                             color = MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.fillMaxWidth(),
@@ -612,7 +620,7 @@ fun CaptureFlowScreen(
 
                     viewModel.saveError?.let { err ->
                         Text(
-                            text = "Save error: $err",
+                            text = stringResource(R.string.capture_save_error, err),
                             color = MaterialTheme.colorScheme.error,
                             style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.fillMaxWidth(),
@@ -624,7 +632,7 @@ fun CaptureFlowScreen(
                         if (viewModel.retakingFromReview) viewModel.returnToReviewAll()
                         else viewModel.continueFromReview()
                     }
-                    val sideContinueLabel = if (viewModel.retakingFromReview) "Done" else null
+                    val sideContinueLabel = if (viewModel.retakingFromReview) stringResource(R.string.action_done) else null
 
                     Box(
                         modifier = Modifier
@@ -658,14 +666,10 @@ fun CaptureFlowScreen(
                             when (viewModel.currentStep) {
                                 SideStep.PREVIEW -> {
                                     CameraCaptureStage(
-                                        context = context,
                                         onCaptured = {
+                                            val side = viewModel.currentSide + 1
                                             viewModel.onImageCaptured(it)
-                                            Toast.makeText(
-                                                context,
-                                                "Side ${viewModel.currentSide + 1} captured",
-                                                Toast.LENGTH_SHORT,
-                                            ).show()
+                                            toasts.info(context.getString(R.string.capture_side_captured, side))
                                         },
                                     )
                                 }
@@ -709,7 +713,7 @@ fun CaptureFlowScreen(
                     }
                 }
             } else {
-                Text("Camera permission is required for capture.")
+                Text(stringResource(R.string.capture_permission_required))
             }
         }
     }
@@ -791,21 +795,7 @@ private fun CapturedReviewStage(
             )
         }
 
-        Box(
-            modifier = Modifier
-                .padding(16.dp)
-                .align(Alignment.TopEnd)
-                .clip(RoundedCornerShape(50))
-                .background(Color(0xFF2dd47b))
-                .padding(horizontal = 12.dp, vertical = 6.dp),
-        ) {
-            Text(
-                "✓ Captured",
-                color = Color.Black,
-                fontWeight = FontWeight.Bold,
-                style = MaterialTheme.typography.labelLarge,
-            )
-        }
+        CapturedBadge(Modifier.padding(16.dp).align(Alignment.TopEnd))
 
         Row(
             modifier = Modifier
@@ -821,22 +811,43 @@ private fun CapturedReviewStage(
         ) {
             OutlinedButton(
                 onClick = onRetake,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).height(48.dp),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-            ) { Text("Retake") }
+            ) { Text(stringResource(R.string.action_retake)) }
 
             Button(
                 onClick = onContinue,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).height(48.dp),
                 enabled = !isSaving && (if (isLastSide) allCaptured else true),
             ) {
                 if (isSaving) {
                     CircularProgressIndicator(Modifier.size(20.dp), color = MaterialTheme.colorScheme.onPrimary)
                 } else {
-                    Text(continueLabel ?: if (isLastSide) "Review all" else "Continue")
+                    Text(continueLabel ?: stringResource(if (isLastSide) R.string.capture_review_all else R.string.action_continue))
                 }
             }
         }
+    }
+}
+
+/** Tokenized "Captured" pill (icon + label on the success color) reused by both review stages. */
+@Composable
+private fun CapturedBadge(modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(50))
+            .background(PalmColors.Success)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Default.Check, null, tint = PalmColors.OnAccent, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(4.dp))
+        Text(
+            stringResource(R.string.capture_captured_badge),
+            color = PalmColors.OnAccent,
+            fontWeight = FontWeight.Bold,
+            style = MaterialTheme.typography.labelLarge,
+        )
     }
 }
 
@@ -885,26 +896,12 @@ private fun ReviewAllPager(
                             .padding(horizontal = 12.dp, vertical = 6.dp),
                     ) {
                         Text(
-                            "Side ${page + 1} / $sideCount",
+                            stringResource(R.string.capture_side_of, page + 1, sideCount),
                             color = Color.White,
                             style = MaterialTheme.typography.labelLarge,
                         )
                     }
-                    Box(
-                        modifier = Modifier
-                            .padding(16.dp)
-                            .align(Alignment.TopEnd)
-                            .clip(RoundedCornerShape(50))
-                            .background(Color(0xFF2dd47b))
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                    ) {
-                        Text(
-                            "✓ Captured",
-                            color = Color.Black,
-                            fontWeight = FontWeight.Bold,
-                            style = MaterialTheme.typography.labelLarge,
-                        )
-                    }
+                    CapturedBadge(Modifier.padding(16.dp).align(Alignment.TopEnd))
 
                     Box(
                         modifier = Modifier
@@ -921,11 +918,12 @@ private fun ReviewAllPager(
                         OutlinedButton(
                             onClick = { onRetake(page) },
                             enabled = !isSaving,
+                            modifier = Modifier.height(48.dp),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
                         ) {
                             Icon(Icons.Default.CameraAlt, null, Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text("Retake side ${page + 1}")
+                            Text(stringResource(R.string.capture_retake_side, page + 1))
                         }
                     }
                 }
@@ -964,7 +962,7 @@ private fun ReviewAllPager(
             if (isSaving) {
                 CircularProgressIndicator(Modifier.size(20.dp), color = MaterialTheme.colorScheme.onPrimary)
             } else {
-                Text("Save & Annotate")
+                Text(stringResource(R.string.capture_save_annotate))
             }
         }
     }
@@ -972,11 +970,13 @@ private fun ReviewAllPager(
 
 @Composable
 private fun CameraCaptureStage(
-    context: Context,
     onCaptured: (Uri) -> Unit,
 ) {
+    val context = LocalContext.current
+    val toasts = LocalToasts.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val imageCapture = remember { ImageCapture.Builder().build() }
+    val captureCd = stringResource(R.string.capture_source_phone)
 
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
         CameraPreview(
@@ -997,7 +997,7 @@ private fun CameraCaptureStage(
                             onCaptured(Uri.fromFile(file))
                         }
                         override fun onError(exc: ImageCaptureException) {
-                            Toast.makeText(context, "Capture failed: ${exc.message}", Toast.LENGTH_SHORT).show()
+                            toasts.error(context.getString(R.string.capture_failed, exc.message ?: ""))
                         }
                     },
                 )
@@ -1005,7 +1005,7 @@ private fun CameraCaptureStage(
             modifier = Modifier.padding(bottom = 32.dp).size(72.dp),
             containerColor = MaterialTheme.colorScheme.primary,
         ) {
-            Icon(Icons.Default.CameraAlt, "Capture", Modifier.size(32.dp))
+            Icon(Icons.Default.CameraAlt, captureCd, Modifier.size(32.dp))
         }
     }
 }
@@ -1132,7 +1132,7 @@ private fun OrbbecCaptureStage(
                                 .background(Color.Black.copy(alpha = 0.55f))
                                 .padding(horizontal = 4.dp, vertical = 2.dp),
                         ) {
-                            Text("DEPTH", color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                            Text(stringResource(R.string.orbbec_depth), color = Color.White, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -1147,7 +1147,7 @@ private fun OrbbecCaptureStage(
                             .background(Color.Black.copy(alpha = 0.6f))
                             .padding(horizontal = 8.dp, vertical = 4.dp),
                     ) {
-                        Text(msg, color = Color.White, fontSize = 11.sp)
+                        Text(msg, color = Color.White, style = MaterialTheme.typography.labelMedium)
                     }
                 }
 
@@ -1160,7 +1160,7 @@ private fun OrbbecCaptureStage(
                         .size(72.dp),
                     containerColor = MaterialTheme.colorScheme.primary,
                 ) {
-                    Icon(Icons.Default.CameraAlt, "Capture RGB-D", Modifier.size(32.dp))
+                    Icon(Icons.Default.CameraAlt, stringResource(R.string.cd_capture), Modifier.size(32.dp))
                 }
 
                 // "LIVE" badge top-left
@@ -1169,10 +1169,10 @@ private fun OrbbecCaptureStage(
                         .align(Alignment.TopStart)
                         .padding(12.dp)
                         .clip(RoundedCornerShape(4.dp))
-                        .background(Color.Red.copy(alpha = 0.8f))
+                        .background(MaterialTheme.colorScheme.error.copy(alpha = 0.85f))
                         .padding(horizontal = 8.dp, vertical = 3.dp),
                 ) {
-                    Text("● LIVE", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.orbbec_live), color = Color.White, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
                 }
             }
 
@@ -1184,7 +1184,7 @@ private fun OrbbecCaptureStage(
                 ) {
                     CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                     Text(
-                        "Starting Orbbec preview…",
+                        stringResource(R.string.orbbec_starting),
                         color = Color.White,
                         style = MaterialTheme.typography.bodyMedium,
                     )
@@ -1198,24 +1198,24 @@ private fun OrbbecCaptureStage(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.padding(24.dp),
                 ) {
-                    Icon(Icons.Default.Usb, "Orbbec", modifier = Modifier.size(56.dp), tint = MaterialTheme.colorScheme.primary)
+                    Icon(Icons.Default.Usb, null, modifier = Modifier.size(56.dp), tint = MaterialTheme.colorScheme.primary)
                     Text(
-                        "Orbbec camera detected",
+                        stringResource(R.string.orbbec_detected),
                         color = Color.White,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                     )
                     Text(
-                        "Tap below to grant USB access and start the live preview.",
+                        stringResource(R.string.orbbec_grant_hint),
                         color = Color.White.copy(alpha = 0.75f),
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    stateMsg?.let { Text(it, color = Color(0xFFFFB74D), style = MaterialTheme.typography.bodySmall) }
+                    stateMsg?.let { Text(it, color = PalmColors.Warning, style = MaterialTheme.typography.bodySmall) }
                     Spacer(Modifier.height(4.dp))
-                    Button(onClick = onRequestPermission) {
+                    Button(onClick = onRequestPermission, modifier = Modifier.heightIn(min = 48.dp)) {
                         Icon(Icons.Default.LockOpen, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text("Grant USB Access")
+                        Text(stringResource(R.string.orbbec_grant))
                     }
                 }
             }
@@ -1227,27 +1227,28 @@ private fun OrbbecCaptureStage(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.padding(24.dp),
                 ) {
-                    Icon(Icons.Default.UsbOff, "No Orbbec", modifier = Modifier.size(56.dp), tint = Color.White.copy(alpha = 0.5f))
+                    Icon(Icons.Default.UsbOff, null, modifier = Modifier.size(56.dp), tint = Color.White.copy(alpha = 0.5f))
                     Text(
-                        "No Orbbec device detected",
+                        stringResource(R.string.orbbec_none_title),
                         color = Color.White,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                     )
                     Text(
-                        "Connect the Orbbec camera to the USB hub, then tap Find Camera.",
-                        color = Color.White.copy(alpha = 0.65f),
+                        stringResource(R.string.orbbec_none_hint),
+                        color = Color.White.copy(alpha = 0.75f),
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    stateMsg?.let { Text(it, color = Color(0xFFFFB74D), style = MaterialTheme.typography.bodySmall) }
+                    stateMsg?.let { Text(it, color = PalmColors.Warning, style = MaterialTheme.typography.bodySmall) }
                     Spacer(Modifier.height(4.dp))
                     OutlinedButton(
                         onClick = onRefresh,
+                        modifier = Modifier.heightIn(min = 48.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
                     ) {
                         Icon(Icons.Default.Search, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text("Find Camera")
+                        Text(stringResource(R.string.orbbec_find))
                     }
                 }
             }

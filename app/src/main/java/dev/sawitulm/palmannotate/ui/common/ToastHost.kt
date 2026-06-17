@@ -21,6 +21,15 @@ data class ToastMessage(
 
 enum class ToastType { INFO, SUCCESS, ERROR }
 
+/**
+ * App-level toast handle. Hoisted once in MainActivity and provided here so any screen can
+ * surface feedback through ONE system: `LocalToasts.current.success(...)`. This replaces the
+ * former mix of Scaffold SnackbarHost, android.widget.Toast, and inline Snackbars.
+ */
+val LocalToasts = staticCompositionLocalOf<ToastState> {
+    error("No ToastState provided — wrap content in CompositionLocalProvider(LocalToasts provides …)")
+}
+
 @Composable
 fun rememberToastState(): ToastState = remember { ToastState() }
 

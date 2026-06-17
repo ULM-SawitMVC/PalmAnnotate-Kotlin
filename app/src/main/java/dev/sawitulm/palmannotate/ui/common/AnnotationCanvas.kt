@@ -198,6 +198,10 @@ fun AnnotationCanvas(
         }
     }
 
+    // Read before the Canvas — DrawScope has no MaterialTheme access. On-palette neutral
+    // (was an off-palette blue-purple literal) shown until the bitmap finishes decoding.
+    val placeholderColor = androidx.compose.material3.MaterialTheme.colorScheme.surfaceVariant
+
     val transformState = rememberTransformableState { zoomChange, panChange, _ ->
         scale = (scale * zoomChange).coerceIn(0.3f, 15f)
         offset += panChange
@@ -359,7 +363,7 @@ fun AnnotationCanvas(
         } else {
             // Placeholder
             drawRect(
-                color = Color(0xFF1a1a2e),
+                color = placeholderColor,
                 topLeft = offset,
                 size = Size(imageWidth.toFloat() * scale, imageHeight.toFloat() * scale),
             )
