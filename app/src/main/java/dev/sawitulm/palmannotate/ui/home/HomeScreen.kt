@@ -2,8 +2,13 @@ package dev.sawitulm.palmannotate.ui.home
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
+import android.net.Uri
 import android.util.Log
+import android.view.WindowManager
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -25,12 +30,15 @@ import dev.sawitulm.palmannotate.ui.common.LocalToasts
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dev.sawitulm.palmannotate.data.export.DatasetZipExporter
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
 import dev.sawitulm.palmannotate.data.storage.FolderResumeImporter
 import dev.sawitulm.palmannotate.data.storage.InputCache
 import dev.sawitulm.palmannotate.data.storage.RunSummary
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
 import dev.sawitulm.palmannotate.ui.common.NewSessionDialog
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -39,6 +47,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -59,11 +68,22 @@ data class HomeStats(
     val totalGroups: Int = 0,
 )
 
+/** UI state for the dataset ZIP export (per-session or all). */
+sealed interface ExportUiState {
+    object Idle : ExportUiState
+    data class Running(val done: Int, val total: Int, val tree: String) : ExportUiState
+    data class Done(val uri: Uri, val fileName: String) : ExportUiState
+    data class Error(val message: String) : ExportUiState
+    object Empty : ExportUiState
+    object Cancelled : ExportUiState
+}
+
 @HiltViewModel
 class HomeViewModel @Inject constructor(
     private val repo: SessionRepository,
     private val exportFolder: ExportFolderRepository,
     private val folderResumeImporter: FolderResumeImporter,
+    private val zipExporter: DatasetZipExporter,
     val inputCache: InputCache,
 ) : ViewModel() {
 
@@ -137,6 +157,47 @@ class HomeViewModel @Inject constructor(
     fun clearFolder() {
         viewModelScope.launch { exportFolder.clear() }
     }
+
+    // ─── Dataset ZIP export ──────────────────────────────────────────────────────
+
+    private val _exportState = MutableStateFlow<ExportUiState>(ExportUiState.Idle)
+    val exportState: StateFlow<ExportUiState> = _exportState
+
+    /** Polled by the exporter between files; flipping it aborts and removes the partial zip. */
+    private val cancelFlag = AtomicBoolean(false)
+
+    fun exportRun(sessionId: String) = runExport { zipExporter.exportRun(sessionId, ::onZipProgress, cancelFlag::get) }
+
+    fun exportAll() = runExport { zipExporter.exportAll(::onZipProgress, cancelFlag::get) }
+
+    fun cancelExport() { cancelFlag.set(true) }
+
+    /** Reset to Idle once the UI has consumed a terminal state (launched share / shown toast). */
+    fun consumeExportState() { _exportState.value = ExportUiState.Idle }
+
+    private fun onZipProgress(p: DatasetZipExporter.Progress) {
+        _exportState.value = ExportUiState.Running(p.done, p.total, p.currentTree)
+    }
+
+    private fun runExport(block: suspend () -> DatasetZipExporter.Outcome) {
+        if (_exportState.value is ExportUiState.Running) return  // one export at a time
+        cancelFlag.set(false)
+        _exportState.value = ExportUiState.Running(0, 0, "")
+        viewModelScope.launch(Dispatchers.IO) {
+            val outcome = try {
+                block()
+            } catch (e: Exception) {
+                Log.e("HomeVM", "export failed", e)
+                DatasetZipExporter.Outcome.Failed(e.message ?: "Export failed")
+            }
+            _exportState.value = when (outcome) {
+                is DatasetZipExporter.Outcome.Success -> ExportUiState.Done(outcome.uri, outcome.fileName)
+                DatasetZipExporter.Outcome.Empty -> ExportUiState.Empty
+                DatasetZipExporter.Outcome.Cancelled -> ExportUiState.Cancelled
+                is DatasetZipExporter.Outcome.Failed -> ExportUiState.Error(outcome.message)
+            }
+        }
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -155,6 +216,7 @@ fun HomeScreen(
     val stats by viewModel.stats.collectAsState()
     val groups by viewModel.groups.collectAsState()
     val folderName by viewModel.folderName.collectAsState()
+    val exportState by viewModel.exportState.collectAsState()
 
     val folderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree(),
@@ -174,6 +236,40 @@ fun HomeScreen(
 
     var showNewDialog by remember { mutableStateOf(false) }
     var expandedGroup by remember { mutableStateOf<String?>(null) }
+    var showExportAllConfirm by remember { mutableStateOf(false) }
+
+    // Terminal export states → launch share sheet / toast, then reset to Idle.
+    LaunchedEffect(exportState) {
+        when (val s = exportState) {
+            is ExportUiState.Done -> {
+                val share = Intent(Intent.ACTION_SEND).apply {
+                    type = "application/zip"
+                    putExtra(Intent.EXTRA_STREAM, s.uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                runCatching {
+                    context.startActivity(
+                        Intent.createChooser(share, context.getString(R.string.home_export_zip_run)),
+                    )
+                }
+                toasts.success(context.getString(R.string.export_zip_done, s.fileName))
+                viewModel.consumeExportState()
+            }
+            is ExportUiState.Error -> {
+                toasts.error(context.getString(R.string.export_zip_failed, s.message))
+                viewModel.consumeExportState()
+            }
+            ExportUiState.Empty -> {
+                toasts.info(context.getString(R.string.export_zip_empty))
+                viewModel.consumeExportState()
+            }
+            ExportUiState.Cancelled -> {
+                toasts.info(context.getString(R.string.export_zip_cancelled))
+                viewModel.consumeExportState()
+            }
+            else -> {}
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -182,6 +278,17 @@ fun HomeScreen(
                     Column {
                         Text(stringResource(R.string.app_name), fontWeight = FontWeight.Bold)
                         Text(stringResource(R.string.app_tagline), style = MaterialTheme.typography.bodySmall)
+                    }
+                },
+                actions = {
+                    if (runs.isNotEmpty()) {
+                        IconButton(onClick = { showExportAllConfirm = true }) {
+                            Icon(
+                                Icons.Default.Archive,
+                                contentDescription = stringResource(R.string.home_export_zip_all),
+                                tint = MaterialTheme.colorScheme.onPrimary,
+                            )
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -244,7 +351,12 @@ fun HomeScreen(
                 }
                 if (isExpanded) {
                     items(group.runs, key = { it.sessionId }) { run ->
-                        RunCard(run, onClick = { onSessionClick(run.sessionId) }, onDelete = { viewModel.deleteRun(run.sessionId) })
+                        RunCard(
+                            run,
+                            onClick = { onSessionClick(run.sessionId) },
+                            onDelete = { viewModel.deleteRun(run.sessionId) },
+                            onExport = { viewModel.exportRun(run.sessionId) },
+                        )
                     }
                 }
             }
@@ -263,6 +375,73 @@ fun HomeScreen(
             inputCache = viewModel.inputCache,
         )
     }
+
+    if (showExportAllConfirm) {
+        AlertDialog(
+            onDismissRequest = { showExportAllConfirm = false },
+            title = { Text(stringResource(R.string.export_zip_all_confirm_title)) },
+            text = { Text(stringResource(R.string.export_zip_all_confirm_body, stats.totalTrees)) },
+            confirmButton = {
+                TextButton(onClick = { showExportAllConfirm = false; viewModel.exportAll() }) {
+                    Text(stringResource(R.string.home_export_zip_all))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExportAllConfirm = false }) { Text(stringResource(R.string.action_cancel)) }
+            },
+        )
+    }
+
+    (exportState as? ExportUiState.Running)?.let { running ->
+        ExportProgressDialog(running, onCancel = { viewModel.cancelExport() })
+    }
+}
+
+/** Non-dismissable progress dialog shown while a ZIP is being built; keeps the screen awake. */
+@Composable
+private fun ExportProgressDialog(state: ExportUiState.Running, onCancel: () -> Unit) {
+    val context = LocalContext.current
+    // Hold the screen on for the (potentially multi-minute) streaming zip so the app stays
+    // foreground and isn't doze-killed mid-export.
+    DisposableEffect(Unit) {
+        val window = context.findActivity()?.window
+        window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        onDispose { window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+    }
+    AlertDialog(
+        onDismissRequest = { /* non-dismissable — use Cancel */ },
+        title = { Text(stringResource(R.string.export_zip_progress_title)) },
+        text = {
+            Column {
+                if (state.total > 0) {
+                    LinearProgressIndicator(
+                        progress = { state.done.toFloat() / state.total },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                } else {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    stringResource(R.string.export_zip_progress_status, state.done, state.total, state.tree),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onCancel) { Text(stringResource(R.string.action_cancel)) }
+        },
+    )
+}
+
+/** Unwrap a (possibly wrapped) Context to its hosting Activity, for window flags. */
+private fun Context.findActivity(): Activity? {
+    var ctx: Context = this
+    while (ctx is ContextWrapper) {
+        if (ctx is Activity) return ctx
+        ctx = ctx.baseContext
+    }
+    return null
 }
 
 @Composable
@@ -339,7 +518,7 @@ private fun GroupHeader(group: SessionGroup, isExpanded: Boolean, onToggle: () -
 }
 
 @Composable
-private fun RunCard(run: RunSummary, onClick: () -> Unit, onDelete: () -> Unit) {
+private fun RunCard(run: RunSummary, onClick: () -> Unit, onDelete: () -> Unit, onExport: () -> Unit) {
     var confirmDelete by remember { mutableStateOf(false) }
     val dateFormat = remember { SimpleDateFormat("dd MMM yyyy, HH:mm", Locale.getDefault()) }
 
@@ -355,6 +534,9 @@ private fun RunCard(run: RunSummary, onClick: () -> Unit, onDelete: () -> Unit) 
                 Text("${run.variety} · ${run.block}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium, maxLines = 1)
                 Text(stringResource(R.string.home_run_summary, run.treeCount, run.sideCount), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(dateFormat.format(Date(run.updatedAt)), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            IconButton(onClick = onExport) {
+                Icon(Icons.Default.IosShare, stringResource(R.string.home_export_zip_run), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
             }
             IconButton(onClick = { confirmDelete = true }) {
                 Icon(Icons.Default.Delete, stringResource(R.string.action_delete), tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))

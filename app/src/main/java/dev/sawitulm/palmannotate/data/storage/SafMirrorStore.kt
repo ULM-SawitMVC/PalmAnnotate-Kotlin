@@ -161,6 +161,34 @@ class SafMirrorStore(private val context: Context) {
     }
 
     /**
+     * Create (or replace) a file at <treeUri>/<relPath> and return its document [Uri] for
+     * STREAMING writes.
+     *
+     * Unlike [writeBytes] (which holds the whole payload in memory), the caller opens
+     * `contentResolver.openOutputStream(uri)` and streams into it — required for large files
+     * (e.g. a multi-GB dataset zip) that must NEVER be buffered. Reuses the directory + child
+     * caches and deletes any existing file at the path first, so the returned uri starts empty.
+     * The returned content uri is shareable (grant read permission) without FileProvider.
+     */
+    fun createFileForStreaming(treeUri: Uri, relPath: String, mime: String): Uri? {
+        return try {
+            val segments = relPath.split('/').filter { it.isNotBlank() }
+            if (segments.isEmpty()) return null
+            val fileName = segments.last()
+            val dirSegments = segments.dropLast(1)
+            val dir = resolveDir(treeUri, dirSegments, create = true) ?: return null
+            val children = childrenOf(treeUri, dirSegments, dir)
+            children[fileName]?.takeIf { it.exists() }?.let { it.delete(); children.remove(fileName) }
+            val created = dir.createFile(mime, fileName) ?: return null
+            children[fileName] = created
+            created.uri
+        } catch (e: Exception) {
+            Log.w(TAG, "createFileForStreaming failed for $relPath", e)
+            null
+        }
+    }
+
+    /**
      * Read text from <treeUri>/<relPath>. Returns null if missing/unreadable.
      */
     fun readText(treeUri: Uri, relPath: String): String? {

@@ -37,6 +37,18 @@
     <string name="home_delete_session_title">Delete session?</string>
     <string name="home_delete_session_body">“%1$s” and its %2$d tree(s) will be removed, including stored photos and outputs.</string>
 
+    <!-- Export / ZIP -->
+    <string name="home_export_zip_run">Export ZIP</string>
+    <string name="home_export_zip_all">Export all as ZIP</string>
+    <string name="export_zip_all_confirm_title">Export entire dataset?</string>
+    <string name="export_zip_all_confirm_body">All %1$d tree(s) from every session will be bundled into one ZIP (images, labels, JSON, depth). This can be large and take a while — keep the screen on until it finishes.</string>
+    <string name="export_zip_progress_title">Building ZIP…</string>
+    <string name="export_zip_progress_status">%1$d / %2$d files · %3$s</string>
+    <string name="export_zip_done">ZIP ready: %1$s</string>
+    <string name="export_zip_failed">Export failed: %1$s</string>
+    <string name="export_zip_cancelled">Export cancelled</string>
+    <string name="export_zip_empty">Nothing to export yet</string>
+
     <!-- Session detail -->
     <string name="session_title">Session</string>
     <string name="session_add_tree">Add Tree</string>
