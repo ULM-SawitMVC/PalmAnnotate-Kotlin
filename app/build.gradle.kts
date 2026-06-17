@@ -65,6 +65,16 @@ android {
         // bundled 32-bit copies (~17 MB) are dead weight — skip that asset subtree.
         ignoreAssetsPatterns += "armeabi-v7a"
     }
+
+    // Output APK as PalmAnnotate-<buildtype>.apk (e.g. PalmAnnotate-debug.apk)
+    // instead of the default app-<buildtype>.apk.
+    applicationVariants.all {
+        val variant = this
+        outputs.all {
+            (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl)
+                .outputFileName = "PalmAnnotate-${variant.name}.apk"
+        }
+    }
 }
 
 dependencies {
