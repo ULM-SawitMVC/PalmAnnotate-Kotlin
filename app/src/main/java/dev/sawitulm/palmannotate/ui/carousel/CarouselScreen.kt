@@ -612,15 +612,23 @@ private fun CarouselBottomBar(
     onNextTree: () -> Unit,
 ) {
     Surface(tonalElevation = 3.dp, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-            // Class buttons row — widened to ~48dp touch targets with more spacing so
-            // the operator's thumb does not hit the wrong control on a moving boat/field.
+        // navigationBarsPadding lifts the whole bar above the system nav bar / gesture pill
+        // — on phones the action buttons were drawn UNDER it and got clipped (the operator
+        // couldn't reach "Next Tree" / the draw-box toggle to add a box manually).
+        Column(
+            Modifier
+                .navigationBarsPadding()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            val hasSelection = selectedBboxId != null
+
+            // Row 1 — class buttons share the full width (weight) so all four always fit,
+            // even on a narrow phone, instead of overflowing off the right edge.
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
             ) {
-                val hasSelection = selectedBboxId != null
                 for (cls in AnnotationClass.assignableEntries) {
                     val isSelected = selectedBboxId?.let { id ->
                         session?.sides?.getOrNull(currentSideIndex)?.bboxes?.find { it.id == id }?.classId == cls.id
@@ -633,8 +641,8 @@ private fun CarouselBottomBar(
                     val labelColor = if (cls.composeColor.luminance() > 0.5f) Color.Black else Color.White
                     Surface(
                         modifier = Modifier
+                            .weight(1f)
                             .height(48.dp)
-                            .widthIn(min = 52.dp)
                             .clip(RoundedCornerShape(8.dp))
                             .clickable(enabled = hasSelection) {
                                 selectedBboxId?.let { onClassChange(it, cls) }
@@ -654,10 +662,14 @@ private fun CarouselBottomBar(
                         }
                     }
                 }
+            }
 
-                Spacer(Modifier.width(8.dp))
-
-                // Delete
+            // Row 2 — tools (delete · link · draw-box) on the left, visibility on the right.
+            // Each is a 48dp target and the row always fits within a phone's width.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 IconButton(
                     onClick = { selectedBboxId?.let { onDelete(it) } },
                     enabled = selectedBboxId != null,
@@ -666,7 +678,6 @@ private fun CarouselBottomBar(
                     Icon(Icons.Default.Delete, stringResource(R.string.action_delete), tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(26.dp))
                 }
 
-                // Link (arm / cancel if armed)
                 if (linkArmed) {
                     TextButton(onClick = onCancelLink, modifier = Modifier.height(48.dp)) {
                         Text(stringResource(R.string.carousel_cancel_link), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.error)
@@ -696,7 +707,6 @@ private fun CarouselBottomBar(
 
                 Spacer(Modifier.weight(1f))
 
-                // Boxes toggle
                 IconButton(onClick = onToggleBoxes, modifier = Modifier.size(48.dp)) {
                     Icon(
                         if (showBoxes) Icons.Default.Visibility else Icons.Default.VisibilityOff,
@@ -706,9 +716,7 @@ private fun CarouselBottomBar(
                 }
             }
 
-            Spacer(Modifier.height(8.dp))
-
-            // Action buttons row — full-width split buttons (no tiny text targets).
+            // Row 3 — primary actions: full-width split buttons.
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
