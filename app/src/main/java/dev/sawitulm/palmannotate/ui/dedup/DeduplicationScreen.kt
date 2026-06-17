@@ -1,5 +1,6 @@
 package dev.sawitulm.palmannotate.ui.dedup
 
+import android.content.Context
 import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -33,6 +34,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.sawitulm.palmannotate.R
 import dev.sawitulm.palmannotate.ui.common.LocalToasts
 import dev.sawitulm.palmannotate.ui.theme.PalmColors
@@ -57,6 +59,7 @@ private const val CANVAS_TAG = "CanvasPerf"
 
 @HiltViewModel
 class DedupViewModel @Inject constructor(
+    @ApplicationContext private val appContext: Context,
     private val repo: SessionRepository,
     private val exportFolder: ExportFolderRepository,
 ) : ViewModel() {
@@ -135,15 +138,15 @@ class DedupViewModel @Inject constructor(
                 
                 session = loaded
                 if (loaded == null) {
-                    errorMessage = "Session not found."
+                    errorMessage = appContext.getString(R.string.dedup_session_not_found)
                 } else if (loaded.sides.size < 2) {
-                    errorMessage = "Need at least 2 sides for deduplication (found ${loaded.sides.size})."
+                    errorMessage = appContext.getString(R.string.dedup_need_two_sides, loaded.sides.size)
                 }
                 
                 val totalTime = System.currentTimeMillis() - startTime
                 // Log.d(TAG, "load() END - total=${totalTime}ms, sides=${loaded?.sides?.size ?: 0}, links=${loaded?.confirmedLinks?.size ?: 0}")
             } catch (e: Exception) {
-                errorMessage = "Failed to load: ${e.localizedMessage ?: "Unknown error"}"
+                errorMessage = appContext.getString(R.string.dedup_load_failed)
                 Log.e(TAG, "load() ERROR", e)
             } finally {
                 isLoading = false

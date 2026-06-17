@@ -14,6 +14,11 @@ local.properties
 *.aab
 *.ap_
 *.dex
+.kotlin/
+
+# JVM crash dumps (Gradle/Kotlin daemon OOM on the build machine)
+hs_err_pid*.log
+replay_pid*.log
 
 # Internal / agent files
 HANDOFF.md

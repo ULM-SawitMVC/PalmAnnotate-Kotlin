@@ -39,6 +39,17 @@ class GpsProvider(private val context: Context) {
     }
 
     /**
+     * Whether the device has at least one location provider (GPS or network) turned on.
+     * Lets the capture flow distinguish "Location is off" from "no fix yet" / "permission denied".
+     */
+    fun isLocationEnabled(): Boolean {
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return false
+        val gpsOn = try { lm.isProviderEnabled(LocationManager.GPS_PROVIDER) } catch (_: Exception) { false }
+        val netOn = try { lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER) } catch (_: Exception) { false }
+        return gpsOn || netOn
+    }
+
+    /**
      * Get the last known location (fast, may be stale).
      * Returns null if no location available or permission not granted.
      */

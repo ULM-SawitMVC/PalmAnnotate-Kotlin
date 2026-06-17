@@ -342,7 +342,6 @@ fun CarouselScreen(
     val session = viewModel.session
     val totalSides = viewModel.totalSides
     val sidesCount = totalSides.coerceAtLeast(1)
-    val reverseSwipe = viewModel.reverseSwipe
     // Infinite/looping pager: a huge virtual page count (only when there is more than one
     // side).  Page-to-side mapping is always: side = page % sidesCount — the counter
     // always counts UP (1→2→3→4).  reverseLayout=true flips only the swipe direction
@@ -588,9 +587,8 @@ fun CarouselScreen(
                             modifier = Modifier
                                 .clickable {
                                     coroutineScope.launch {
-                                        // In both modes dot i = side i.  Normal: page for side i is
-                                        // cur + (i - raw).  Reversed: virtual page for side i is
-                                        // cur + ((sidesCount-1-i) - raw).
+                                        // Dot i = side i (page = side via page % sidesCount). Jump to
+                                        // the page in the current virtual cycle that shows side i.
                                         val cur = pagerState.currentPage
                                         val curRaw = cur % sidesCount
                                         val target = if (loop) cur + (i - curRaw) else i

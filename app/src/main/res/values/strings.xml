@@ -69,7 +69,10 @@
     <string name="capture_source_orbbec">Orbbec</string>
     <string name="capture_locked_format">%1$s · %2$s</string>
     <string name="capture_locating">Locating…</string>
-    <string name="capture_gps_unavailable">GPS unavailable</string>
+    <string name="capture_gps_unavailable">GPS unavailable — no signal yet</string>
+    <string name="capture_gps_off">Location is off — turn on GPS in settings</string>
+    <string name="capture_gps_no_permission">Location permission denied</string>
+    <string name="capture_camera_starting">Camera is still starting — tap again in a moment</string>
     <string name="capture_tree_id">Tree ID</string>
     <string name="capture_permission_required">Camera permission is required for capture.</string>
     <string name="capture_captured_badge">Captured</string>
@@ -80,6 +83,8 @@
     <string name="capture_retake_side">Retake side %1$d</string>
     <string name="capture_side_of">Side %1$d / %2$d</string>
     <string name="capture_save_error">Save error: %1$s</string>
+    <string name="capture_no_images">No captured photos to save — take at least one shot first.</string>
+    <string name="capture_save_failed">Could not save this tree. Check storage and try again.</string>
     <!-- Orbbec -->
     <string name="orbbec_starting">Starting Orbbec preview…</string>
     <string name="orbbec_detected">Orbbec camera detected</string>
@@ -91,6 +96,9 @@
     <string name="orbbec_live">● LIVE</string>
     <string name="orbbec_depth">DEPTH</string>
     <string name="cd_capture">Capture</string>
+    <string name="orbbec_usb_denied">USB access denied — tap \'Allow\' on the system dialog</string>
+    <string name="orbbec_start_failed">Could not start the Orbbec camera. Reconnect it and try again.</string>
+    <string name="orbbec_capture_failed">Capture failed: %1$s</string>
 
     <!-- Carousel / annotation -->
     <string name="carousel_title_fallback">Annotate</string>
@@ -120,6 +128,9 @@
     <string name="cd_suggest">Suggest</string>
     <string name="cd_compute">Compute</string>
     <string name="dedup_error_generic">Insufficient data for deduplication.</string>
+    <string name="dedup_session_not_found">Session not found.</string>
+    <string name="dedup_need_two_sides">Need at least 2 sides for deduplication (found %1$d).</string>
+    <string name="dedup_load_failed">Could not load this tree for deduplication.</string>
     <string name="dedup_side">Side %1$d</string>
     <string name="dedup_pair_of">Pair %1$d / %2$d</string>
     <string name="dedup_pair_labels">%1$s  ↔  %2$s</string>
@@ -178,6 +189,7 @@
     <string name="depth_side">Side %1$d</string>
     <string name="depth_no_capture">No depth captured for Side %1$d.</string>
     <string name="depth_no_valid">No valid depth values in file.</string>
+    <string name="depth_load_failed">Could not load depth for this side.</string>
     <string name="depth_tree_not_found">Tree not found</string>
     <string name="depth_loading">Loading…</string>
     <string name="depth_display_range">Display range: %1$d – %2$d mm</string>

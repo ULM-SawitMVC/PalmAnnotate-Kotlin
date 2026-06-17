@@ -51,6 +51,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import coil.compose.rememberAsyncImagePainter
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.sawitulm.palmannotate.R
 import dev.sawitulm.palmannotate.ui.common.LocalToasts
 import dev.sawitulm.palmannotate.ui.theme.PalmColors
@@ -82,6 +83,7 @@ enum class CapturePhase { SIDES, REVIEW_ALL }
 
 @HiltViewModel
 class CaptureFlowViewModel @Inject constructor(
+    @ApplicationContext private val appContext: Context,
     private val repo: SessionRepository,
     private val storage: AndroidStorageManager,
     private val gps: GpsProvider,
@@ -189,10 +191,10 @@ class CaptureFlowViewModel @Inject constructor(
                     orbbec.startPreview()
                     isOrbbecPreviewRunning = true
                 } else {
-                    orbbecStateMsg = "USB access denied — tap 'Allow' on the system dialog"
+                    orbbecStateMsg = appContext.getString(R.string.orbbec_usb_denied)
                 }
             } catch (e: Exception) {
-                orbbecStateMsg = e.message ?: "Failed to start Orbbec"
+                orbbecStateMsg = appContext.getString(R.string.orbbec_start_failed)
                 Log.w("CaptureFlow", "Orbbec start failed", e)
             } finally {
                 isOrbbecStarting = false
@@ -244,7 +246,7 @@ class CaptureFlowViewModel @Inject constructor(
             } catch (e: Exception) {
                 Log.e("CaptureFlow", "Orbbec capture failed", e)
                 withContext(Dispatchers.Main) {
-                    orbbecStateMsg = "Capture failed: ${e.message}"
+                    orbbecStateMsg = appContext.getString(R.string.orbbec_capture_failed, e.message ?: "")
                 }
             }
         }
@@ -302,16 +304,31 @@ class CaptureFlowViewModel @Inject constructor(
             currentSide = 0
             currentStep = SideStep.PREVIEW
             phase = CapturePhase.SIDES
+            refreshGps()
+        }
+    }
+
+    /**
+     * Fetch GPS and publish an actionable status. Safe to call repeatedly — it is invoked once
+     * on load() and again once the location permission dialog resolves (the dialog is requested
+     * concurrently with load(), so the first fetch usually runs *before* the user taps Allow and
+     * would otherwise leave a stale "permission denied" for the whole session).
+     */
+    fun refreshGps() {
+        viewModelScope.launch {
             runCatching {
                 val loc = gps.getBestLocation()
-                if (loc != null) {
+                gpsStatus = if (loc != null) {
                     latitude = loc.latitude
                     longitude = loc.longitude
-                    gpsStatus = "%.5f, %.5f".format(loc.latitude, loc.longitude)
-                } else {
-                    gpsStatus = "GPS unavailable"
+                    "%.5f, %.5f".format(loc.latitude, loc.longitude)
+                } else when {
+                    // Distinguish the failure so the message is actionable instead of a blank "unavailable".
+                    !gps.hasPermission() -> appContext.getString(R.string.capture_gps_no_permission)
+                    !gps.isLocationEnabled() -> appContext.getString(R.string.capture_gps_off)
+                    else -> appContext.getString(R.string.capture_gps_unavailable)
                 }
-            }.onFailure { gpsStatus = "GPS unavailable" }
+            }.onFailure { gpsStatus = appContext.getString(R.string.capture_gps_unavailable) }
         }
     }
 
@@ -441,7 +458,7 @@ class CaptureFlowViewModel @Inject constructor(
                     allSides
                 }
                 if (sides.isEmpty()) {
-                    saveError = "No captured images found"
+                    saveError = appContext.getString(R.string.capture_no_images)
                     return@launch
                 }
 
@@ -465,7 +482,7 @@ class CaptureFlowViewModel @Inject constructor(
                 onDone(treeKey)
             } catch (e: Exception) {
                 Log.e("CaptureFlow", "Failed to save tree", e)
-                saveError = e.localizedMessage ?: "Save failed"
+                saveError = appContext.getString(R.string.capture_save_failed)
             } finally {
                 isSaving = false
             }
@@ -501,6 +518,11 @@ fun CaptureFlowScreen(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
         hasCameraPermission = results[Manifest.permission.CAMERA] == true
+        // Location is requested in the same batch; re-read GPS once the user responds so a
+        // first-run "permission denied / unavailable" status corrects itself after they Allow.
+        val locationGranted = results[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+            results[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+        if (locationGranted) viewModel.refreshGps()
     }
 
     LaunchedEffect(sessionId) {
@@ -1001,15 +1023,43 @@ private fun CameraCaptureStage(
     val lifecycleOwner = LocalLifecycleOwner.current
     val imageCapture = remember { ImageCapture.Builder().build() }
     val captureCd = stringResource(R.string.capture_source_phone)
+    // The ImageCapture use case only works once it has been bound to a camera. Tapping the
+    // shutter before that bind completes used to throw a cryptic CameraX error toast (the
+    // "camera not found when I tap too fast" report). Gate the shutter on this flag instead.
+    var cameraReady by remember { mutableStateOf(false) }
+    // Blocks a second shutter tap while a capture is already in flight (rapid double-tap).
+    var capturing by remember { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
         CameraPreview(
             context = context,
             lifecycleOwner = lifecycleOwner,
             imageCapture = imageCapture,
+            onReadyChange = { cameraReady = it },
         )
+
+        // Until the camera is bound, show a clear "starting" hint instead of a dead shutter.
+        if (!cameraReady) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CircularProgressIndicator(color = Color.White)
+                    Text(
+                        stringResource(R.string.capture_camera_starting),
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
+
         FloatingActionButton(
             onClick = {
+                if (!cameraReady) {
+                    toasts.info(context.getString(R.string.capture_camera_starting))
+                    return@FloatingActionButton
+                }
+                if (capturing) return@FloatingActionButton
+                capturing = true
                 val ts = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
                 val file = File(context.cacheDir, "cap_$ts.jpg")
                 val opts = ImageCapture.OutputFileOptions.Builder(file).build()
@@ -1018,18 +1068,25 @@ private fun CameraCaptureStage(
                     ContextCompat.getMainExecutor(context),
                     object : ImageCapture.OnImageSavedCallback {
                         override fun onImageSaved(output: ImageCapture.OutputFileResults) {
+                            capturing = false
                             onCaptured(Uri.fromFile(file))
                         }
                         override fun onError(exc: ImageCaptureException) {
+                            capturing = false
                             toasts.error(context.getString(R.string.capture_failed, exc.message ?: ""))
                         }
                     },
                 )
             },
             modifier = Modifier.padding(bottom = 32.dp).size(72.dp),
-            containerColor = MaterialTheme.colorScheme.primary,
+            containerColor = if (cameraReady) MaterialTheme.colorScheme.primary
+                             else MaterialTheme.colorScheme.primary.copy(alpha = 0.4f),
         ) {
-            Icon(Icons.Default.CameraAlt, captureCd, Modifier.size(32.dp))
+            if (capturing) {
+                CircularProgressIndicator(Modifier.size(28.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 3.dp)
+            } else {
+                Icon(Icons.Default.CameraAlt, captureCd, Modifier.size(32.dp))
+            }
         }
     }
 }
@@ -1039,6 +1096,7 @@ private fun CameraPreview(
     context: Context,
     lifecycleOwner: androidx.lifecycle.LifecycleOwner,
     imageCapture: ImageCapture,
+    onReadyChange: (Boolean) -> Unit = {},
 ) {
     AndroidView(
         factory = { ctx ->
@@ -1048,7 +1106,7 @@ private fun CameraPreview(
         update = { previewView ->
             val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
             cameraProviderFuture.addListener({
-                val cameraProvider = try { cameraProviderFuture.get() } catch (_: Exception) { return@addListener }
+                val cameraProvider = try { cameraProviderFuture.get() } catch (_: Exception) { onReadyChange(false); return@addListener }
                 val preview = Preview.Builder().build().also { it.surfaceProvider = previewView.surfaceProvider }
                 try {
                     cameraProvider.unbindAll()
@@ -1058,13 +1116,18 @@ private fun CameraPreview(
                         preview,
                         imageCapture,
                     )
-                } catch (_: Exception) { }
+                    // Bind succeeded — the shutter (ImageCapture) is now usable.
+                    onReadyChange(true)
+                } catch (_: Exception) {
+                    onReadyChange(false)
+                }
             }, ContextCompat.getMainExecutor(context))
         },
         modifier = Modifier.fillMaxSize(),
     )
     DisposableEffect(Unit) {
         onDispose {
+            onReadyChange(false)
             try {
                 ProcessCameraProvider.getInstance(context).get().unbindAll()
             } catch (_: Exception) { }

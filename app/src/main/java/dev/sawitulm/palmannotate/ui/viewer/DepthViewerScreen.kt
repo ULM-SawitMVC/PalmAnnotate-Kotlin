@@ -1,6 +1,8 @@
 package dev.sawitulm.palmannotate.ui.viewer
 
+import android.content.Context
 import android.graphics.Bitmap
+import android.util.Log
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -27,6 +29,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.sawitulm.palmannotate.R
 import dev.sawitulm.palmannotate.data.db.TreeDao
 import dev.sawitulm.palmannotate.data.storage.AndroidStorageManager
@@ -39,6 +42,7 @@ import javax.inject.Inject
 
 @HiltViewModel
 class DepthViewerViewModel @Inject constructor(
+    @ApplicationContext private val appContext: Context,
     private val treeDao: TreeDao,
     private val storage: AndroidStorageManager,
 ) : ViewModel() {
@@ -167,11 +171,11 @@ class DepthViewerViewModel @Inject constructor(
                 }
 
                 if (result == null) {
-                    errorMsg = "No depth captured for Side ${sideIndex + 1}."
+                    errorMsg = appContext.getString(R.string.depth_no_capture, sideIndex + 1)
                 } else {
                     val (bmp, range, depthInfo) = result
                     if (bmp == null) {
-                        errorMsg = "No valid depth values in file."
+                        errorMsg = appContext.getString(R.string.depth_no_valid)
                     } else {
                         depthBitmap = bmp
                         rangeInfo = range
@@ -187,7 +191,8 @@ class DepthViewerViewModel @Inject constructor(
                     }
                 }
             } catch (e: Exception) {
-                errorMsg = e.message ?: "Failed to load depth"
+                Log.w("DepthViewer", "Depth load failed", e)
+                errorMsg = appContext.getString(R.string.depth_load_failed)
             } finally {
                 isLoading = false
             }
