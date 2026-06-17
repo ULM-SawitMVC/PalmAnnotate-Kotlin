@@ -876,7 +876,7 @@ private fun ReviewAllPager(
         ) {
             HorizontalPager(
                 state = pagerState,
-                reverseLayout = reverseSwipe,
+                reverseLayout = !reverseSwipe,
                 modifier = Modifier.fillMaxSize(),
             ) { page ->
                 val uri = capturedImages.getOrNull(page)
