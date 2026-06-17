@@ -336,6 +336,34 @@ class OrbbecManager(private val appContext: Context) {
         }
     }
 
+    /**
+     * Hard reset for the RGB-only / "unstable" lock — the power-starved-Orbbec state on the
+     * Pad 8 where the depth sensor drops and the flapping guard reaches `degradeLevel >= 2`
+     * (`unstableSuppressed`), after which `warmUpSdk`/`open` refuse and only RGB is offered.
+     *
+     * The lock lives ENTIRELY in this process (the in-memory degrade ladder — there is no
+     * persisted flag), so clearing it here recovers the camera WITHOUT "Clear App Data":
+     *  1. [resetFlapLadder] drops `degradeLevel` to 0 so the suppression guards lift,
+     *  2. a full [closeSdkLocked] tears down the (possibly wedged) pipeline/device/context,
+     *  3. [warmUpSdk] re-initialises against a present device so the next open can re-acquire
+     *     depth.
+     *
+     * Returns true if at least one Orbbec device is present after the reset. NOTE: this clears
+     * the *software* lock; whether the USB device itself recovers without a physical replug is
+     * hardware-dependent and must be confirmed on the Pad 8.
+     */
+    suspend fun resetCameraState(): Boolean {
+        resetFlapLadder(); stopPump()
+        return withContext(cameraDispatcher) {
+            pendingCapture.getAndSet(null)?.reject(IllegalStateException("Orbbec camera reset"))
+            joinPump()
+            synchronized(stateLock) { closeSdkLocked() }
+            val present = orbbecDevices().isNotEmpty()
+            if (present) warmUpSdk()
+            present
+        }
+    }
+
     fun destroy() {
         unregisterUsbHotplugReceiver(); stopPump()
         try { cameraExec.execute { joinPump(); synchronized(stateLock) { closeSdkLocked() } } } catch (e: Exception) { Log.w(TAG, "cleanup dispatch failed", e) }

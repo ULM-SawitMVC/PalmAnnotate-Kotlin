@@ -136,6 +136,10 @@ dependencies {
     // Testing
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)
+    // Real org.json for unit tests — the android.jar bundled at unit-test time stubs
+    // org.json to throw "Stub!", so ExportManager's JSONObject/JSONArray output can't be
+    // asserted without a real implementation on the test classpath.
+    testImplementation("org.json:json:20240303")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.espresso.core)
     androidTestImplementation(platform(libs.compose.bom))

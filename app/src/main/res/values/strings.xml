@@ -25,6 +25,12 @@
     <string name="home_export_folder_change">Change</string>
     <string name="home_export_folder_clear">Clear</string>
     <string name="home_export_folder_hint">Choose a public folder so your captured images, metadata, and export files are also saved somewhere you can browse with a file manager or another app.</string>
+    <string name="home_export_folder_warning">⚠ Without an export folder your captured data lives ONLY inside the app and is permanently lost if the app\'s data is cleared. Set a folder to keep a safe, browsable copy.</string>
+    <!-- Capture-start data-safety confirm (no export folder configured) -->
+    <string name="home_no_folder_confirm_title">No export folder set</string>
+    <string name="home_no_folder_confirm_body">Your captured data will be saved only inside the app and can be permanently lost if the app\'s data is cleared. Set an export folder now to keep a safe copy you can browse and back up.</string>
+    <string name="home_no_folder_set">Set folder</string>
+    <string name="home_no_folder_continue">Continue anyway</string>
     <string name="home_stat_sessions">Sessions</string>
     <string name="home_stat_trees">Trees</string>
     <string name="home_stat_groups">Groups</string>
@@ -105,6 +111,7 @@
     <string name="orbbec_none_title">No Orbbec device detected</string>
     <string name="orbbec_none_hint">Connect the Orbbec camera to the USB hub, then tap Find Camera.</string>
     <string name="orbbec_find">Find Camera</string>
+    <string name="orbbec_reset">Reset Camera</string>
     <string name="orbbec_live">● LIVE</string>
     <string name="orbbec_depth">DEPTH</string>
     <string name="cd_capture">Capture</string>

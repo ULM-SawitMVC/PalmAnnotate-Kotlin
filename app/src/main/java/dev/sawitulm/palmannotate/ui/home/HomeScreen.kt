@@ -110,6 +110,11 @@ class HomeViewModel @Inject constructor(
     val folderName: StateFlow<String?> = exportFolder.folderName
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
+    /** True once a SAF export folder is configured. When false, captured data lives ONLY in
+     *  app-private storage (wiped by Clear App Data), so the UI warns and nudges to set one. */
+    val isExportFolderSet: StateFlow<Boolean> = exportFolder.isConfigured
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
     fun createRun(variety: String, block: String, sideCount: Int, autoId: Boolean, onDone: (String) -> Unit) {
         viewModelScope.launch {
             val id = try {
@@ -216,6 +221,7 @@ fun HomeScreen(
     val stats by viewModel.stats.collectAsState()
     val groups by viewModel.groups.collectAsState()
     val folderName by viewModel.folderName.collectAsState()
+    val isExportFolderSet by viewModel.isExportFolderSet.collectAsState()
     val exportState by viewModel.exportState.collectAsState()
 
     val folderPicker = rememberLauncherForActivityResult(
@@ -237,6 +243,9 @@ fun HomeScreen(
     var showNewDialog by remember { mutableStateOf(false) }
     var expandedGroup by remember { mutableStateOf<String?>(null) }
     var showExportAllConfirm by remember { mutableStateOf(false) }
+    // Raised when the user starts a new capture with no export folder configured — the dataset
+    // would live only in app-private storage (wiped by Clear App Data).
+    var showNoFolderConfirm by remember { mutableStateOf(false) }
 
     // Terminal export states → launch share sheet / toast, then reset to Idle.
     LaunchedEffect(exportState) {
@@ -299,7 +308,7 @@ fun HomeScreen(
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(
-                onClick = { showNewDialog = true },
+                onClick = { if (isExportFolderSet) showNewDialog = true else showNoFolderConfirm = true },
                 icon = { Icon(Icons.Default.Add, null) },
                 text = { Text(stringResource(R.string.home_new_session)) },
                 containerColor = MaterialTheme.colorScheme.primary,
@@ -373,6 +382,25 @@ fun HomeScreen(
                 }
             },
             inputCache = viewModel.inputCache,
+        )
+    }
+
+    if (showNoFolderConfirm) {
+        AlertDialog(
+            onDismissRequest = { showNoFolderConfirm = false },
+            icon = { Icon(Icons.Default.Warning, null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text(stringResource(R.string.home_no_folder_confirm_title)) },
+            text = { Text(stringResource(R.string.home_no_folder_confirm_body)) },
+            confirmButton = {
+                TextButton(onClick = { showNoFolderConfirm = false; folderPicker.launch(null) }) {
+                    Text(stringResource(R.string.home_no_folder_set))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showNoFolderConfirm = false; showNewDialog = true }) {
+                    Text(stringResource(R.string.home_no_folder_continue))
+                }
+            },
         )
     }
 
@@ -477,6 +505,13 @@ private fun ExportFolderCard(
             }
             if (!isSet) {
                 Spacer(Modifier.height(8.dp))
+                Text(
+                    stringResource(R.string.home_export_folder_warning),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Spacer(Modifier.height(4.dp))
                 Text(
                     stringResource(R.string.home_export_folder_hint),
                     style = MaterialTheme.typography.bodySmall,

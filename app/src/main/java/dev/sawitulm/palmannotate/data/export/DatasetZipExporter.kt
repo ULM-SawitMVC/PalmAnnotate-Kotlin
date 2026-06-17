@@ -144,23 +144,23 @@ class DatasetZipExporter @Inject constructor(
         return Outcome.Success(dest.shareUri, fileName)
     }
 
-    /** Collect the existing local files for one tree, mapped to their zip-internal paths. */
+    /** Collect the existing local files for one tree, mapped to their zip-internal paths.
+     *  The path layout itself is the pure [DatasetZipLayout.zipEntriesFor]; here we resolve each
+     *  spec to its on-disk [File] and keep only the ones that actually exist. */
     private fun entriesForTree(treeName: String, sideCount: Int): List<FileEntry> {
-        val list = ArrayList<FileEntry>()
-        for (i in 0 until sideCount) {
-            val n = i + 1
-            addIfExists(list, storage.imageFile(treeName, i), "images/${treeName}_$n.jpg")
-            addIfExists(list, storage.labelFile(treeName, i), "labels/${treeName}_$n.txt")
-            addIfExists(list, storage.depthRawFile(treeName, i), "depth/${treeName}_$n.raw")
-            addIfExists(list, storage.depthJsonFile(treeName, i), "depth/${treeName}_$n.json")
+        return DatasetZipLayout.zipEntriesFor(treeName, sideCount).mapNotNull { spec ->
+            val f = sourceFileFor(spec, treeName)
+            if (f.exists() && f.isFile) FileEntry(f, spec.zipPath) else null
         }
-        addIfExists(list, storage.outputJsonFile(treeName), "json/$treeName.json")
-        addIfExists(list, storage.metadataFile(treeName), "metadata/$treeName.json")
-        return list
     }
 
-    private fun addIfExists(list: MutableList<FileEntry>, f: File, zipPath: String) {
-        if (f.exists() && f.isFile) list.add(FileEntry(f, zipPath))
+    private fun sourceFileFor(spec: ZipPathSpec, treeName: String): File = when (spec.kind) {
+        FileKind.IMAGE -> storage.imageFile(treeName, spec.sideIndex!!)
+        FileKind.LABEL -> storage.labelFile(treeName, spec.sideIndex!!)
+        FileKind.DEPTH_RAW -> storage.depthRawFile(treeName, spec.sideIndex!!)
+        FileKind.DEPTH_JSON -> storage.depthJsonFile(treeName, spec.sideIndex!!)
+        FileKind.OUTPUT_JSON -> storage.outputJsonFile(treeName)
+        FileKind.METADATA -> storage.metadataFile(treeName)
     }
 
     /**
@@ -192,6 +192,37 @@ class DatasetZipExporter @Inject constructor(
     private fun timestamp(): String =
         SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
 
-    private fun sanitize(raw: String): String =
-        raw.replace(Regex("[^A-Za-z0-9_-]"), "").trim('_')
+    private fun sanitize(raw: String): String = DatasetZipLayout.sanitize(raw)
+}
+
+/** Kind of source file, so the exporter can resolve a [ZipPathSpec] back to its on-disk [File]. */
+internal enum class FileKind { IMAGE, LABEL, DEPTH_RAW, DEPTH_JSON, OUTPUT_JSON, METADATA }
+
+/** One candidate zip entry: its [kind], the owning [sideIndex] (null for tree-level files), and
+ *  the path it occupies inside the archive. */
+internal data class ZipPathSpec(val kind: FileKind, val sideIndex: Int?, val zipPath: String)
+
+/**
+ * Pure (I/O-free) zip-naming + layout, extracted so it can be unit-tested without a device.
+ * The archive layout mirrors the curated training dataset (`example_dataset`) plus depth.
+ */
+internal object DatasetZipLayout {
+
+    /** Strip everything that isn't a safe filename char, then trim stray underscores. */
+    fun sanitize(raw: String): String = raw.replace(Regex("[^A-Za-z0-9_-]"), "").trim('_')
+
+    /** Candidate zip entries for a tree, independent of which files exist on disk. */
+    fun zipEntriesFor(treeName: String, sideCount: Int): List<ZipPathSpec> {
+        val list = ArrayList<ZipPathSpec>()
+        for (i in 0 until sideCount) {
+            val n = i + 1
+            list.add(ZipPathSpec(FileKind.IMAGE, i, "images/${treeName}_$n.jpg"))
+            list.add(ZipPathSpec(FileKind.LABEL, i, "labels/${treeName}_$n.txt"))
+            list.add(ZipPathSpec(FileKind.DEPTH_RAW, i, "depth/${treeName}_$n.raw"))
+            list.add(ZipPathSpec(FileKind.DEPTH_JSON, i, "depth/${treeName}_$n.json"))
+        }
+        list.add(ZipPathSpec(FileKind.OUTPUT_JSON, null, "json/$treeName.json"))
+        list.add(ZipPathSpec(FileKind.METADATA, null, "metadata/$treeName.json"))
+        return list
+    }
 }

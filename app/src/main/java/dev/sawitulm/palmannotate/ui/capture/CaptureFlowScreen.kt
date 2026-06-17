@@ -180,6 +180,20 @@ class CaptureFlowViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Hard reset for the RGB-only / "unstable" lock (power-starved Orbbec on the Pad 8): clears
+     * the in-memory degrade ladder and tears down + re-inits the SDK so depth can come back —
+     * the in-app alternative to "Clear App Data", which would wipe the dataset. Recovery of the
+     * *device* itself (vs a physical replug) is verified on hardware.
+     */
+    fun resetOrbbec() {
+        viewModelScope.launch {
+            orbbecStateMsg = null
+            val found = orbbec.resetCameraState()
+            orbbecAvailable = found
+        }
+    }
+
     fun requestOrbbecPermissionAndStart() {
         viewModelScope.launch {
             isOrbbecStarting = true
@@ -680,6 +694,7 @@ fun CaptureFlowScreen(
                                 continueLabel = sideContinueLabel,
                                 onRequestPermission = { viewModel.requestOrbbecPermissionAndStart() },
                                 onRefresh = { viewModel.refreshOrbbec() },
+                                onReset = { viewModel.resetOrbbec() },
                                 onCapture = { viewModel.captureOrbbecFrame(context) },
                                 onRetake = { viewModel.retakeCurrent() },
                                 onContinue = onSideContinue,
@@ -1162,6 +1177,7 @@ private fun OrbbecCaptureStage(
     continueLabel: String?,
     onRequestPermission: () -> Unit,
     onRefresh: () -> Unit,
+    onReset: () -> Unit,
     onCapture: () -> Unit,
     onRetake: () -> Unit,
     onContinue: () -> Unit,
@@ -1336,6 +1352,20 @@ private fun OrbbecCaptureStage(
                         Icon(Icons.Default.Search, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
                         Text(stringResource(R.string.orbbec_find))
+                    }
+                    // Recovery for the RGB-only / "keeps resetting" lock: a stateMsg here means
+                    // the flapping guard suppressed the camera. Reset clears it in-app instead of
+                    // forcing a data-wiping "Clear App Data".
+                    if (stateMsg != null) {
+                        OutlinedButton(
+                            onClick = onReset,
+                            modifier = Modifier.heightIn(min = 48.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                        ) {
+                            Icon(Icons.Default.Refresh, null, Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(stringResource(R.string.orbbec_reset))
+                        }
                     }
                 }
             }
