@@ -18,6 +18,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -26,6 +27,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dev.sawitulm.palmannotate.R
 import dev.sawitulm.palmannotate.data.db.TreeDao
 import dev.sawitulm.palmannotate.data.storage.AndroidStorageManager
 import dev.sawitulm.palmannotate.domain.util.DepthUtil
@@ -42,6 +44,10 @@ class DepthViewerViewModel @Inject constructor(
 ) : ViewModel() {
 
     var treeName by mutableStateOf<String?>(null)
+        private set
+    // Photos-per-tree for this tree (4 or 8) — drives how many Side tabs to show. Was
+    // hardcoded to 4 in the UI, so 8-photo trees lost access to Sides 5–8.
+    var sideCount by mutableIntStateOf(4)
         private set
     var depthBitmap by mutableStateOf<ImageBitmap?>(null)
         private set
@@ -97,9 +103,11 @@ class DepthViewerViewModel @Inject constructor(
             depthHeight = 0
             tapReadout = null
             try {
-                val name = withContext(Dispatchers.IO) { treeDao.getByKey(treeKey)?.treeName }
+                val tree = withContext(Dispatchers.IO) { treeDao.getByKey(treeKey) }
                     ?: run { errorMsg = "Tree not found"; isLoading = false; return@launch }
+                val name = tree.treeName
                 treeName = name
+                sideCount = tree.sideCount
 
                 val result = withContext(Dispatchers.IO) {
                     val rawFile = storage.depthRawFile(name, sideIndex)
@@ -203,21 +211,25 @@ fun DepthViewerScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Depth & RAW${viewModel.treeName?.let { " — $it" } ?: ""}") },
+                title = {
+                    val name = viewModel.treeName
+                    Text(if (name != null) stringResource(R.string.depth_title_named, name) else stringResource(R.string.depth_title))
+                },
                 navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_back)) }
                 },
             )
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-            // Side tabs
-            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                for (i in 1..4) {
+            // Side tabs — count driven by the tree's sideCount (was hardcoded to 4).
+            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                for (i in 1..viewModel.sideCount) {
                     FilterChip(
                         selected = currentSide == i - 1,
                         onClick = { currentSide = i - 1 },
-                        label = { Text("Side $i", fontSize = 12.sp) },
+                        label = { Text(stringResource(R.string.depth_side, i), style = MaterialTheme.typography.labelLarge) },
+                        modifier = Modifier.heightIn(min = 40.dp),
                     )
                 }
             }
@@ -269,20 +281,20 @@ fun DepthViewerScreen(
                     viewModel.rangeInfo?.let { r ->
                         Surface(Modifier.fillMaxWidth().padding(8.dp), tonalElevation = 2.dp) {
                             Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Text("Display range: ${r.displayFloorMm} – ${r.displayCeilingMm} mm", fontSize = 12.sp)
-                                Text("Observed: ${r.observedMinMm} – ${r.observedMaxMm} mm", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                Text("Valid pixels: ${r.valid}", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                                Text(stringResource(R.string.depth_display_range, r.displayFloorMm, r.displayCeilingMm), style = MaterialTheme.typography.labelMedium)
+                                Text(stringResource(R.string.depth_observed, r.observedMinMm, r.observedMaxMm), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(stringResource(R.string.depth_valid_pixels, r.valid), style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Medium)
                                 // Tap readout
                                 viewModel.tapReadout?.let { readout ->
                                     Text(
                                         readout,
-                                        fontSize = 14.sp,
+                                        style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = FontWeight.Bold,
                                         color = MaterialTheme.colorScheme.primary,
                                     )
                                 } ?: Text(
-                                    "Tap the heatmap to read depth (mm)",
-                                    fontSize = 12.sp,
+                                    stringResource(R.string.depth_tap_hint),
+                                    style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
@@ -297,7 +309,7 @@ fun DepthViewerScreen(
                 else -> {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
-                            viewModel.errorMsg ?: "Loading…",
+                            viewModel.errorMsg ?: stringResource(R.string.depth_loading),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }

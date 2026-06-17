@@ -2,4 +2,188 @@
 <resources>
     <string name="app_name">PalmAnnotate</string>
     <string name="title_activity_main">PalmAnnotate</string>
+    <string name="app_tagline">Oil Palm · Offline</string>
+
+    <!-- Common actions / labels -->
+    <string name="action_cancel">Cancel</string>
+    <string name="action_delete">Delete</string>
+    <string name="action_back">Back</string>
+    <string name="action_go_back">Go Back</string>
+    <string name="action_ok">OK</string>
+    <string name="action_save">Save</string>
+    <string name="action_home">Home</string>
+    <string name="action_start">Start</string>
+    <string name="action_retake">Retake</string>
+    <string name="action_continue">Continue</string>
+    <string name="action_done">Done</string>
+
+    <!-- Home -->
+    <string name="home_new_session">New Session</string>
+    <string name="home_export_folder">Export folder</string>
+    <string name="home_export_folder_unset">Not set — files are kept privately inside the app</string>
+    <string name="home_export_folder_choose">Choose</string>
+    <string name="home_export_folder_change">Change</string>
+    <string name="home_export_folder_clear">Clear</string>
+    <string name="home_export_folder_hint">Choose a public folder so your captured images, metadata, and export files are also saved somewhere you can browse with a file manager or another app.</string>
+    <string name="home_stat_sessions">Sessions</string>
+    <string name="home_stat_trees">Trees</string>
+    <string name="home_stat_groups">Groups</string>
+    <string name="home_empty_title">No sessions yet</string>
+    <string name="home_empty_body">Tap “New Session” to start documenting trees.</string>
+    <string name="home_folder_new">New folder set</string>
+    <string name="home_folder_resumed">Resumed %1$d tree(s) from folder</string>
+    <string name="home_group_summary">%1$d session(s) · %2$d trees</string>
+    <string name="home_run_summary">%1$d trees · %2$d photos/tree</string>
+    <string name="home_delete_session_title">Delete session?</string>
+    <string name="home_delete_session_body">“%1$s” and its %2$d tree(s) will be removed, including stored photos and outputs.</string>
+
+    <!-- Session detail -->
+    <string name="session_title">Session</string>
+    <string name="session_add_tree">Add Tree</string>
+    <string name="session_trees_header">Trees</string>
+    <string name="session_locked">Locked for this session</string>
+    <string name="session_empty">No trees yet. Tap “Add Tree” to capture the first one.</string>
+    <string name="session_stat_photos">Photos</string>
+    <string name="session_stat_next_id">Next ID</string>
+    <string name="session_tree_sides">%1$d sides</string>
+    <string name="session_tree_sides_complete">%1$d sides · complete</string>
+    <string name="session_delete_tree_title">Delete tree?</string>
+    <string name="session_delete_tree_body">%1$s and its %2$d photos will be removed.</string>
+    <string name="cd_complete">Complete</string>
+    <string name="cd_open_carousel">Open carousel</string>
+
+    <!-- New-session dialog -->
+    <string name="dialog_start_session">Start Session</string>
+    <string name="dialog_session_lock_hint">Variety and Block are locked for every tree in this session.</string>
+    <string name="dialog_variety_label">Tree Variety *</string>
+    <string name="dialog_variety_placeholder">e.g. DAMIMAS</string>
+    <string name="dialog_block_label">Block *</string>
+    <string name="dialog_block_placeholder">e.g. A21B</string>
+    <string name="dialog_photos_per_tree">Photos per Tree</string>
+    <string name="dialog_auto_id">Auto ID Mode</string>
+    <string name="dialog_auto_id_hint">Tree ID increments (0001, 0002, …)</string>
+
+    <!-- Capture -->
+    <string name="capture_title">Capture — View %1$d/%2$d</string>
+    <string name="capture_source_phone">Phone</string>
+    <string name="capture_source_orbbec">Orbbec</string>
+    <string name="capture_locked_format">%1$s · %2$s</string>
+    <string name="capture_locating">Locating…</string>
+    <string name="capture_gps_unavailable">GPS unavailable</string>
+    <string name="capture_tree_id">Tree ID</string>
+    <string name="capture_permission_required">Camera permission is required for capture.</string>
+    <string name="capture_captured_badge">Captured</string>
+    <string name="capture_side_captured">Side %1$d captured</string>
+    <string name="capture_failed">Capture failed: %1$s</string>
+    <string name="capture_review_all">Review all</string>
+    <string name="capture_save_annotate">Save &amp; Annotate</string>
+    <string name="capture_retake_side">Retake side %1$d</string>
+    <string name="capture_side_of">Side %1$d / %2$d</string>
+    <string name="capture_save_error">Save error: %1$s</string>
+    <!-- Orbbec -->
+    <string name="orbbec_starting">Starting Orbbec preview…</string>
+    <string name="orbbec_detected">Orbbec camera detected</string>
+    <string name="orbbec_grant_hint">Tap below to grant USB access and start the live preview.</string>
+    <string name="orbbec_grant">Grant USB Access</string>
+    <string name="orbbec_none_title">No Orbbec device detected</string>
+    <string name="orbbec_none_hint">Connect the Orbbec camera to the USB hub, then tap Find Camera.</string>
+    <string name="orbbec_find">Find Camera</string>
+    <string name="orbbec_live">● LIVE</string>
+    <string name="orbbec_depth">DEPTH</string>
+    <string name="cd_capture">Capture</string>
+
+    <!-- Carousel / annotation -->
+    <string name="carousel_title_fallback">Annotate</string>
+    <string name="carousel_mode_review">Review</string>
+    <string name="carousel_mode_edit">Edit</string>
+    <string name="cd_detect">Detect</string>
+    <string name="cd_more">More</string>
+    <string name="cd_link">Link</string>
+    <string name="cd_draw_box">Draw box</string>
+    <string name="cd_toggle_boxes">Toggle boxes</string>
+    <string name="menu_deduplication">Deduplication</string>
+    <string name="menu_results">Results</string>
+    <string name="menu_depth_viewer">Depth &amp; RAW viewer</string>
+    <string name="carousel_save_exit">Save &amp; Exit</string>
+    <string name="carousel_next_tree">Next Tree</string>
+    <string name="carousel_cancel_link">Cancel Link</string>
+    <string name="carousel_saved">Saved</string>
+    <string name="carousel_link_hint">← Swipe to the adjacent side, then tap the matching bunch</string>
+    <string name="carousel_boxes_count">%1$d boxes</string>
+    <string name="carousel_boxes_unassigned">%1$d unassigned</string>
+    <string name="carousel_boxes_linked">%1$d linked</string>
+
+    <!-- Deduplication -->
+    <string name="dedup_title">Deduplication</string>
+    <string name="cd_capture_clockwise">Capture: clockwise</string>
+    <string name="cd_capture_counter_clockwise">Capture: counter-clockwise</string>
+    <string name="cd_suggest">Suggest</string>
+    <string name="cd_compute">Compute</string>
+    <string name="dedup_error_generic">Insufficient data for deduplication.</string>
+    <string name="dedup_side">Side %1$d</string>
+    <string name="dedup_pair_of">Pair %1$d / %2$d</string>
+    <string name="dedup_pair_labels">%1$s  ↔  %2$s</string>
+    <string name="cd_prev_pair">Previous pair</string>
+    <string name="cd_next_pair">Next pair</string>
+    <string name="dedup_tap_matching">Tap the matching box</string>
+    <string name="dedup_suggestions">Suggestions (%1$d)</string>
+    <string name="dedup_accept_all_auto">Accept All Auto (%1$d)</string>
+    <string name="dedup_confirmed_links">Confirmed Links (%1$d)</string>
+    <string name="dedup_accept">Accept</string>
+    <string name="dedup_reject">Reject</string>
+    <string name="cd_remove_link">Remove link</string>
+    <string name="dedup_no_pair_data">No data for this pair</string>
+    <string name="dedup_saved">Links saved</string>
+
+    <!-- Mismatch / quality dialogs -->
+    <string name="mismatch_title">Bunch Class Resolution</string>
+    <string name="mismatch_body">%1$d bunch(es) have inconsistent classes across sides. Choose the correct class for each bunch.</string>
+    <string name="mismatch_bunch">Bunch #%1$d</string>
+    <string name="mismatch_side">Side %1$d</string>
+    <string name="mismatch_choose">Choose final class:</string>
+    <string name="mismatch_apply">Apply &amp; Continue</string>
+    <string name="quality_title">Quality Check</string>
+    <string name="quality_issues_header">The following issues were found:</string>
+    <string name="quality_export_anyway_q">Export anyway?</string>
+    <string name="quality_export_anyway">Export anyway</string>
+    <string name="quality_back_to_fix">Back to fix</string>
+
+    <!-- Results -->
+    <string name="results_title">Results</string>
+    <string name="results_unique_bunches">Unique Bunches</string>
+    <string name="results_total_detections">Total Detections</string>
+    <string name="results_linked_duplicates">Linked Duplicates</string>
+    <string name="results_by_class">By Class</string>
+    <string name="results_by_side">By Side</string>
+    <string name="results_other">Other</string>
+    <string name="results_finish">Finish</string>
+    <string name="results_capture_next">Capture Next</string>
+    <string name="results_tree_list">Tree List</string>
+    <string name="results_more_exports">More exports…</string>
+    <string name="results_more_exports_title">More Exports</string>
+    <string name="results_more_exports_hint">Output JSON is saved automatically when you finish. Use this to export other formats to the export folder.</string>
+    <string name="results_export_output_json">Output JSON</string>
+    <string name="results_export_yolo">YOLO .txt</string>
+    <string name="results_export_csv">CSV</string>
+    <string name="results_export_identity">Identity</string>
+    <string name="results_output_saved">Output JSON saved</string>
+    <string name="results_output_save_failed">Could not save Output JSON</string>
+    <string name="results_export_select_folder">Select an export folder first</string>
+    <string name="results_export_done">%1$s exported</string>
+    <string name="results_export_failed">%1$s export failed</string>
+
+    <!-- Depth viewer -->
+    <string name="depth_title">Depth &amp; RAW</string>
+    <string name="depth_title_named">Depth &amp; RAW — %1$s</string>
+    <string name="depth_side">Side %1$d</string>
+    <string name="depth_no_capture">No depth captured for Side %1$d.</string>
+    <string name="depth_no_valid">No valid depth values in file.</string>
+    <string name="depth_tree_not_found">Tree not found</string>
+    <string name="depth_loading">Loading…</string>
+    <string name="depth_display_range">Display range: %1$d – %2$d mm</string>
+    <string name="depth_observed">Observed: %1$d – %2$d mm</string>
+    <string name="depth_valid_pixels">Valid pixels: %1$d</string>
+    <string name="depth_readout">px(%1$d, %2$d) = %3$d mm (raw %4$d)</string>
+    <string name="depth_readout_none">px(%1$d, %2$d) = no reading (0)</string>
+    <string name="depth_tap_hint">Tap the heatmap to read depth (mm)</string>
 </resources>
