@@ -2,11 +2,14 @@ package dev.sawitulm.palmannotate.ui.carousel
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.PagerDefaults
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -338,12 +341,42 @@ fun CarouselScreen(
 
     val session = viewModel.session
     val totalSides = viewModel.totalSides
-    val pagerState = rememberPagerState(pageCount = { totalSides.coerceAtLeast(1) })
+    val sidesCount = totalSides.coerceAtLeast(1)
+    val reverseSwipe = viewModel.reverseSwipe
+    // Infinite/looping pager: a huge virtual page count (only when there is more than one
+    // side) mapped to the real side via `page % sidesCount`, so swiping past the last side
+    // wraps back to the first (and vice-versa).
+    // Note: no key() block — its forced recreation caused a visible "1/0" hang when the
+    // session first loaded (sidesCount jumps 1→4 and the pager was discarded mid-frame).
+    // rememberPagerState adapts the page count in-place without recreating.
+    val loop = totalSides > 1
+    val pagerState = rememberPagerState(
+        initialPage = if (loop) (Int.MAX_VALUE / 2).let { it - it % sidesCount } else 0,
+        pageCount = { if (loop) Int.MAX_VALUE else sidesCount },
+    )
+    // Firmer, less "slippery" snap (a crisp settle like the capture-preview pager).
+    val pagerFling = PagerDefaults.flingBehavior(
+        state = pagerState,
+        snapAnimationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium),
+    )
 
+    // Sync VM ↔ pager: driven only by `currentPage`, computed through modulo, so the huge
+    // virtual index collapses to the real side index cleanly on every frame.
     LaunchedEffect(pagerState.currentPage) {
-        if (pagerState.currentPage != viewModel.currentSideIndex) {
-            viewModel.selectSide(pagerState.currentPage)
-        }
+        val side = pagerState.currentPage % sidesCount
+        if (side != viewModel.currentSideIndex) viewModel.selectSide(side)
+    }
+    // When reverseSwipe toggles, jump to the equivalent virtual page so the same real side
+    // stays visible. The mapping is: normal side S → page k*sidesCount+S, reversed side S →
+    // page k*sidesCount+(sidesCount-1-S). So jumping from mode A to B adds:
+    //   (newTarget - oldSide) = (sidesCount-1-side)-(side) = sidesCount-1-2*side.
+    // Applies to both toggle directions (it's its own inverse).
+    LaunchedEffect(reverseSwipe, sidesCount) {
+        if (!loop) return@LaunchedEffect
+        val cur = pagerState.currentPage
+        val side = cur % sidesCount
+        val delta = (sidesCount - 1) - 2 * side
+        if (delta != 0) pagerState.scrollToPage(cur + delta)
     }
 
     var showMoreMenu by remember { mutableStateOf(false) }
@@ -369,7 +402,11 @@ fun CarouselScreen(
                     Column {
                         Text(session?.treeName ?: stringResource(R.string.carousel_title_fallback), maxLines = 1, style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "${pagerState.currentPage + 1} / $totalSides",
+                            run {
+                                val sideIdx = pagerState.currentPage % sidesCount
+                                val pos = if (reverseSwipe) totalSides - sideIdx else sideIdx + 1
+                                "$pos / $totalSides"
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -465,30 +502,32 @@ fun CarouselScreen(
             HorizontalPager(
                 state = pagerState,
                 reverseLayout = viewModel.reverseSwipe,
+                flingBehavior = pagerFling,
                 modifier = Modifier.fillMaxSize().padding(padding),
             ) { page ->
-                val side = session!!.sides.getOrNull(page) ?: return@HorizontalPager
+                val sideIdx = page % sidesCount
+                val side = session!!.sides.getOrNull(sideIdx) ?: return@HorizontalPager
                 // bboxId → link-group number for this side (same number on the matching
                 // bunch on the adjacent side), so links are visible at a glance.
-                val linkMap = viewModel.linkGroupFor(page)
+                val linkMap = viewModel.linkGroupFor(sideIdx)
 
                 Box(Modifier.fillMaxSize().background(Color.Black)) {
                     AnnotationCanvas(
                         imageUriString = side.imageUri?.toString(),
                         bboxes = side.bboxes,
-                        selectedBboxId = if (page == viewModel.currentSideIndex) viewModel.selectedBboxId else null,
+                        selectedBboxId = if (sideIdx == viewModel.currentSideIndex) viewModel.selectedBboxId else null,
                         imageWidth = side.imageWidth.coerceAtLeast(1),
                         imageHeight = side.imageHeight.coerceAtLeast(1),
                         tool = viewModel.canvasTool,
                         showBoxes = viewModel.showBoxes,
                         linkedBoxes = linkMap,
                         onBboxTap = { id ->
-                            if (page != viewModel.currentSideIndex) {
+                            if (sideIdx != viewModel.currentSideIndex) {
                                 coroutineScope.launch { pagerState.animateScrollToPage(page) }
-                                viewModel.selectSide(page)
+                                viewModel.selectSide(sideIdx)
                             }
                             if (viewModel.linkArmed && id != null) {
-                                if (page != viewModel.pendingLinkSide) {
+                                if (sideIdx != viewModel.pendingLinkSide) {
                                     viewModel.completeLink(id)
                                 } else {
                                     viewModel.cancelLink()
@@ -499,10 +538,10 @@ fun CarouselScreen(
                             }
                         },
                         onBboxMoved = { id, x1, y1, x2, y2 ->
-                            if (page == viewModel.currentSideIndex) viewModel.updateBbox(id, x1, y1, x2, y2)
+                            if (sideIdx == viewModel.currentSideIndex) viewModel.updateBbox(id, x1, y1, x2, y2)
                         },
                         onBboxDrawn = { x1, y1, x2, y2 ->
-                            if (page == viewModel.currentSideIndex) viewModel.addBbox(x1, y1, x2, y2)
+                            if (sideIdx == viewModel.currentSideIndex) viewModel.addBbox(x1, y1, x2, y2)
                         },
                         modifier = Modifier.fillMaxSize(),
                     )
@@ -553,14 +592,29 @@ fun CarouselScreen(
                     horizontalArrangement = Arrangement.Center,
                 ) {
                     for (i in 0 until totalSides) {
+                        val isCurrent = pagerState.currentPage % sidesCount == i
+                        // Dot position label: normal → 1-based index; reversed → counting down
+                        // from totalSides so the dot order matches the reversed swipe direction.
+                        val dotPos = if (reverseSwipe) totalSides - i else i + 1
                         Box(
                             modifier = Modifier
-                                .clickable { coroutineScope.launch { pagerState.animateScrollToPage(i) } }
+                                .clickable {
+                                    coroutineScope.launch {
+                                        // Jump to the page in the current virtual cycle that shows side i.
+                                        // In reversed mode dot[0] is the last side, so we jump backwards.
+                                        val cur = pagerState.currentPage
+                                        val side = cur % sidesCount
+                                        val target = if (loop) {
+                                            if (reverseSwipe) cur - (side - i) else cur + (i - side)
+                                        } else i
+                                        pagerState.animateScrollToPage(target)
+                                    }
+                                }
                                 .padding(3.dp)
-                                .size(if (i == pagerState.currentPage) 8.dp else 6.dp)
+                                .size(if (isCurrent) 8.dp else 6.dp)
                                 .clip(CircleShape)
                                 .background(
-                                    if (i == pagerState.currentPage) PalmColors.Accent
+                                    if (isCurrent) PalmColors.Accent
                                     else Color.White.copy(alpha = 0.4f)
                                 ),
                         )
