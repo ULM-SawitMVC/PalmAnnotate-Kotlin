@@ -26,6 +26,11 @@ object ExportManager {
         timeZone = TimeZone.getTimeZone("UTC")
     }
 
+    /** Capture-date formatter (YYYY-MM-DD, device-local). Used for the metadata `date`
+     *  fallback when the session has no stored date. Local tz on purpose: a capture date
+     *  is a calendar day, distinct from the UTC `generated_at` export instant. */
+    private val dateOnlyFormat = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+
     // ─── Output JSON v4 ──────────────────────────────────────────────────────
 
     fun generateOutputJson(session: ActiveSession, results: TreeResults? = null): JSONObject {
@@ -38,12 +43,22 @@ object ExportManager {
         out.put("tree_name", session.treeName)
         out.put("split", session.split)
 
-        // metadata: variety + generated_at ONLY (byte-parity with output-schema.js).
+        // metadata: { date, number, generated_at, variety } — matches the curated
+        // example_dataset reference. session_id is intentionally omitted (no equivalent in
+        // the native data model). block/treeId/gps live in the separate metadata sidecar.
         val variety = session.metadata?.variety?.takeIf { it.isNotBlank() }
             ?: deriveVariety(session.treeName)
+        // date: the capture day (YYYY-MM-DD). Prefer the stored metadata date; fall back to
+        // today (device-local) so the field is never blank.
+        val date = session.metadata?.date?.takeIf { it.isNotBlank() }
+            ?: dateOnlyFormat.format(Date())
         out.put("metadata", JSONObject().apply {
-            put("variety", variety)
+            put("date", date)
+            // number: per-tree sequence parsed from the tree-name suffix (…_0001 -> 1),
+            // matching the metadata sidecar's treeId. Omitted if the name has no suffix.
+            deriveTreeNumber(session.treeName)?.let { put("number", it) }
             put("generated_at", dateFormat.format(Date()))
+            put("variety", variety)
         })
 
         // images
@@ -180,6 +195,11 @@ object ExportManager {
         val m = Regex("^([A-Za-z]+)_").find(treeName)
         return m?.groupValues?.get(1)?.uppercase() ?: "UNKNOWN"
     }
+
+    /** Per-tree sequence number parsed from the tree-name suffix (…_0001 -> 1), matching
+     *  the metadata sidecar's treeId. null if the name has no trailing numeric segment. */
+    private fun deriveTreeNumber(treeName: String): Int? =
+        Regex("_(\\d+)$").find(treeName)?.groupValues?.get(1)?.toIntOrNull()
 
     private fun yolo(b: Bbox, w: Int, h: Int): JSONArray {
         val cx = ((b.x1 + b.x2) / 2f) / w

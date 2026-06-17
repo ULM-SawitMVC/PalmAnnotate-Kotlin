@@ -362,6 +362,30 @@ class SessionRepository(
                     }.onFailure { Log.w(TAG, "SAF mirror image failed for side ${side.sideIndex}", it) }
                 }
             }
+            // Depth (Orbbec captures only) never changes after capture — mirror once, then
+            // skip. The capture flow wrote .raw + .json to local app storage; lift them into
+            // the SAF export folder so the raw depth buffer + its meta SHIP WITH the dataset.
+            // Path matches SafMirrorStore.deleteDatasetTree's cleanup, which previously had
+            // no writer (depth was captured but never exported). Large .raw — guarded by an
+            // existence check and already on safScope (background).
+            val depthRaw = storage.depthRawFile(treeName, side.sideIndex)
+            if (depthRaw.exists()) {
+                val rawPath = "dataset/depth/field/${treeName}_${side.sideIndex + 1}.raw"
+                if (!saf.exists(safTreeUri, rawPath)) {
+                    runCatching {
+                        saf.writeBytes(safTreeUri, rawPath, depthRaw.readBytes(), "application/octet-stream")
+                    }.onFailure { Log.w(TAG, "SAF mirror depth raw failed for side ${side.sideIndex}", it) }
+                }
+                val depthMeta = storage.depthJsonFile(treeName, side.sideIndex)
+                if (depthMeta.exists()) {
+                    val metaPath = "dataset/depth/field/${treeName}_${side.sideIndex + 1}.json"
+                    if (!saf.exists(safTreeUri, metaPath)) {
+                        runCatching {
+                            saf.writeText(safTreeUri, metaPath, depthMeta.readText())
+                        }.onFailure { Log.w(TAG, "SAF mirror depth meta failed for side ${side.sideIndex}", it) }
+                    }
+                }
+            }
         }
         // Log.d(TAG, "mirrorSafArtifacts $treeName (${sides.size} sides) took ${System.currentTimeMillis() - t0}ms [background]")
     }
