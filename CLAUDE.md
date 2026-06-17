@@ -152,6 +152,12 @@ See `PERF_GAIN.md`. **Do not move the SAF mirror back onto the blocking save pat
 - **Screen:** 2880×1800 (landscape)
 - **Notes:** R8 causes Orbbec preview freeze; keep minification OFF
 
+### Xiaomi Pad 6 (Secondary Test Device)
+
+- **ADB:** Wireless at `192.168.1.3:43451` (port is random — changes each time wireless debugging restarts; re-check the port in Developer options if connect fails)
+- **Model:** `23043RP34G` (`device:pipa`)
+- **Package:** `dev.sawitulm.palmannotate.debug`
+
 ### ADB Commands
 
 ```powershell

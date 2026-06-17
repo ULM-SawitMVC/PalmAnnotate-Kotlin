@@ -120,6 +120,11 @@ class CarouselViewModel @Inject constructor(
             autoSave()
             currentSideIndex = index
             selectedBboxId = null
+            // Reset to SELECT so re-entering Edit (or swiping straight to another side
+            // while already in Edit) never silently resumes a stale DRAW sub-tool — that
+            // made the "new box" button's first tap appear to do nothing (it flipped
+            // DRAW→SELECT instead of arming DRAW).
+            editTool = CanvasTool.SELECT
             // Keep linkArmed across swipes — the pendingLinkBboxId/Side track the source.
             // Link is completed or cancelled in onBboxTap / cancelLink.
         }
@@ -135,6 +140,9 @@ class CarouselViewModel @Inject constructor(
         // Auto-save when flipping Edit↔Review so boxes drawn in Edit are never lost.
         autoSave()
         mode = if (mode == CarouselMode.REVIEW) CarouselMode.EDIT else CarouselMode.REVIEW
+        // Same staleness fix as selectSide(): never resume a stale DRAW sub-tool from a
+        // previous Edit session.
+        editTool = CanvasTool.SELECT
     }
 
     /**
@@ -375,6 +383,16 @@ fun CarouselScreen(
     var showMoreMenu by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
+    // True while a touch on the CURRENT page's canvas is actively grabbing/drawing a box —
+    // disables the Pager's own swipe so it can't win the slop race against a box-drag and
+    // hijack the gesture into a page-swipe instead of moving the box.
+    var isEditingBox by remember { mutableStateOf(false) }
+    // Defensive reset on every mode change AND side change so a page/gesture torn down
+    // mid-touch can never leave the Pager permanently swipe-disabled (the regression where
+    // swiping died after editing). Combined with the mode==EDIT guard on userScrollEnabled
+    // below, leaving Edit always re-enables swiping.
+    LaunchedEffect(viewModel.mode, viewModel.currentSideIndex) { isEditingBox = false }
+
     // System / gesture back also saves before leaving.
     BackHandler { viewModel.saveAndExit { onBack() } }
 
@@ -492,6 +510,10 @@ fun CarouselScreen(
                 state = pagerState,
                 reverseLayout = !viewModel.reverseSwipe,
                 flingBehavior = pagerFling,
+                // Only suppress swipe while actually grabbing a box IN edit mode. In Review
+                // (and the moment Edit closes) swiping is always enabled, so a stuck flag can
+                // never strand the pager.
+                userScrollEnabled = !(isEditingBox && viewModel.mode == CarouselMode.EDIT),
                 modifier = Modifier.fillMaxSize().padding(padding),
             ) { page ->
                 val sideIdx = page % sidesCount
@@ -531,6 +553,11 @@ fun CarouselScreen(
                         },
                         onBboxDrawn = { x1, y1, x2, y2 ->
                             if (sideIdx == viewModel.currentSideIndex) viewModel.addBbox(x1, y1, x2, y2)
+                        },
+                        onActiveEditChange = { active ->
+                            // Only the current page's gesture state should drive the Pager —
+                            // adjacent pages stay composed (pager prefetch) but are not visible.
+                            if (sideIdx == viewModel.currentSideIndex) isEditingBox = active
                         },
                         modifier = Modifier.fillMaxSize(),
                     )

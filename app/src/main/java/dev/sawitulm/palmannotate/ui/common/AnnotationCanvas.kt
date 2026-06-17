@@ -3,10 +3,13 @@ package dev.sawitulm.palmannotate.ui.common
 import android.graphics.BitmapFactory
 import android.util.Log
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -140,6 +143,7 @@ data class DragState(
     val startBbox: Bbox? = null,
 )
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun AnnotationCanvas(
     imageUriString: String?,
@@ -155,6 +159,10 @@ fun AnnotationCanvas(
     onBboxMoved: ((String, Float, Float, Float, Float) -> Unit)? = null,
     onBboxDrawn: ((x1: Float, y1: Float, x2: Float, y2: Float) -> Unit)? = null,
     onCanvasTap: (() -> Unit)? = null,
+    /** True while a touch is actively grabbing/drawing a box — lets a parent pager
+     *  (e.g. the carousel's HorizontalPager) disable its own swipe so it can't steal
+     *  the gesture mid-drag. */
+    onActiveEditChange: ((Boolean) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     // Load image bitmap off the main thread, downsampled so the dedup pager (which keeps
@@ -195,6 +203,28 @@ fun AnnotationCanvas(
     // Drag state (move/resize)
     var dragState by remember { mutableStateOf<DragState?>(null) }
 
+    // True the instant a touch-down lands on an existing box — set in a dedicated
+    // pointerInput below at ACTION_DOWN, before any drag-slop is resolved. dragState/
+    // drawStart alone are not enough to gate the parent pager: they are only set inside
+    // detectDragGestures' onDragStart, i.e. AFTER slop, the exact moment the pager's own
+    // slop-based swipe detector is racing to claim the same touch.
+    var touchOnBox by remember { mutableStateOf(false) }
+
+    // Live snapshots of the mutating inputs the gesture handlers read. The gesture
+    // pointerInput blocks are keyed on `tool` ONLY (not bboxes/selectedBboxId), so that a
+    // box-move — which rebuilds `bboxes` into a new list every frame via onBboxMoved —
+    // does NOT change a pointerInput key and tear down the in-progress gesture coroutine
+    // mid-drag. That teardown was the real "sticky / can't grab" cause, and it also
+    // cancelled the early-hit-test block before its touchOnBox=false cleanup, stranding the
+    // parent pager disabled. rememberUpdatedState lets the long-lived gesture coroutine read
+    // the freshest values without restarting.
+    val currentBboxes by rememberUpdatedState(bboxes)
+    val currentSelectedId by rememberUpdatedState(selectedBboxId)
+    val currentOnBboxTap by rememberUpdatedState(onBboxTap)
+    val currentOnBboxMoved by rememberUpdatedState(onBboxMoved)
+    val currentOnBboxDrawn by rememberUpdatedState(onBboxDrawn)
+    val currentOnCanvasTap by rememberUpdatedState(onCanvasTap)
+
     // Fit image on first composition
     var didFit by remember { mutableStateOf(false) }
 
@@ -214,6 +244,18 @@ fun AnnotationCanvas(
         scale = (scale * zoomChange).coerceIn(0.3f, 15f)
         offset += panChange
     }
+
+    // Refuse viewport-pan when the touch started ON a box, so a single-finger box-move
+    // isn't stolen by transformable's pan. transformable treats a one-finger drag as a
+    // pan and — being earlier in the modifier chain — consumes it before the box-move
+    // drag detector can claim it (the "sticky / can't move existing box" bug). canPan is
+    // consulted only after pan-slop is crossed, by which point touchOnBox is already set
+    // from ACTION_DOWN, so this reads a settled value (no race). Remembered (stable
+    // identity) so transformable's node is never reset mid-gesture by recomposition;
+    // the body still reads the live touchOnBox via the captured state delegate.
+    // Pinch-zoom is unaffected, and on empty canvas (touchOnBox=false) single-finger pan
+    // still works.
+    val canPanViewport = remember { { _: Offset -> !touchOnBox } }
 
     // Helpers: screen ↔ image coords
     fun screenToImage(sx: Float, sy: Float): Offset =
@@ -239,36 +281,60 @@ fun AnnotationCanvas(
         return DragHandle.NONE
     }
 
+    // Reported to the parent (e.g. carousel HorizontalPager) so it can disable its own
+    // swipe gesture while a box-grab/draw is in progress, including the down-to-slop
+    // window covered by touchOnBox. Only fires on actual transitions (LaunchedEffect key).
+    val isActiveEdit = touchOnBox || dragState != null || drawStart != null
+    LaunchedEffect(isActiveEdit) { onActiveEditChange?.invoke(isActiveEdit) }
+
     Canvas(
         modifier = modifier
             .fillMaxSize()
             // No zoom/pan in VIEW mode: it would consume the horizontal drag and block the
             // carousel's swipe-between-sides. Editing modes keep pinch-zoom/pan.
-            .then(if (tool != CanvasTool.VIEW) Modifier.transformable(state = transformState) else Modifier)
+            .then(if (tool != CanvasTool.VIEW) Modifier.transformable(state = transformState, canPan = canPanViewport) else Modifier)
+            // Early "down landed on an existing box" signal, observed at ACTION_DOWN
+            // before any drag-slop is resolved. Never consumes — purely observes — so the
+            // tap/drag detectors below still see every event normally. Closes the race
+            // against the parent pager's own slop-based swipe detector (see isActiveEdit).
+            .pointerInput(tool) {
+                if (tool == CanvasTool.SELECT || tool == CanvasTool.DRAW) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val img = screenToImage(down.position.x, down.position.y)
+                        touchOnBox = BboxHitTest.pick(currentBboxes, img.x, img.y, TOUCH_TOL_DP.dp.toPx() / scale) != null
+                        waitForUpOrCancellation()
+                        touchOnBox = false
+                    }
+                }
+            }
             // Tap-to-select. detectDragGestures (below) only fires after the touch-slop
             // drag threshold is crossed, so a plain tap would never select a box — which
             // made class assignment (annotation) and box linking (dedup) impossible.
-            // A dedicated tap detector restores single-tap selection in SELECT/VIEW modes.
-            .pointerInput(tool, bboxes) {
-                if (tool == CanvasTool.SELECT || tool == CanvasTool.VIEW) {
+            // DRAW is included so an earlier box can be tapped to (re)select it and assign
+            // a class without leaving to Review — only the last-drawn box was reachable
+            // before. A tap and a draw-drag don't conflict: detectTapGestures fires only on
+            // a tap (no slop), detectDragGestures only after slop is crossed.
+            .pointerInput(tool) {
+                if (tool == CanvasTool.SELECT || tool == CanvasTool.VIEW || tool == CanvasTool.DRAW) {
                     detectTapGestures { tapScreen ->
                         val img = screenToImage(tapScreen.x, tapScreen.y)
                         // Tolerant + smallest-first pick so tiny boxes (and tiny boxes stacked
                         // on a big one) stay selectable; tol is a constant screen distance.
-                        val tapped = BboxHitTest.pick(bboxes, img.x, img.y, TOUCH_TOL_DP.dp.toPx() / scale)
-                        if (tapped != null) onBboxTap?.invoke(tapped.id)
-                        else onCanvasTap?.invoke()
+                        val tapped = BboxHitTest.pick(currentBboxes, img.x, img.y, TOUCH_TOL_DP.dp.toPx() / scale)
+                        if (tapped != null) currentOnBboxTap?.invoke(tapped.id)
+                        else currentOnCanvasTap?.invoke()
                     }
                 }
             }
-            .pointerInput(tool, bboxes, selectedBboxId) {
+            .pointerInput(tool) {
                 when (tool) {
                     CanvasTool.SELECT -> {
                         detectDragGestures(
                             onDragStart = { startScreen ->
                                 val img = screenToImage(startScreen.x, startScreen.y)
                                 // Check if we grabbed the selected bbox
-                                val sel = bboxes.find { it.id == selectedBboxId }
+                                val sel = currentBboxes.find { it.id == currentSelectedId }
                                 if (sel != null) {
                                     val handle = hitTestHandle(sel, img.x, img.y)
                                     if (handle != DragHandle.NONE) {
@@ -277,12 +343,12 @@ fun AnnotationCanvas(
                                     }
                                 }
                                 // Check if we tapped a different bbox (tolerant, smallest-first)
-                                val tapped = BboxHitTest.pick(bboxes, img.x, img.y, TOUCH_TOL_DP.dp.toPx() / scale)
+                                val tapped = BboxHitTest.pick(currentBboxes, img.x, img.y, TOUCH_TOL_DP.dp.toPx() / scale)
                                 if (tapped != null) {
-                                    onBboxTap?.invoke(tapped.id)
+                                    currentOnBboxTap?.invoke(tapped.id)
                                     dragState = DragState(tapped.id, DragHandle.BODY, startScreen, tapped)
                                 } else {
-                                    onCanvasTap?.invoke()
+                                    currentOnCanvasTap?.invoke()
                                 }
                             },
                             onDrag = { change, dragAmount ->
@@ -310,13 +376,17 @@ fun AnnotationCanvas(
                                     DragHandle.NONE -> start
                                 }
                                 dragState = ds.copy(startBbox = newBbox)
-                                onBboxMoved?.invoke(ds.bboxId, newBbox.x1, newBbox.y1, newBbox.x2, newBbox.y2)
+                                currentOnBboxMoved?.invoke(ds.bboxId, newBbox.x1, newBbox.y1, newBbox.x2, newBbox.y2)
                             },
                             onDragEnd = { dragState = null },
                         )
                     }
                     CanvasTool.DRAW -> {
                         detectDragGestures(
+                            // Always start a draw rect on drag — selecting an existing box is
+                            // handled by the tap detector above, so a drag can still draw a new
+                            // box anywhere, including overlapping an existing one (palm bunches
+                            // are often packed close together).
                             onDragStart = { drawStart = it; drawCurrent = it },
                             onDrag = { change, _ -> change.consume(); drawCurrent = change.position },
                             onDragEnd = {
@@ -336,7 +406,7 @@ fun AnnotationCanvas(
                                     val y1 = i1.y.coerceIn(0f, imageHeight.toFloat())
                                     val x2 = i2.x.coerceIn(0f, imageWidth.toFloat())
                                     val y2 = i2.y.coerceIn(0f, imageHeight.toFloat())
-                                    onBboxDrawn?.invoke(x1, y1, x2, y2)
+                                    currentOnBboxDrawn?.invoke(x1, y1, x2, y2)
                                 }
                                 drawStart = null; drawCurrent = null
                             },
