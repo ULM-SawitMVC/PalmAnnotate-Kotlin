@@ -25,11 +25,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.sawitulm.palmannotate.domain.model.AnnotationClass
 import dev.sawitulm.palmannotate.domain.model.Bbox
+import dev.sawitulm.palmannotate.domain.util.BboxHitTest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 
 private const val CANVAS_TAG = "CanvasPerf"
+
+/** Touch tolerance (screen dp) for selecting a bbox by tap, so tiny boxes stay reachable. */
+private const val TOUCH_TOL_DP = 24f
+
+/** Minimum drag span (screen dp) before DRAW commits a box — blocks accidental tiny boxes
+ *  from a stray finger nudge. Screen-space, so zooming in still lets you draw small boxes. */
+private const val MIN_DRAW_DP = 24f
 
 /**
  * Full annotation canvas: image rendering + bbox overlay + interaction.
@@ -245,9 +253,9 @@ fun AnnotationCanvas(
                 if (tool == CanvasTool.SELECT || tool == CanvasTool.VIEW) {
                     detectTapGestures { tapScreen ->
                         val img = screenToImage(tapScreen.x, tapScreen.y)
-                        val tapped = bboxes.lastOrNull { b ->
-                            img.x in b.x1..b.x2 && img.y in b.y1..b.y2
-                        }
+                        // Tolerant + smallest-first pick so tiny boxes (and tiny boxes stacked
+                        // on a big one) stay selectable; tol is a constant screen distance.
+                        val tapped = BboxHitTest.pick(bboxes, img.x, img.y, TOUCH_TOL_DP.dp.toPx() / scale)
                         if (tapped != null) onBboxTap?.invoke(tapped.id)
                         else onCanvasTap?.invoke()
                     }
@@ -268,10 +276,8 @@ fun AnnotationCanvas(
                                         return@detectDragGestures
                                     }
                                 }
-                                // Check if we tapped a different bbox
-                                val tapped = bboxes.lastOrNull { b ->
-                                    img.x in b.x1..b.x2 && img.y in b.y1..b.y2
-                                }
+                                // Check if we tapped a different bbox (tolerant, smallest-first)
+                                val tapped = BboxHitTest.pick(bboxes, img.x, img.y, TOUCH_TOL_DP.dp.toPx() / scale)
                                 if (tapped != null) {
                                     onBboxTap?.invoke(tapped.id)
                                     dragState = DragState(tapped.id, DragHandle.BODY, startScreen, tapped)
@@ -315,16 +321,22 @@ fun AnnotationCanvas(
                             onDrag = { change, _ -> change.consume(); drawCurrent = change.position },
                             onDragEnd = {
                                 val s = drawStart; val e = drawCurrent
-                                if (s != null && e != null) {
+                                // Require a deliberate drag measured in SCREEN space so a stray
+                                // finger nudge can't spawn a tiny accidental box. Because the
+                                // threshold is screen-space, zooming in still lets you draw boxes
+                                // that are genuinely small in image space.
+                                val minDrawPx = MIN_DRAW_DP.dp.toPx()
+                                if (s != null && e != null &&
+                                    kotlin.math.abs(e.x - s.x) >= minDrawPx &&
+                                    kotlin.math.abs(e.y - s.y) >= minDrawPx
+                                ) {
                                     val i1 = screenToImage(minOf(s.x, e.x), minOf(s.y, e.y))
                                     val i2 = screenToImage(maxOf(s.x, e.x), maxOf(s.y, e.y))
                                     val x1 = i1.x.coerceIn(0f, imageWidth.toFloat())
                                     val y1 = i1.y.coerceIn(0f, imageHeight.toFloat())
                                     val x2 = i2.x.coerceIn(0f, imageWidth.toFloat())
                                     val y2 = i2.y.coerceIn(0f, imageHeight.toFloat())
-                                    if (x2 - x1 > 5f && y2 - y1 > 5f) {
-                                        onBboxDrawn?.invoke(x1, y1, x2, y2)
-                                    }
+                                    onBboxDrawn?.invoke(x1, y1, x2, y2)
                                 }
                                 drawStart = null; drawCurrent = null
                             },

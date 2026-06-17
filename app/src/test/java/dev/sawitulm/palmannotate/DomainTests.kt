@@ -7,6 +7,7 @@ import dev.sawitulm.palmannotate.domain.model.*
 import dev.sawitulm.palmannotate.domain.quality.QualityCheck
 import dev.sawitulm.palmannotate.domain.results.ResultsComputer
 import dev.sawitulm.palmannotate.domain.usecase.SessionUseCases
+import dev.sawitulm.palmannotate.domain.util.BboxHitTest
 import dev.sawitulm.palmannotate.domain.util.OperationQueue
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
@@ -73,6 +74,42 @@ class UnionFindTest {
     @Test fun `getCluster returns all members`() {
         val uf = UnionFind(listOf("a", "b", "c")); uf.union("a", "b")
         assertEquals(2, uf.getCluster("a").size); assertTrue("a" in uf.getCluster("a")); assertTrue("b" in uf.getCluster("a"))
+    }
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// BboxHitTest
+// ════════════════════════════════════════════════════════════════════════════════
+
+class BboxHitTestTest {
+    private fun box(id: String, x1: Float, y1: Float, x2: Float, y2: Float) = Bbox(id, 0, "B1", x1, y1, x2, y2)
+
+    @Test fun `point inside two stacked boxes picks the smallest`() {
+        val big = box("big", 0f, 0f, 100f, 100f)
+        val small = box("small", 40f, 40f, 50f, 50f)
+        // List order shouldn't matter — smallest-area containing box wins either way.
+        assertEquals("small", BboxHitTest.pick(listOf(big, small), 45f, 45f, 0f)?.id)
+        assertEquals("small", BboxHitTest.pick(listOf(small, big), 45f, 45f, 0f)?.id)
+    }
+    @Test fun `point just outside a tiny box is picked within tolerance`() {
+        val b = box("b", 10f, 10f, 20f, 20f)
+        assertEquals("b", BboxHitTest.pick(listOf(b), 25f, 15f, 10f)?.id) // 5px past right edge, tol 10
+    }
+    @Test fun `point outside tolerance returns null`() {
+        val b = box("b", 10f, 10f, 20f, 20f)
+        assertNull(BboxHitTest.pick(listOf(b), 40f, 15f, 10f)) // 20px past edge, tol 10
+    }
+    @Test fun `nearest box wins when several are within tolerance`() {
+        val near = box("near", 0f, 0f, 10f, 10f)
+        val far = box("far", 30f, 0f, 40f, 10f)
+        // x=13 → 3px from near's right edge, 17px from far's left edge
+        assertEquals("near", BboxHitTest.pick(listOf(far, near), 13f, 5f, 20f)?.id)
+    }
+    @Test fun `distanceToRect is zero inside and positive outside`() {
+        val b = box("b", 0f, 0f, 10f, 10f)
+        assertEquals(0f, BboxHitTest.distanceToRect(5f, 5f, b), 1e-4f)
+        assertEquals(5f, BboxHitTest.distanceToRect(15f, 5f, b), 1e-4f)   // straight out from right edge
+        assertEquals(5f, BboxHitTest.distanceToRect(13f, 14f, b), 1e-4f)  // 3-4-5 to BR corner
     }
 }
 

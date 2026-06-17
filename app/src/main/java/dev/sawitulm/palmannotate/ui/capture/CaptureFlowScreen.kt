@@ -862,6 +862,8 @@ private fun ReviewAllPager(
 ) {
     val pageCount = sideCount.coerceAtLeast(1)
     val pagerState = rememberPagerState(pageCount = { pageCount })
+    // Per-screen swipe direction (NOT persisted): flip to review photos right→left.
+    var reverseSwipe by remember { mutableStateOf(false) }
 
     Column(modifier = modifier) {
         Box(
@@ -874,6 +876,7 @@ private fun ReviewAllPager(
         ) {
             HorizontalPager(
                 state = pagerState,
+                reverseLayout = reverseSwipe,
                 modifier = Modifier.fillMaxSize(),
             ) { page ->
                 val uri = capturedImages.getOrNull(page)
@@ -927,6 +930,27 @@ private fun ReviewAllPager(
                         }
                     }
                 }
+            }
+
+            // Per-screen swipe-direction toggle — overlay outside the pager so it stays put
+            // while pages swipe. Not persisted; resets each time the preview opens.
+            IconButton(
+                onClick = { reverseSwipe = !reverseSwipe },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(8.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.55f))
+                    .size(44.dp),
+            ) {
+                Icon(
+                    if (reverseSwipe) Icons.Default.RotateLeft else Icons.Default.RotateRight,
+                    contentDescription = stringResource(
+                        if (reverseSwipe) R.string.cd_capture_counter_clockwise else R.string.cd_capture_clockwise
+                    ),
+                    tint = Color.White,
+                    modifier = Modifier.size(24.dp),
+                )
             }
         }
 

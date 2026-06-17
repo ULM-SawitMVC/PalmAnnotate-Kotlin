@@ -62,6 +62,10 @@ class CarouselViewModel @Inject constructor(
     var currentSideIndex by mutableIntStateOf(0)
     var selectedBboxId by mutableStateOf<String?>(null)
     var showBoxes by mutableStateOf(true)
+    /** Per-screen swipe direction (NOT persisted): true = swipe runs right→left and the
+     *  visual side order is reversed. Visual-only — no seam semantics like dedup's clockwise. */
+    var reverseSwipe by mutableStateOf(false)
+        private set
     var mode by mutableStateOf(CarouselMode.REVIEW)
     var isLoading by mutableStateOf(true)
     var isSaving by mutableStateOf(false)
@@ -123,6 +127,7 @@ class CarouselViewModel @Inject constructor(
     }
 
     fun toggleBoxes() { showBoxes = !showBoxes }
+    fun toggleSwipeDirection() { reverseSwipe = !reverseSwipe }
     fun toggleMode() {
         // Auto-save when flipping Edit↔Review so boxes drawn in Edit are never lost.
         autoSave()
@@ -431,6 +436,7 @@ fun CarouselScreen(
                 currentSideIndex = viewModel.currentSideIndex,
                 selectedBboxId = viewModel.selectedBboxId,
                 showBoxes = viewModel.showBoxes,
+                reverseSwipe = viewModel.reverseSwipe,
                 linkArmed = viewModel.linkArmed,
                 isSave = viewModel.isSaving,
                 editMode = viewModel.mode == CarouselMode.EDIT,
@@ -439,6 +445,7 @@ fun CarouselScreen(
                 onClassChange = { id, cls -> viewModel.changeBboxClass(id, cls) },
                 onDelete = { viewModel.deleteBbox(it) },
                 onToggleBoxes = { viewModel.toggleBoxes() },
+                onToggleSwipe = { viewModel.toggleSwipeDirection() },
                 onArmLink = { viewModel.armLink() },
                 onCancelLink = { viewModel.cancelLink() },
                 onSaveExit = { viewModel.saveAndExit { onBack() } },
@@ -457,6 +464,7 @@ fun CarouselScreen(
         } else {
             HorizontalPager(
                 state = pagerState,
+                reverseLayout = viewModel.reverseSwipe,
                 modifier = Modifier.fillMaxSize().padding(padding),
             ) { page ->
                 val side = session!!.sides.getOrNull(page) ?: return@HorizontalPager
@@ -598,6 +606,7 @@ private fun CarouselBottomBar(
     currentSideIndex: Int,
     selectedBboxId: String?,
     showBoxes: Boolean,
+    reverseSwipe: Boolean,
     linkArmed: Boolean,
     isSave: Boolean,
     editMode: Boolean,
@@ -606,6 +615,7 @@ private fun CarouselBottomBar(
     onClassChange: (String, AnnotationClass) -> Unit,
     onDelete: (String) -> Unit,
     onToggleBoxes: () -> Unit,
+    onToggleSwipe: () -> Unit,
     onArmLink: () -> Unit,
     onCancelLink: () -> Unit,
     onSaveExit: () -> Unit,
@@ -706,6 +716,18 @@ private fun CarouselBottomBar(
                 }
 
                 Spacer(Modifier.weight(1f))
+
+                // Flip swipe direction / side order (per-screen, not persisted). Mirrors the
+                // dedup direction toggle but visual-only here. Sits just left of the eye toggle.
+                IconButton(onClick = onToggleSwipe, modifier = Modifier.size(48.dp)) {
+                    Icon(
+                        if (reverseSwipe) Icons.Default.RotateLeft else Icons.Default.RotateRight,
+                        contentDescription = stringResource(
+                            if (reverseSwipe) R.string.cd_capture_counter_clockwise else R.string.cd_capture_clockwise
+                        ),
+                        modifier = Modifier.size(26.dp),
+                    )
+                }
 
                 IconButton(onClick = onToggleBoxes, modifier = Modifier.size(48.dp)) {
                     Icon(

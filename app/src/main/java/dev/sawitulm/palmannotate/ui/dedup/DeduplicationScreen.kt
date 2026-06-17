@@ -21,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -179,6 +180,33 @@ class DedupViewModel @Inject constructor(
         selectedSideA = null
         pendingBboxId = null
         pendingSide = -1
+    }
+
+    /** True when a box is selected on either canvas (drives the class bar's visibility). */
+    val hasSelection: Boolean get() = selectedSideA != null || selectedSideB != null
+
+    /** The box the class bar edits: left-canvas selection if present, else right-canvas.
+     *  (selectedSideB = box on the LEFT canvas / leftSideIndex; selectedSideA = RIGHT.) */
+    private fun selectedTarget(): Pair<Int, String>? = when {
+        selectedSideB != null -> leftSideIndex to selectedSideB!!
+        selectedSideA != null -> rightSideIndex to selectedSideA!!
+        else -> null
+    }
+
+    /** classId of the currently selected box, or null if none / not found (drives the ring). */
+    val selectedClassId: Int?
+        get() {
+            val (side, id) = selectedTarget() ?: return null
+            return session?.sides?.getOrNull(side)?.bboxes?.find { it.id == id }?.classId
+        }
+
+    /** Set the selected box's class and propagate to its whole linked cluster — parity with
+     *  the carousel class bar + mismatch modal, so a misgraded bunch can be fixed here.
+     *  Re-derives mismatches on next read; saved by the normal Back/Compute save path. */
+    fun setSelectedClass(cls: AnnotationClass) {
+        val s = session ?: return
+        val (side, id) = selectedTarget() ?: return
+        session = SessionUseCases.setBboxClass(s, side, id, cls, propagate = true)
     }
 
     fun runSuggestions() {
@@ -554,6 +582,15 @@ fun DeduplicationScreen(
                     }
                 }
 
+                // Class bar — appears when a box is selected so a misgraded bunch can be
+                // re-classed right here; propagates to the whole linked cluster.
+                if (viewModel.hasSelection) {
+                    DedupClassBar(
+                        currentClassId = viewModel.selectedClassId,
+                        onClassChange = { viewModel.setSelectedClass(it) },
+                    )
+                }
+
                 // Bottom panels: Suggestions + Confirmed Links
                 BottomPanels(
                     suggestions = viewModel.suggestions,
@@ -668,6 +705,39 @@ private fun DedupHalfCanvas(
                     fontWeight = FontWeight.Bold,
                     color = PalmColors.OnLinkHighlight,
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DedupClassBar(
+    currentClassId: Int?,
+    onClassChange: (AnnotationClass) -> Unit,
+) {
+    // Mirrors CarouselBottomBar Row 1: B1–B4 sharing full width, ring on the active class.
+    Surface(tonalElevation = 2.dp, modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            for (cls in AnnotationClass.assignableEntries) {
+                val isSelected = currentClassId == cls.id
+                val labelColor = if (cls.composeColor.luminance() > 0.5f) Color.Black else Color.White
+                Surface(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(44.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { onClassChange(cls) },
+                    color = cls.composeColor,
+                    shape = RoundedCornerShape(8.dp),
+                    border = if (isSelected) ButtonDefaults.outlinedButtonBorder(enabled = true) else null,
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(cls.displayName, color = labelColor, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    }
+                }
             }
         }
     }
