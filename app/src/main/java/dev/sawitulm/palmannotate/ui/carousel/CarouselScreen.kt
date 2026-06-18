@@ -38,6 +38,7 @@ import dev.sawitulm.palmannotate.data.detection.OnnxDetector
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
 import dev.sawitulm.palmannotate.domain.model.*
+import dev.sawitulm.palmannotate.domain.results.ResultsComputer
 import dev.sawitulm.palmannotate.domain.usecase.SessionUseCases
 import dev.sawitulm.palmannotate.domain.util.OperationQueue
 import dev.sawitulm.palmannotate.ui.common.AnnotationCanvas
@@ -298,6 +299,11 @@ class CarouselViewModel @Inject constructor(
         opq.enqueue("save-carousel") {
             val safTreeUri = exportFolder.folderUri.first()
             repo.saveSession(s, safTreeUri)
+            // Finalize: generate Output JSON + mark tree complete so leaving the
+            // carousel (Back / Next Tree) always finalizes the tree — not just when
+            // the user happens to visit the Results screen.
+            val result = withContext(Dispatchers.Default) { ResultsComputer.compute(s) }
+            repo.saveOutputJson(s, result, safTreeUri)
             withContext(Dispatchers.Main) { onDone() }
         }
     }

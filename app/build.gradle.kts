@@ -14,8 +14,8 @@ android {
         applicationId = "dev.sawitulm.palmannotate"
         minSdk = 24
         targetSdk = 34
-        versionCode = 5
-        versionName = "3.1.0"
+        versionCode = 1
+        versionName = "0.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -66,13 +66,13 @@ android {
         ignoreAssetsPatterns += "armeabi-v7a"
     }
 
-    // Output APK as PalmAnnotate-<buildtype>.apk (e.g. PalmAnnotate-debug.apk)
-    // instead of the default app-<buildtype>.apk.
+    // Output APK as PalmAnnotate-<buildtype>-v<version>.apk
+    // e.g. PalmAnnotate-debug-v0.1.apk
     applicationVariants.all {
         val variant = this
         outputs.all {
             (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl)
-                .outputFileName = "PalmAnnotate-${variant.name}.apk"
+                .outputFileName = "PalmAnnotate-${variant.name}-v${variant.versionName}.apk"
         }
     }
 }
