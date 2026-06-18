@@ -180,6 +180,41 @@ See `docs/PERF_GAIN.md`. **Do not move the SAF mirror back onto the blocking sav
 & 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 pull /sdcard/screenshot.png .
 ```
 
+## Versioning
+
+PalmAnnotate uses **Semantic Versioning (SemVer)** with auto-increment:
+
+```
+versionName = "MAJOR.MINOR.COMMIT_COUNT"   e.g. "0.2.35"
+versionCode = COMMIT_COUNT                  e.g. 35
+```
+
+- **PATCH** (`.35`) — auto, derived from `git rev-list --count HEAD`. Every commit increments it.
+- **MAJOR.MINOR** (`0.2`) — manual, set in `app/build.gradle.kts` → `val majorMinor = "0.2"`.
+
+### When to bump MAJOR vs MINOR
+
+| Bump | When | Example |
+|------|------|---------|
+| **MINOR** (`0.2` → `0.3`) | New feature set is complete and usable: new screen, new workflow, significant UX improvement. Accumulate several small changes, then bump once when the feature set is "done". | Carousel editor done, depth viewer added, export pipeline complete |
+| **MAJOR** (`0.x` → `1.0`) | App is production-ready: field-tested, stable, no known data-loss bugs, suitable for real annotation work. Also: breaking changes to data format or DB schema that require migration. | First field release, or v2.0 with new DB schema |
+
+### Rules of thumb
+
+1. **Don't bump MINOR for every commit.** Accumulate related changes, bump when a coherent feature set is done.
+2. **PATCH is free** — it auto-increments, so you never think about it.
+3. **Stay at `0.x` while in active development.** Bump to `1.0` only when the app is field-ready.
+4. **Commit message convention** (optional but helpful):
+   - `feat:` / `fix:` / `perf:` / `docs:` prefixes help when reviewing git log.
+
+### How to bump
+
+Edit `app/build.gradle.kts`:
+```kotlin
+val majorMinor = "0.3"   // ← change this
+```
+Then commit. The build will produce e.g. `PalmAnnotate-debug-v0.3.36.apk`.
+
 ## Working Rules
 
 1. **Don't overestimate.** State what is verified vs. assumed. If a change can only be confirmed on the device, say so.

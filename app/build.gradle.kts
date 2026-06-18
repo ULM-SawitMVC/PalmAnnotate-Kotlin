@@ -1,9 +1,24 @@
+import java.io.ByteArrayOutputStream
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.ksp)
     alias(libs.plugins.hilt)
+}
+
+// ── Version config ──────────────────────────────────────────────────────
+// MAJOR.MINOR is manual — bump when you have a meaningful feature set.
+// PATCH is auto (git commit count) — every commit increments it.
+val majorMinor = "0.2"   // ← change this for new releases
+val commitCount = run {
+    val stdout = ByteArrayOutputStream()
+    exec {
+        commandLine("git", "rev-list", "--count", "HEAD")
+        standardOutput = stdout
+    }
+    stdout.toString().trim().toIntOrNull() ?: 1
 }
 
 android {
@@ -14,8 +29,8 @@ android {
         applicationId = "dev.sawitulm.palmannotate"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1"
+        versionCode = commitCount
+        versionName = "$majorMinor.$commitCount"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
