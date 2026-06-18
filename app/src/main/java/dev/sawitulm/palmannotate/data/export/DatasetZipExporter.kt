@@ -10,6 +10,7 @@ import dev.sawitulm.palmannotate.data.db.TreeEntity
 import dev.sawitulm.palmannotate.data.storage.AndroidStorageManager
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
 import dev.sawitulm.palmannotate.data.storage.SafMirrorStore
+import dev.sawitulm.palmannotate.data.storage.SessionRepository
 import kotlinx.coroutines.flow.first
 import java.io.BufferedOutputStream
 import java.io.File
@@ -50,6 +51,7 @@ class DatasetZipExporter @Inject constructor(
     private val saf: SafMirrorStore,
     private val treeDao: TreeDao,
     private val exportFolder: ExportFolderRepository,
+    private val repo: SessionRepository,
 ) {
 
     companion object {
@@ -105,6 +107,14 @@ class DatasetZipExporter @Inject constructor(
         onProgress: (Progress) -> Unit,
         isCancelled: () -> Boolean,
     ): Outcome {
+        // Regenerate every tree's rich Output JSON (v4: images + bunches + _confirmedLinks +
+        // summary) straight from the DB BEFORE listing files, so the export always ships a
+        // complete, current `json/<tree>.json` — including the operator's cross-side links.
+        // Previously the zip only copied whatever the Results screen had written, so a dataset
+        // captured + linked but never "computed" exported with NO json/ and the links never left
+        // the device. Generating fresh also picks up links added after a tree was marked complete.
+        for (t in trees) materializeOutputJson(t)
+
         // Build the full (source, zipPath, tree) work list up front so total is exact.
         data class Item(val entry: FileEntry, val treeName: String)
         val items = ArrayList<Item>()
@@ -142,6 +152,21 @@ class DatasetZipExporter @Inject constructor(
             return Outcome.Cancelled
         }
         return Outcome.Success(dest.shareUri, fileName)
+    }
+
+    /**
+     * Rebuild a tree's canonical `json/<tree>.json` from the DB (the source of truth) so the
+     * zip's [FileKind.OUTPUT_JSON] entry finds a complete, current file. [ExportManager
+     * .generateOutputJson] emits the v4 schema with `_confirmedLinks`; [SessionRepository
+     * .loadActiveSession] carries the links straight from the link table. Best-effort: a tree
+     * that fails to load is skipped (its other files still export) rather than failing the zip.
+     */
+    private suspend fun materializeOutputJson(tree: TreeEntity) {
+        val session = repo.loadActiveSession(tree.treeKey) ?: return
+        runCatching {
+            val json = ExportManager.generateOutputJson(session).toString(2)
+            storage.writeText(storage.outputJsonFile(tree.treeName), json)
+        }.onFailure { Log.w(TAG, "outputJson regen failed for ${tree.treeName}", it) }
     }
 
     /** Collect the existing local files for one tree, mapped to their zip-internal paths.

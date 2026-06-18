@@ -54,6 +54,10 @@ object ExportManager {
             ?: dateOnlyFormat.format(Date())
         out.put("metadata", JSONObject().apply {
             put("date", date)
+            // session_id: {YYYYMMDD}-{VARIETY}-{BLOCK} from the capture data — the native model
+            // has no run-sequence counter (the reference's trailing "-001"), so the block is the
+            // stable batch identifier. Same for every tree in a block, like a session id should be.
+            put("session_id", deriveSessionId(date, variety, session))
             // number: per-tree sequence parsed from the tree-name suffix (…_0001 -> 1),
             // matching the metadata sidecar's treeId. Omitted if the name has no suffix.
             deriveTreeNumber(session.treeName)?.let { put("number", it) }
@@ -191,6 +195,19 @@ object ExportManager {
         }
     }
 
+    /** Capture-batch id `{YYYYMMDD}-{VARIETY}-{BLOCK}` (e.g. 20260618-DAMIMAS-A21B). Block comes
+     *  from metadata, falling back to the 2nd `_`-segment of the tree name; the block segment is
+     *  dropped only when neither is available, never emitting a dangling trailing dash. */
+    private fun deriveSessionId(date: String, variety: String, session: ActiveSession): String {
+        val ymd = date.filter { it.isDigit() }
+        val block = session.metadata?.block?.takeIf { it.isNotBlank() }
+            ?: session.treeName.split("_").getOrNull(1)?.takeIf { it.isNotBlank() }
+        return buildString {
+            append(ymd); append('-'); append(variety.uppercase())
+            if (block != null) { append('-'); append(block.uppercase()) }
+        }
+    }
+
     private fun deriveVariety(treeName: String): String {
         val m = Regex("^([A-Za-z]+)_").find(treeName)
         return m?.groupValues?.get(1)?.uppercase() ?: "UNKNOWN"
@@ -206,7 +223,11 @@ object ExportManager {
         val cy = ((b.y1 + b.y2) / 2f) / h
         val bw = (b.x2 - b.x1) / w
         val bh = (b.y2 - b.y1) / h
-        return JSONArray().apply { put(cx.f6()); put(cy.f6()); put(bw.f6()); put(bh.f6()) }
+        // Emit JSON numbers (not quoted strings) to match the curated example_dataset reference,
+        // rounded to 6 decimals via the string formatter then parsed back — keeps the precision
+        // cap and stays locale-safe (the dot is fixed by Locale.US in f6) while serializing as a
+        // bare number. bbox_pixel stays integer; the importer reads pixels, so this is output-only.
+        return JSONArray().apply { put(cx.f6n()); put(cy.f6n()); put(bw.f6n()); put(bh.f6n()) }
     }
 
     private fun pixel(b: Bbox): JSONArray = JSONArray().apply {
@@ -297,4 +318,22 @@ object ExportManager {
     }
 
     private fun Float.f6(): String = String.format(Locale.US, "%.6f", this)
+
+    /**
+     * 6-decimal value as a plain-decimal JSON number (e.g. 0.200000 -> 0.2), matching the
+     * reference dataset's numeric bbox_yolo. Returned as a [BigDecimal] on purpose:
+     *  - org.json serializes a BigDecimal verbatim via its toString, so it stays a bare number
+     *    AND never flips to scientific notation. A raw Double would: Android's Double.toString
+     *    renders values < 1e-3 (a small box, e.g. 0.000306) as "3.06E-4", which diverges from the
+     *    reference's plain decimals and can break YOLO parsers.
+     *  - stripTrailingZeros matches the reference's JS formatting (0.05625, not 0.056250).
+     *  - Non-finite inputs (a box on a 0-dimension side → divide-by-zero) degrade to 0, because
+     *    org.json's put(double) THROWS on NaN/Infinity, which would abort the whole tree's JSON.
+     */
+    private fun Float.f6n(): java.math.BigDecimal {
+        if (!isFinite()) return java.math.BigDecimal.ZERO
+        val bd = java.math.BigDecimal(f6()).stripTrailingZeros()
+        // stripTrailingZeros on an exact zero can yield "0E-6"; normalize to a plain 0.
+        return if (bd.signum() == 0) java.math.BigDecimal.ZERO else bd
+    }
 }

@@ -61,19 +61,24 @@ fun ToastHost(
         }
     }
 
-    // Insets so the toast clears the system navigation bar (edge-to-edge would otherwise draw
-    // it under the gesture pill / nav buttons) and lifts above the keyboard when one is open.
+    // Anchored to the TOP as a banner, not the bottom. This is a GLOBAL overlay over every
+    // screen, and the capture / carousel / dedup screens all have bottom action bars (Retake,
+    // Continue, Done, …). A bottom-anchored toast lands right on those buttons and blocks them
+    // (the user literally couldn't tap "Done"). The top never collides with a bottom action bar.
+    // statusBarsPadding clears the status bar; the 64.dp offset is the Material 3 small
+    // TopAppBar height, so the banner sits just BELOW each screen's header (every screen here
+    // uses a standard TopAppBar) instead of covering the back button / title.
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .navigationBarsPadding()
-            .imePadding(),
-        contentAlignment = Alignment.BottomCenter,
+            .statusBarsPadding()
+            .padding(top = 64.dp),
+        contentAlignment = Alignment.TopCenter,
     ) {
         AnimatedVisibility(
             visible = msg != null,
-            enter = fadeIn() + slideInVertically(initialOffsetY = { it }),
-            exit = fadeOut() + slideOutVertically(targetOffsetY = { it }),
+            enter = fadeIn() + slideInVertically(initialOffsetY = { -it }),
+            exit = fadeOut() + slideOutVertically(targetOffsetY = { -it }),
         ) {
             msg?.let { toast ->
                 val bgColor = when (toast.type) {

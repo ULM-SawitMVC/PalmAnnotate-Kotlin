@@ -66,6 +66,24 @@ class ExportMetadataTest {
         assertTrue("date is an ISO calendar day", meta.getString("date").matches(Regex("\\d{4}-\\d{2}-\\d{2}")))
         assertTrue("generated_at present", meta.getString("generated_at").isNotBlank())
     }
+
+    @Test fun `session_id is date-variety-block from metadata`() {
+        val out = ExportManager.generateOutputJson(session(
+            "DAMIMAS_A21B_0006",
+            listOf(side(0, emptyList())),
+            metadata = TreeMetadata(variety = "DAMIMAS", block = "A21B", date = "2026-06-18"),
+        ))
+        assertEquals("20260618-DAMIMAS-A21B", out.getJSONObject("metadata").getString("session_id"))
+    }
+
+    @Test fun `session_id falls back to the block segment of the tree name`() {
+        // No metadata block → take the 2nd underscore segment (A21B), uppercased.
+        val out = ExportManager.generateOutputJson(session(
+            "damimas_a21b_0006", listOf(side(0, emptyList())),
+            metadata = TreeMetadata(variety = "DAMIMAS", date = "2026-06-18"),
+        ))
+        assertEquals("20260618-DAMIMAS-A21B", out.getJSONObject("metadata").getString("session_id"))
+    }
 }
 
 class ExportOutputJsonTest {
@@ -93,15 +111,40 @@ class ExportOutputJsonTest {
         assertEquals(4, ann0.getJSONArray("bbox_pixel").length())
     }
 
-    @Test fun `bbox_yolo is normalized center-form with 6 decimals`() {
-        // box 100..300 x, 200..600 y on a 1000x2000 image → cx .2 cy .2 w .2 h .2
+    @Test fun `bbox_yolo is normalized center-form numbers with 6-decimal precision`() {
+        // box 100..300 x, 200..600 y on a 1000x2000 image → cx .2 cy .2 w .2 h .2.
+        // Emitted as JSON numbers (not strings), matching the curated example_dataset reference.
         val out = ExportManager.generateOutputJson(session("T_0001", listOf(side(0, listOf(box("b0", 0))))))
         val yolo = out.getJSONObject("images").getJSONObject("side_1")
             .getJSONArray("annotations").getJSONObject(0).getJSONArray("bbox_yolo")
-        assertEquals("0.200000", yolo.getString(0))
-        assertEquals("0.200000", yolo.getString(1))
-        assertEquals("0.200000", yolo.getString(2))
-        assertEquals("0.200000", yolo.getString(3))
+        assertTrue("bbox_yolo elements are JSON numbers, not strings", yolo.get(0) is Number)
+        assertEquals(0.2, yolo.getDouble(0), 1e-9)
+        assertEquals(0.2, yolo.getDouble(1), 1e-9)
+        assertEquals(0.2, yolo.getDouble(2), 1e-9)
+        assertEquals(0.2, yolo.getDouble(3), 1e-9)
+    }
+
+    @Test fun `bbox_yolo on a zero-dimension side degrades to finite numbers, not a crash`() {
+        // A box on a side with width/height 0 makes coord/dim = Infinity/NaN. org.json's
+        // put(double) throws on those, which would abort the tree's whole JSON. Must stay finite.
+        val out = ExportManager.generateOutputJson(session("T_0001",
+            listOf(side(0, listOf(box("b0", 0)), w = 0, h = 0))))
+        val yolo = out.getJSONObject("images").getJSONObject("side_1")
+            .getJSONArray("annotations").getJSONObject(0).getJSONArray("bbox_yolo")
+        for (i in 0 until 4) {
+            val v = yolo.getDouble(i)
+            assertTrue("bbox_yolo[$i] is finite", v.isFinite())
+        }
+    }
+
+    @Test fun `bbox_yolo caps precision at six decimals`() {
+        // 1/3 width box → 0.333333… must round to 6 decimals (no long float tail).
+        val out = ExportManager.generateOutputJson(session("T_0001",
+            listOf(side(0, listOf(box("b0", 0, x1 = 0f, x2 = 1000f, y1 = 0f, y2 = 2000f / 3f)), w = 3000))))
+        val cx = out.getJSONObject("images").getJSONObject("side_1")
+            .getJSONArray("annotations").getJSONObject(0).getJSONArray("bbox_yolo").getDouble(0)
+        // center x of 0..1000 on width 3000 = 500/3000 = 0.16666… → 0.166667
+        assertEquals(0.166667, cx, 1e-9)
     }
 
     @Test fun `summary by_class includes the other bucket and by_side`() {
@@ -145,6 +188,33 @@ class ExportOutputJsonTest {
         assertEquals(1, l.getInt("sideB"))
         assertEquals("b0", l.getString("bboxIdA"))
         assertEquals("b0", l.getString("bboxIdB"))
+    }
+
+    @Test fun `all cross-side links survive the export - the four-link ring scenario`() {
+        // The exact case the operator hit: 4 sides x 2 boxes = 8 boxes, one link on each
+        // adjacent pair of the ring (0-1, 1-2, 2-3, 3-0). Every link must appear in the
+        // exported _confirmedLinks — none dropped — so the dedup work actually ships.
+        val sides = listOf(
+            side(0, listOf(box("b0", 0), box("b1", 0))),
+            side(1, listOf(box("b0", 0), box("b1", 0))),
+            side(2, listOf(box("b0", 0), box("b1", 0))),
+            side(3, listOf(box("b0", 0), box("b1", 0))),
+        )
+        val links = listOf(
+            CrossSideLink.create("L0", 0, "b0", 1, "b0"),
+            CrossSideLink.create("L1", 1, "b1", 2, "b0"),
+            CrossSideLink.create("L2", 2, "b1", 3, "b0"),
+            CrossSideLink.create("L3", 3, "b1", 0, "b1"),
+        )
+        val out = ExportManager.generateOutputJson(session("T_0001", sides, links = links))
+        val arr = out.getJSONArray("_confirmedLinks")
+        assertEquals("all four ring links exported", 4, arr.length())
+        // Each link is on a distinct adjacent pair, oriented to the ring tuple from
+        // generateAdjacentPairs (the wrap-around pair is canonically (3,0), not (0,3)).
+        val pairs = (0 until arr.length()).map {
+            val l = arr.getJSONObject(it); l.getInt("sideA") to l.getInt("sideB")
+        }.toSet()
+        assertEquals(setOf(0 to 1, 1 to 2, 2 to 3, 3 to 0), pairs)
     }
 }
 

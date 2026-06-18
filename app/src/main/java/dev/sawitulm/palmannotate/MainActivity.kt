@@ -33,7 +33,7 @@ class MainActivity : ComponentActivity() {
                             PalmAnnotateNavHost()
                             ToastHost(
                                 state = toasts,
-                                modifier = Modifier.align(Alignment.BottomCenter),
+                                modifier = Modifier.align(Alignment.TopCenter),
                             )
                         }
                     }
