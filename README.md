@@ -57,8 +57,9 @@ app/src/main/java/dev/sawitulm/palmannotate/
 | **ONNX Detection** | Deteksi bbox otomatis dengan ONNX Runtime + NMS |
 | **Deduplication** | Two-canvas pair review, suggestion engine (seam-band, size-ratio, weighted score) |
 | **Depth Viewer** | Jet colormap, tap-to-read depth, valueScale dari sidecar |
-| **Export** | Output JSON v4, YOLO labels, CSV, Identity |
-| **CameraX + Orbbec** | Capture foto + depth, D2C alignment, GPS |
+| **Export** | Output JSON v4 (dengan `session_id` = `{YYYYMMDD}-{VARIETY}-{BLOCK}`), YOLO labels, CSV, Identity |
+| **ZIP Backup / Share** | Streaming ZIP per-session atau seluruh dataset → SAF folder + share sheet; layout mengikuti `example_dataset` + depth (`.raw`/meta). Streamed (RAM konstan), jadi safety-net mengeluarkan data sebelum Clear Data |
+| **CameraX + Orbbec** | Capture foto + depth, D2C alignment, GPS; Orbbec in-app reset + peringatan kalau folder SAF belum dipilih |
 | **Auto-Save** | Silent save saat toggle mode, swipe side, atau back |
 | **Resume** | Folder scan resume dari Output JSON |
 

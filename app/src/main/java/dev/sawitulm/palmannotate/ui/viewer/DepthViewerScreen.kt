@@ -105,6 +105,10 @@ class DepthViewerViewModel @Inject constructor(
             depthData = null
             depthWidth = 0
             depthHeight = 0
+            // Reset the scale too: it's only re-read when this side has a depth JSON sidecar,
+            // so without this a side that lacks one would keep the PREVIOUS side's valueScale
+            // and the tap-to-read mm would disagree with the (scale=1.0) displayed range.
+            valueScale = 1.0f
             tapReadout = null
             try {
                 val tree = withContext(Dispatchers.IO) { treeDao.getByKey(treeKey) }

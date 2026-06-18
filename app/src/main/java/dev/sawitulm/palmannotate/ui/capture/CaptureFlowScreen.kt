@@ -268,9 +268,19 @@ class CaptureFlowViewModel @Inject constructor(
 
     override fun onCleared() {
         super.onCleared()
-        viewModelScope.launch {
+        // viewModelScope is ALREADY cancelled by the time onCleared runs, so a coroutine
+        // launched on it never executes — the Orbbec stream pump would keep running after the
+        // capture screen is gone (USB/power drain; a step toward the Pad 8 lock). Stop it on an
+        // independent scope that outlives this ViewModel.
+        kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
             try { orbbec.stopPreview() } catch (_: Exception) {}
         }
+        // Drop our callbacks from the SINGLETON OrbbecManager so it stops holding this
+        // now-dead ViewModel — the app-lifetime USB hotplug receiver would otherwise keep
+        // invoking them and mutating discarded Compose state (and leak the ViewModel).
+        orbbec.onFrame = null
+        orbbec.onDeviceChange = null
+        orbbec.onState = null
     }
 
     // ── Standard capture logic ────────────────────────────────────────────────

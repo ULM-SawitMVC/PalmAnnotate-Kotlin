@@ -293,6 +293,9 @@ class OrbbecManager(private val appContext: Context) {
             val filter = IntentFilter(ACTION_USB_PERMISSION)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) appContext.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
             else @Suppress("UnspecifiedRegisterReceiverFlag") appContext.registerReceiver(receiver, filter)
+            // If the caller is cancelled before the USB dialog is answered (navigate-away,
+            // rotation, VM destroyed), unregister the receiver so it can't leak or fire later.
+            cont.invokeOnCancellation { try { appContext.unregisterReceiver(receiver) } catch (_: Exception) {} }
             mgr.requestPermission(dev, pi)
         }
     }

@@ -150,14 +150,25 @@ class CarouselViewModel @Inject constructor(
      * mirrors SAF in the background. No-op unless [dirty]. Called on side change / mode
      * toggle / exit so the operator never has to remember to "Save".
      */
+    /** Serializes autosaves so a fast side-swipe can't launch two concurrent saves whose IO
+     *  reorders and persists the OLDER snapshot — silently dropping an edit. The Mutex is fair
+     *  (FIFO), so saves commit in the order they were queued, and it keeps autosave SILENT (no
+     *  busy overlay), unlike the opq-driven save()/saveAndExit(). */
+    private val autoSaveMutex = kotlinx.coroutines.sync.Mutex()
+
     fun autoSave() {
         if (!dirty) return
         val s = session ?: return
         dirty = false
         viewModelScope.launch {
-            val safTreeUri = exportFolder.folderUri.first()
-            repo.saveSession(s, safTreeUri)
-            savedTick = System.currentTimeMillis()
+            autoSaveMutex.lock()
+            try {
+                val safTreeUri = exportFolder.folderUri.first()
+                repo.saveSession(s, safTreeUri)
+                savedTick = System.currentTimeMillis()
+            } finally {
+                autoSaveMutex.unlock()
+            }
         }
     }
 

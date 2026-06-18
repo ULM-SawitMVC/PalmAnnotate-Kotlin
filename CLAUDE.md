@@ -21,12 +21,12 @@ $env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
 .\gradlew.bat :app:assembleDebug --no-daemon --max-workers=4
 ```
 
-Output: `app/build/outputs/apk/debug/app-debug.apk`
+Output: `app/build/outputs/apk/debug/PalmAnnotate-debug.apk`
 
 ### Install & Launch
 
 ```powershell
-& 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 install -r 'app/build/outputs/apk/debug/app-debug.apk'
+& 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 install -r 'app/build/outputs/apk/debug/PalmAnnotate-debug.apk'
 & 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 shell am force-stop dev.sawitulm.palmannotate.debug
 & 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 shell monkey -p dev.sawitulm.palmannotate.debug -c android.intent.category.LAUNCHER 1
 ```
@@ -74,13 +74,12 @@ app/src/main/java/dev/sawitulm/palmannotate/
 │   ├── home/                    ← HomeScreen + HomeViewModel
 │   ├── session/                 ← SessionDetailScreen
 │   ├── capture/                 ← CaptureFlowScreen (CameraX + Orbbec toggle)
-│   ├── annotation/              ← AnnotationScreen (canvas + tools + detect + carousel entry)
-│   ├── viewer/                  ← DepthViewerScreen (depth colormap + tap-to-read)
-│   ├── carousel/                ← CarouselScreen (fullscreen swipe viewer)
+│   ├── carousel/                ← CarouselScreen (PRIMARY annotation editor: swipe sides, draw/select/link, auto-save)
+│   ├── viewer/                  ← DepthViewerScreen (jet colormap + tap-to-read)
 │   ├── dedup/                   ← DeduplicationScreen (two-canvas pair review)
-│   ├── results/                 ← ResultsScreen (summary + export)
-│   └── common/                  ← AnnotationCanvas, AppHeader, Dialogs,
-│                                   KeyboardShortcuts, ToastHost
+│   ├── results/                 ← ResultsScreen (summary + export + ZIP backup)
+│   └── common/                  ← AnnotationCanvas (shared by carousel + dedup), AppHeader,
+│                                   Dialogs, KeyboardShortcuts, ToastHost
 └── app/src/test/                ← Unit tests (DomainTests + FolderResumeTests)
 ```
 
@@ -110,7 +109,7 @@ The depth viewer uses the **jet colormap** (blue→cyan→green→yellow→red),
 
 The Dedup button originally called `saveAndAwait()` which waited for `writeSideArtifacts()` (YOLO labels + SAF image mirror) — **12 seconds**. Fixed by creating `saveDbOnly()` that only runs the DB transaction (**13ms**).
 
-**See:** `PERF_GAIN.md` for full analysis.
+**See:** `docs/PERF_GAIN.md` for full analysis.
 
 ### Tap-to-Read Depth
 
@@ -140,7 +139,7 @@ never awaited). SAF was the entire ~11.6s "save feels slow" cost. `SafMirrorStor
 caches directory handles + child listings and overwrites files in place (no
 delete+create), and infers MIME from the extension (a `.txt` written as
 `application/json` was being saved as `.txt.json` and spawning `(N)` duplicates).
-See `PERF_GAIN.md`. **Do not move the SAF mirror back onto the blocking save path.**
+See `docs/PERF_GAIN.md`. **Do not move the SAF mirror back onto the blocking save path.**
 
 ## Device Testing
 
@@ -194,7 +193,7 @@ See `PERF_GAIN.md`. **Do not move the SAF mirror back onto the blocking save pat
 
 | File | Content |
 |------|---------|
-| `MIGRATION_STATUS.md` | Migration progress (Done / Partial / Missing) |
-| `PERF_GAIN.md` | Dedup performance optimization analysis |
+| `docs/MIGRATION_STATUS.md` | Migration progress (Done / Partial / Missing) |
+| `docs/PERF_GAIN.md` | Dedup performance optimization analysis |
 | `HANDOFF.md` | Session handoff notes |
 | `README.md` | Project overview |

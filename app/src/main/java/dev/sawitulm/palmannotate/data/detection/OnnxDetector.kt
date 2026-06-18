@@ -143,13 +143,14 @@ class OnnxDetector(private val context: Context) {
         for (i in 0 until area) buf.put(((pixels[i] shr 16) and 0xFF) / 255f) // R
         for (i in 0 until area) buf.put(((pixels[i] shr 8) and 0xFF) / 255f)  // G
         for (i in 0 until area) buf.put((pixels[i] and 0xFF) / 255f)          // B
-        buf.rewind()
-        // Slice to exact size so OnnxTensor sees the correct shape.
-        val floatBuf = FloatBuffer.allocate(requiredSize)
-        floatBuf.put(buf)
-        floatBuf.rewind()
+        // Hand the reusable buffer straight to OnnxTensor (no per-call copy): position
+        // 0..requiredSize holds the freshly-filled NCHW data, and inputTensor is closed
+        // synchronously below, so the buffer is never read after this call returns. The
+        // explicit limit keeps the tensor shape exact even if a config reload shrank inputSize.
+        buf.position(0)
+        buf.limit(requiredSize)
 
-        val inputTensor = OnnxTensor.createTensor(ortEnv, floatBuf, longArrayOf(1, 3, inputSize.toLong(), inputSize.toLong()))
+        val inputTensor = OnnxTensor.createTensor(ortEnv, buf, longArrayOf(1, 3, inputSize.toLong(), inputSize.toLong()))
         val raw: FloatArray
         val shape: LongArray
         sess.run(mapOf(sess.inputNames.first() to inputTensor)).use { results ->

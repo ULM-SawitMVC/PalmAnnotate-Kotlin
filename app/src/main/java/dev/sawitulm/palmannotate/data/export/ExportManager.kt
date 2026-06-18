@@ -236,25 +236,30 @@ object ExportManager {
 
     // ─── YOLO .txt ────────────────────────────────────────────────────────────
 
-    /** YOLO label content for a side — assigned classes only, 6 decimals. */
-    fun generateYoloTxt(side: TreeSide): String =
-        side.bboxes.filter { it.isAssigned }.joinToString("\n") { b ->
-            val cx = ((b.x1 + b.x2) / 2f) / side.imageWidth
-            val cy = ((b.y1 + b.y2) / 2f) / side.imageHeight
-            val w = (b.x2 - b.x1) / side.imageWidth
-            val h = (b.y2 - b.y1) / side.imageHeight
-            "${b.classId} ${cx.f6()} ${cy.f6()} ${w.f6()} ${h.f6()}"
-        }
+    /** YOLO label content for a side — assigned classes only, 6 decimals.
+     *  Empty when the side has no valid pixel dimensions: dividing by a 0 width/height
+     *  yields Infinity, which `f6()` would emit as the literal token "Infinity" and
+     *  corrupt the label file (the JSON path is already guarded by `f6n()`). */
+    fun generateYoloTxt(side: TreeSide): String {
+        if (side.imageWidth <= 0 || side.imageHeight <= 0) return ""
+        return side.bboxes.filter { it.isAssigned }
+            .joinToString("\n") { yoloLine(it, side.imageWidth, side.imageHeight) }
+    }
 
     /** Mismatch YOLO label content — assigned boxes whose id is in [mismatchBboxIds]. */
-    fun generateYoloMismatchTxt(side: TreeSide, mismatchBboxIds: Set<String>): String =
-        side.bboxes.filter { it.isAssigned && it.id in mismatchBboxIds }.joinToString("\n") { b ->
-            val cx = ((b.x1 + b.x2) / 2f) / side.imageWidth
-            val cy = ((b.y1 + b.y2) / 2f) / side.imageHeight
-            val w = (b.x2 - b.x1) / side.imageWidth
-            val h = (b.y2 - b.y1) / side.imageHeight
-            "${b.classId} ${cx.f6()} ${cy.f6()} ${w.f6()} ${h.f6()}"
-        }
+    fun generateYoloMismatchTxt(side: TreeSide, mismatchBboxIds: Set<String>): String {
+        if (side.imageWidth <= 0 || side.imageHeight <= 0) return ""
+        return side.bboxes.filter { it.isAssigned && it.id in mismatchBboxIds }
+            .joinToString("\n") { yoloLine(it, side.imageWidth, side.imageHeight) }
+    }
+
+    private fun yoloLine(b: Bbox, w: Int, h: Int): String {
+        val cx = ((b.x1 + b.x2) / 2f) / w
+        val cy = ((b.y1 + b.y2) / 2f) / h
+        val bw = (b.x2 - b.x1) / w
+        val bh = (b.y2 - b.y1) / h
+        return "${b.classId} ${cx.f6()} ${cy.f6()} ${bw.f6()} ${bh.f6()}"
+    }
 
     // ─── CSV ────────────────────────────────────────────────────────────────────
 
@@ -264,8 +269,14 @@ object ExportManager {
         val b3 = results.classCounts[AnnotationClass.B3] ?: 0
         val b4 = results.classCounts[AnnotationClass.B4] ?: 0
         return "tree_name,split,unique,raw,B1,B2,B3,B4\n" +
-            "${session.treeName},${session.split},${results.uniqueCount},${results.rawCount},$b1,$b2,$b3,$b4"
+            "${csvField(session.treeName)},${csvField(session.split)},${results.uniqueCount},${results.rawCount},$b1,$b2,$b3,$b4"
     }
+
+    /** RFC-4180 CSV field: quote (and double internal quotes) when it contains a
+     *  comma, quote, CR or LF — otherwise a comma in the tree name shifts every column. */
+    private fun csvField(s: String): String =
+        if (s.any { it == ',' || it == '"' || it == '\n' || it == '\r' })
+            "\"${s.replace("\"", "\"\"")}\"" else s
 
     // ─── Identity JSON ──────────────────────────────────────────────────────────
 

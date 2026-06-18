@@ -12,7 +12,7 @@ import dev.sawitulm.palmannotate.domain.model.*
  * membership for the Output JSON v4 bunches.
  *
  * Key JS semantics:
- *   - linkedCount = total bboxes involved in at least one link (= rawCount - uniqueCount)
+ *   - linkedCount = duplicates collapsed by linking (= rawCount - uniqueCount); exported as `duplicates_linked`
  *   - uniqueCount = total clusters (including singletons)
  *   - classCounts: per-cluster majority vote; unassigned → "other" bucket
  *   - Every box is in exactly one cluster (singletons are clusters of size 1)
@@ -42,15 +42,11 @@ object ResultsComputer {
         }
 
         val uf = UnionFind(allKeys)
-        val linkedBoxKeys = mutableSetOf<String>()
+        val keySet = allKeys.toHashSet()
         for (link in session.confirmedLinks) {
             val a = key(link.sideA, link.bboxIdA)
             val b = key(link.sideB, link.bboxIdB)
-            if (a in allKeys && b in allKeys) {
-                uf.union(a, b)
-                linkedBoxKeys.add(a)
-                linkedBoxKeys.add(b)
-            }
+            if (a in keySet && b in keySet) uf.union(a, b)
         }
 
         // Cluster map: root key -> list of ClusterMember

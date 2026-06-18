@@ -108,19 +108,23 @@ class DedupViewModel @Inject constructor(
             (it.sideA == leftSideIndex && it.sideB == rightSideIndex)
         } ?: emptyList()
 
-    /** Boxes on sideB that are linked from sideA's perspective */
+    /** Partner (on the RIGHT canvas / rightSideIndex) of a box on the LEFT canvas (leftSideIndex).
+     *  Matched by (side, id), NOT id alone: bbox ids repeat across sides (left "b0" and right
+     *  "b0" both exist), so matching a bare id would mistake a link whose RIGHT endpoint shares
+     *  the id for a link on this left box — falsely flagging it linked / highlighting the wrong box. */
     fun linkedBboxIdForSideB(bboxId: String): String? {
         for (link in pairLinks) {
-            if (link.bboxIdB == bboxId) return link.bboxIdA
-            if (link.bboxIdA == bboxId) return link.bboxIdB
+            if (link.sideA == leftSideIndex && link.bboxIdA == bboxId) return link.bboxIdB
+            if (link.sideB == leftSideIndex && link.bboxIdB == bboxId) return link.bboxIdA
         }
         return null
     }
 
+    /** Partner (on the LEFT canvas / leftSideIndex) of a box on the RIGHT canvas (rightSideIndex). */
     fun linkedBboxIdForSideA(bboxId: String): String? {
         for (link in pairLinks) {
-            if (link.bboxIdA == bboxId) return link.bboxIdB
-            if (link.bboxIdB == bboxId) return link.bboxIdA
+            if (link.sideA == rightSideIndex && link.bboxIdA == bboxId) return link.bboxIdB
+            if (link.sideB == rightSideIndex && link.bboxIdB == bboxId) return link.bboxIdA
         }
         return null
     }
