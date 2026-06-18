@@ -1,6 +1,8 @@
 package dev.sawitulm.palmannotate.ui.common
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -12,7 +14,9 @@ import androidx.compose.ui.unit.dp
 import dev.sawitulm.palmannotate.R
 import dev.sawitulm.palmannotate.data.storage.InputCache
 import dev.sawitulm.palmannotate.domain.model.AnnotationClass
+import dev.sawitulm.palmannotate.domain.quality.QualityCheck
 import dev.sawitulm.palmannotate.domain.usecase.SessionUseCases.MismatchCluster
+import dev.sawitulm.palmannotate.ui.theme.PalmColors
 
 /**
  * Dialog for starting a new SESSION (a capture run locked to variety+block).
@@ -147,7 +151,12 @@ fun MismatchResolveModal(
         onDismissRequest = onCancel,
         title = { Text(stringResource(R.string.mismatch_title)) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            // Scrollable so every bunch is reachable — the dialog's text slot has a bounded
+            // height and clips (does not auto-scroll), so 4 tall bunch cards lost #3/#4 before.
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 Text(
                     stringResource(R.string.mismatch_body, mismatches.size),
                     style = MaterialTheme.typography.bodyMedium,
@@ -230,7 +239,7 @@ fun MismatchResolveModal(
  */
 @Composable
 fun QualityGateModal(
-    issues: List<String>,
+    issues: List<QualityCheck.Issue>,
     onContinue: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -238,13 +247,22 @@ fun QualityGateModal(
         onDismissRequest = onBack,
         title = { Text(stringResource(R.string.quality_title)) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 Text(stringResource(R.string.quality_issues_header), style = MaterialTheme.typography.bodyMedium)
                 for (issue in issues) {
+                    // Colour by severity instead of blanket red: a missing-GPS warning shouldn't
+                    // look as alarming as a blocking error. Plain message, no raw code.
                     Text(
-                        "· $issue",
+                        "· ${issue.message}",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
+                        color = when (issue.level) {
+                            QualityCheck.Level.ERROR -> MaterialTheme.colorScheme.error
+                            QualityCheck.Level.WARN -> PalmColors.Warning
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        },
                     )
                 }
                 Spacer(Modifier.height(4.dp))

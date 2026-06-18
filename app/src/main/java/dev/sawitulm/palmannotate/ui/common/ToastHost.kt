@@ -61,7 +61,15 @@ fun ToastHost(
         }
     }
 
-    Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.BottomCenter) {
+    // Insets so the toast clears the system navigation bar (edge-to-edge would otherwise draw
+    // it under the gesture pill / nav buttons) and lifts above the keyboard when one is open.
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .imePadding(),
+        contentAlignment = Alignment.BottomCenter,
+    ) {
         AnimatedVisibility(
             visible = msg != null,
             enter = fadeIn() + slideInVertically(initialOffsetY = { it }),

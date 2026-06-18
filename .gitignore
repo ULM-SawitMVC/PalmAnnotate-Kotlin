@@ -15,6 +15,7 @@ local.properties
 *.ap_
 *.dex
 .kotlin/
+example_dataset
 
 # JVM crash dumps (Gradle/Kotlin daemon OOM on the build machine)
 hs_err_pid*.log

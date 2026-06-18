@@ -51,6 +51,45 @@ object SessionUseCases {
         return result
     }
 
+    /**
+     * Stable 1-based link-group number for every linked bbox, keyed by `"sideIndex:bboxId"`.
+     *
+     * Clusters are numbered by the order their FIRST confirmed link appears in
+     * [ActiveSession.confirmedLinks] (insertion order) — NOT by union-find root identity, which
+     * reshuffles when a new link changes which node becomes the root (the "badge numbers jump
+     * around when I link another bunch" bug). Both endpoints of a link, and every member of a
+     * multi-side cluster, share one number — so the matching bunch carries the same number +
+     * colour on every side, and in BOTH the carousel and the deduplication view.
+     *
+     * A link pointing at a bbox that no longer exists on its side is skipped.
+     */
+    fun linkGroupNumbers(session: ActiveSession): Map<String, Int> {
+        if (session.confirmedLinks.isEmpty()) return emptyMap()
+        val uf = buildClusters(session)
+        val existing = HashSet<String>()
+        for (side in session.sides) for (b in side.bboxes) existing.add("${side.sideIndex}:${b.id}")
+        val rootNum = HashMap<String, Int>()
+        var next = 1
+        val result = HashMap<String, Int>()
+        for (link in session.confirmedLinks) {
+            val ka = "${link.sideA}:${link.bboxIdA}"
+            val kb = "${link.sideB}:${link.bboxIdB}"
+            if (ka !in existing || kb !in existing) continue // link to a deleted box
+            val num = rootNum.getOrPut(uf.find(ka)) { next++ }
+            result[ka] = num
+            result[kb] = num
+        }
+        return result
+    }
+
+    /** Project [linkGroupNumbers] onto one side: `bboxId → group number` for boxes on [sideIndex]. */
+    fun linkGroupForSide(session: ActiveSession, sideIndex: Int): Map<String, Int> {
+        val prefix = "$sideIndex:"
+        return linkGroupNumbers(session)
+            .filterKeys { it.startsWith(prefix) }
+            .mapKeys { it.key.removePrefix(prefix) }
+    }
+
     // ─── Class Propagation ────────────────────────────────────────────────────
 
     /**
@@ -220,14 +259,15 @@ object SessionUseCases {
             sA = sideB; bA = bboxIdB; sB = sideA; bB = bboxIdA
         }
 
-        // Remove existing links on the same pair that touch either endpoint
+        // Remove existing same-pair links that share THIS link's endpoint. Endpoints are
+        // per-side: bbox ids are only unique within a side and repeat across sides (b0, b1,
+        // det0 …), so compare same-side only — never bboxIdB (side sB) against bA (side sA),
+        // which falsely matched an unrelated box and deleted a good link.
         val filtered = session.confirmedLinks.filter { link ->
             val samePair = (link.sideA == sA && link.sideB == sB)
             if (!samePair) return@filter true // keep links on other pairs
-            // Same pair: remove if it touches either endpoint
-            val touchesA = link.bboxIdA == bA || link.bboxIdB == bA
-            val touchesB = link.bboxIdA == bB || link.bboxIdB == bB
-            !(touchesA || touchesB)
+            val sharesEndpoint = link.bboxIdA == bA || link.bboxIdB == bB
+            !sharesEndpoint
         }
 
         val linkId = "lnk-${System.nanoTime()}"

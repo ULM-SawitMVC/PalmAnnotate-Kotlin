@@ -335,7 +335,9 @@ class CaptureFlowViewModel @Inject constructor(
                 gpsStatus = if (loc != null) {
                     latitude = loc.latitude
                     longitude = loc.longitude
-                    "%.5f, %.5f".format(loc.latitude, loc.longitude)
+                    // Locale.US so the decimal stays a dot — the default (Indonesian) locale
+                    // uses a comma, rendering "-3,44941, 114,84279" which reads as four numbers.
+                    String.format(java.util.Locale.US, "%.5f, %.5f", loc.latitude, loc.longitude)
                 } else when {
                     // Distinguish the failure so the message is actionable instead of a blank "unavailable".
                     !gps.hasPermission() -> appContext.getString(R.string.capture_gps_no_permission)
@@ -758,7 +760,7 @@ fun CaptureFlowScreen(
     viewModel.qaReport?.let { report ->
         if (viewModel.showQaDialog) {
             QualityGateModal(
-                issues = report.issues.map { "${it.code}: ${it.message}" },
+                issues = report.issues,
                 onContinue = { viewModel.saveIgnoringQa(sessionId, context, onTreeSaved) },
                 onBack = { viewModel.dismissQa() },
             )

@@ -15,6 +15,7 @@ import android.hardware.usb.UsbManager
 import android.os.Build
 import android.util.Base64
 import android.util.Log
+import dev.sawitulm.palmannotate.R
 import com.orbbec.obsensor.ColorFrame
 import com.orbbec.obsensor.Config
 import com.orbbec.obsensor.DepthFrame
@@ -175,8 +176,8 @@ class OrbbecManager(private val appContext: Context) {
             if (recentDetaches.size >= FLAP_STEP_AFTER && degradeLevel < 2) { degradeLevel++; reached = degradeLevel; recentDetaches.clear() }
         }
         when (reached) {
-            1 -> onState?.invoke("needsPower", "Depth needs more USB power than the tablet alone provides. Plug in the USB hub's power adapter, then tap \"Find camera\". Capturing RGB only for now.")
-            2 -> onState?.invoke("unstable", "USB camera keeps resetting (check the hub's power adapter / cable). Replug it or use the built-in camera.")
+            1 -> onState?.invoke("needsPower", appContext.getString(R.string.orbbec_needs_power))
+            2 -> onState?.invoke("unstable", appContext.getString(R.string.orbbec_unstable))
         }
     }
 

@@ -72,7 +72,7 @@ class ResultsViewModel @Inject constructor(
         private set
     var showQualityGate by mutableStateOf(false)
         private set
-    var qualityIssues by mutableStateOf<List<String>>(emptyList())
+    var qualityIssues by mutableStateOf<List<QualityCheck.Issue>>(emptyList())
         private set
     var pendingExportAction by mutableStateOf<(suspend () -> Unit)?>(null)
         private set
@@ -157,7 +157,7 @@ class ResultsViewModel @Inject constructor(
             }
             val checks = QualityCheck.analyzeTree(s)
             if (checks.status != QualityCheck.Level.OK) {
-                qualityIssues = checks.issues.map { it.message }
+                qualityIssues = checks.issues
                 pendingExportAction = {
                     action(safUri)
                     exportStatus = "$actionLabel exported"

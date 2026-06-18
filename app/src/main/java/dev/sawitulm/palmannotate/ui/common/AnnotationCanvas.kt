@@ -17,9 +17,11 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -37,6 +39,23 @@ private const val CANVAS_TAG = "CanvasPerf"
 
 /** Touch tolerance (screen dp) for selecting a bbox by tap, so tiny boxes stay reachable. */
 private const val TOUCH_TOL_DP = 24f
+
+/**
+ * Cyclic link-group colours (ported from the web DedupUI LINK_COLORS) so a linked bunch keeps
+ * the SAME colour + number on both sides and is easy to match across a swipe. Indexed by the
+ * stable 1-based link-group number.
+ */
+internal val LINK_GROUP_COLORS = listOf(
+    Color(0xFF22C55E), Color(0xFF3B82F6), Color(0xFFF59E0B), Color(0xFFEC4899),
+    Color(0xFF06B6D4), Color(0xFFA855F7), Color(0xFFEF4444), Color(0xFF84CC16),
+    Color(0xFFEAB308), Color(0xFF14B8A6), Color(0xFFD946EF), Color(0xFF0EA5E9),
+    Color(0xFFF97316), Color(0xFF8B5CF6), Color(0xFF10B981), Color(0xFFF43F5E),
+)
+
+/** Stable colour for a 1-based link-group number — shared so the canvas badge, the dashed ring,
+ *  and any list chip referring to the same link all use one colour. */
+internal fun linkGroupColor(num: Int): Color =
+    LINK_GROUP_COLORS[(num - 1).coerceAtLeast(0) % LINK_GROUP_COLORS.size]
 
 /** Minimum drag span (screen dp) before DRAW commits a box — blocks accidental tiny boxes
  *  from a stray finger nudge. Screen-space, so zooming in still lets you draw small boxes. */
@@ -153,7 +172,9 @@ fun AnnotationCanvas(
     imageHeight: Int,
     tool: CanvasTool = CanvasTool.SELECT,
     showBoxes: Boolean = true,
-    /** bboxId → 1-based link-group number; drawn as a badge so links are visible. */
+    /** bboxId → stable 1-based link-group number; drawn as a dashed group-coloured ring +
+     *  matching numbered badge so a connected bunch reads at a glance and keeps the same
+     *  colour/number on both sides of a link. */
     linkedBoxes: Map<String, Int> = emptyMap(),
     onBboxTap: ((String) -> Unit)? = null,
     onBboxMoved: ((String, Float, Float, Float, Float) -> Unit)? = null,
@@ -481,6 +502,24 @@ fun AnnotationCanvas(
                 style = Stroke(width = strokeW),
             )
 
+            // Linked bunch: outer dashed ring in the group colour (ported from the web
+            // DedupUI cross-pair dashed outline) so a connected bunch reads at a glance —
+            // not just from the small number badge.
+            val linkGroup = linkedBoxes[bbox.id]
+            if (linkGroup != null) {
+                val inset = 3.dp.toPx()
+                drawRoundRect(
+                    color = linkGroupColor(linkGroup),
+                    topLeft = Offset(tl.x - inset, tl.y - inset),
+                    size = Size(sz.width + inset * 2, sz.height + inset * 2),
+                    cornerRadius = CornerRadius(4.dp.toPx()),
+                    style = Stroke(
+                        width = 2.dp.toPx(),
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(8.dp.toPx(), 5.dp.toPx())),
+                    ),
+                )
+            }
+
             // Label background
             val labelText = bbox.className
             paint.textSize = (11 * scale).coerceIn(9f, 18f)
@@ -501,19 +540,19 @@ fun AnnotationCanvas(
                 paint.apply { this.color = android.graphics.Color.WHITE },
             )
 
-            // Link badge: a green chip with the link-group number at the box's top-right
-            // corner. The same number appears on the matching bunch on the adjacent side,
-            // so the operator can see what is linked to what.
-            val linkGroup = linkedBoxes[bbox.id]
+            // Link badge: a chip in the group colour with the stable link-group number at the
+            // box's top-right corner. The same colour + number appears on the matching bunch on
+            // the adjacent side, so the operator can see what is linked to what.
             if (linkGroup != null) {
-                val linkColor = Color(0xFFB8E04A)
+                val linkColor = linkGroupColor(linkGroup)
                 val br = 9.dp.toPx()
                 val bcx = tl.x + sz.width
                 val bcy = tl.y
                 drawCircle(color = Color.Black, radius = br + 1.5.dp.toPx(), center = Offset(bcx, bcy))
                 drawCircle(color = linkColor, radius = br, center = Offset(bcx, bcy))
                 paint.textSize = br * 1.5f
-                paint.color = android.graphics.Color.BLACK
+                // Black or white digit by the badge colour's luminance so it always reads.
+                paint.color = if (linkColor.luminance() > 0.5f) android.graphics.Color.BLACK else android.graphics.Color.WHITE
                 val gt = linkGroup.toString()
                 val gtw = paint.measureText(gt)
                 drawContext.canvas.nativeCanvas.drawText(gt, bcx - gtw / 2f, bcy + br * 0.55f, paint)

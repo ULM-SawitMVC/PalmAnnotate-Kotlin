@@ -225,6 +225,10 @@ class CarouselViewModel @Inject constructor(
         linkArmed = false
         pendingLinkBboxId = null
         pendingLinkSide = -1
+        // Keep the just-linked box selected so the class bar stays enabled — otherwise the box
+        // is deselected after linking and tapping a class is a no-op ("can't change the class
+        // after linking"). Changing it now propagates to the whole cluster and auto-saves.
+        selectedBboxId = targetBboxId
         dirty = true
     }
 
@@ -250,9 +254,16 @@ class CarouselViewModel @Inject constructor(
         }
         fun key(side: Int, b: String) = "$side $b"
         s.confirmedLinks.forEach { l -> union(key(l.sideA, l.bboxIdA), key(l.sideB, l.bboxIdB)) }
-        // Stable group numbering by sorted component root.
-        val groupNum = parent.keys.map { root(it) }.distinct().sorted()
-            .withIndex().associate { (i, r) -> r to i + 1 }
+        // Stable numbering: number each cluster by the order its FIRST link appears in
+        // confirmedLinks (insertion order). The old "sort by union-find root" scheme reshuffled
+        // every number whenever a new link changed which node became the component root — so
+        // linking another bunch made the existing badges jump around (1→3, etc.).
+        val groupNum = HashMap<String, Int>()
+        var nextGroup = 1
+        s.confirmedLinks.forEach { l ->
+            val r = root(key(l.sideA, l.bboxIdA))
+            if (r !in groupNum) groupNum[r] = nextGroup++
+        }
         val result = HashMap<String, Int>()
         parent.keys.forEach { k ->
             val sep = k.indexOf(' ')

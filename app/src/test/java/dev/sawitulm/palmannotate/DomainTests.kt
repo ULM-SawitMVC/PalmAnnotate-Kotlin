@@ -294,6 +294,30 @@ class SessionUseCasesBboxTest {
         assertEquals("all linkIds unique", 3, ids.size)
     }
 
+    @Test fun `addManualLink keeps prior link when new link reuses a cross-side id`() {
+        // bbox ids repeat across sides, so a new link's side-0 box can share an id string
+        // with an existing link's side-1 box. That must NOT delete the existing link.
+        var s = session(listOf(
+            side(0, listOf(box("b0"), box("b1"))),
+            side(1, listOf(box("b0"), box("b1"))),
+        ))
+        s = SessionUseCases.addManualLink(s, 0, "b0", 1, "b1")
+        s = SessionUseCases.addManualLink(s, 0, "b1", 1, "b0")
+        assertEquals("both links survive", 2, s.confirmedLinks.size)
+    }
+
+    @Test fun `addManualLink replaces prior link on the same source box`() {
+        // Re-linking the same box to a new partner keeps the one-partner-per-box rule.
+        var s = session(listOf(
+            side(0, listOf(box("b0"), box("b1"))),
+            side(1, listOf(box("b0"), box("b1"))),
+        ))
+        s = SessionUseCases.addManualLink(s, 0, "b0", 1, "b0")
+        s = SessionUseCases.addManualLink(s, 0, "b0", 1, "b1")
+        assertEquals("source box keeps a single partner", 1, s.confirmedLinks.size)
+        assertEquals("b1", s.confirmedLinks[0].bboxIdB)
+    }
+
     @Test fun `delete then re-add link does not collide`() {
         var s = session(listOf(
             side(0, listOf(box("b0"), box("b1"))),
@@ -332,6 +356,170 @@ class SessionUseCasesBboxTest {
         val updated = SessionUseCases.setBboxClass(s, 0, "b0", AnnotationClass.B2, propagate = false)
         assertEquals(1, updated.sides[0].bboxes[0].classId) // B2
         assertEquals(2, updated.sides[1].bboxes[0].classId) // B3 unchanged
+    }
+
+    private fun classed(id: String, classId: Int, name: String) =
+        Bbox(id, classId, name, 0f, 0f, 100f, 100f)
+
+    // ── Link-group numbering (shared by carousel + dedup) ──────────────────────
+
+    @Test fun `linkGroupNumbers gives both endpoints of a link the same number`() {
+        val s = session(
+            sides = listOf(side(0, listOf(box("b0"))), side(1, listOf(box("b0")))),
+            links = listOf(CrossSideLink.create("L0", 0, "b0", 1, "b0")),
+        )
+        val g = SessionUseCases.linkGroupNumbers(s)
+        assertEquals(1, g["0:b0"])
+        assertEquals("matching bunch shares the number", 1, g["1:b0"])
+    }
+
+    @Test fun `linkGroupNumbers numbers clusters by insertion order`() {
+        var s = session(listOf(
+            side(0, listOf(box("b0"), box("b1"))),
+            side(1, listOf(box("b0"), box("b1"))),
+        ))
+        s = SessionUseCases.addManualLink(s, 0, "b0", 1, "b0")
+        s = SessionUseCases.addManualLink(s, 0, "b1", 1, "b1")
+        val g = SessionUseCases.linkGroupNumbers(s)
+        assertEquals(1, g["0:b0"])
+        assertEquals(2, g["0:b1"])
+    }
+
+    @Test fun `linkGroupNumbers stays stable when another link is added`() {
+        var s = session(listOf(
+            side(0, listOf(box("b0"), box("b1"), box("b2"))),
+            side(1, listOf(box("b0"), box("b1"), box("b2"))),
+        ))
+        s = SessionUseCases.addManualLink(s, 0, "b0", 1, "b0")
+        s = SessionUseCases.addManualLink(s, 0, "b1", 1, "b1")
+        val before = SessionUseCases.linkGroupNumbers(s)
+        s = SessionUseCases.addManualLink(s, 0, "b2", 1, "b2")
+        val after = SessionUseCases.linkGroupNumbers(s)
+        // The reported "badges jump around when I link another bunch" bug: existing numbers
+        // must NOT change when a new link is added.
+        assertEquals(before["0:b0"], after["0:b0"])
+        assertEquals(before["0:b1"], after["0:b1"])
+        assertEquals(3, after["0:b2"])
+    }
+
+    @Test fun `linkGroupNumbers unifies a three-side cluster under one number`() {
+        var s = session(listOf(
+            side(0, listOf(box("b0"))), side(1, listOf(box("b0"))), side(2, listOf(box("b0"))),
+        ))
+        s = SessionUseCases.addManualLink(s, 0, "b0", 1, "b0")
+        s = SessionUseCases.addManualLink(s, 1, "b0", 2, "b0")
+        val g = SessionUseCases.linkGroupNumbers(s)
+        assertEquals(g["0:b0"], g["1:b0"])
+        assertEquals(g["1:b0"], g["2:b0"])
+        assertEquals("one cluster -> one number", 1, g.values.toSet().size)
+    }
+
+    @Test fun `linkGroupNumbers gives ten links ten distinct numbers`() {
+        var s = session(listOf(
+            side(0, (0 until 10).map { box("b$it") }),
+            side(1, (0 until 10).map { box("b$it") }),
+        ))
+        for (i in 0 until 10) s = SessionUseCases.addManualLink(s, 0, "b$i", 1, "b$i")
+        val side0Nums = (0 until 10).map { SessionUseCases.linkGroupNumbers(s)["0:b$it"] }
+        assertEquals("ten distinct group numbers", 10, side0Nums.toSet().size)
+        assertEquals((1..10).toSet(), side0Nums.map { it!! }.toSet())
+    }
+
+    @Test fun `linkGroupNumbers ignores a link whose box no longer exists`() {
+        // A stale/legacy link to a box that isn't on the side is skipped, not crashed.
+        val s = session(
+            sides = listOf(side(0, listOf(box("b0"))), side(1, emptyList())),
+            links = listOf(CrossSideLink.create("L0", 0, "b0", 1, "b0")),
+        )
+        assertTrue(SessionUseCases.linkGroupNumbers(s).isEmpty())
+    }
+
+    @Test fun `linkGroupForSide returns boxId to number for that side only`() {
+        val s = session(
+            sides = listOf(side(0, listOf(box("b0"))), side(1, listOf(box("b0")))),
+            links = listOf(CrossSideLink.create("L0", 0, "b0", 1, "b0")),
+        )
+        assertEquals(mapOf("b0" to 1), SessionUseCases.linkGroupForSide(s, 0))
+    }
+
+    // ── addManualLink adjacency / orientation / clustering ─────────────────────
+
+    @Test fun `addManualLink rejects non-adjacent sides`() {
+        val s = session(listOf(
+            side(0, listOf(box("b0"))), side(1, listOf(box("b0"))),
+            side(2, listOf(box("b0"))), side(3, listOf(box("b0"))),
+        ))
+        // In a 4-side ring, sides 0 and 2 are NOT adjacent.
+        val after = SessionUseCases.addManualLink(s, 0, "b0", 2, "b0")
+        assertTrue("non-adjacent link rejected", after.confirmedLinks.isEmpty())
+    }
+
+    @Test fun `addManualLink orients sideA below sideB`() {
+        var s = session(listOf(side(0, listOf(box("b0"))), side(1, listOf(box("b0")))))
+        s = SessionUseCases.addManualLink(s, 1, "b0", 0, "b0") // passed high -> low
+        val link = s.confirmedLinks.single()
+        assertEquals(0, link.sideA)
+        assertEquals(1, link.sideB)
+    }
+
+    @Test fun `addManualLink forms one cluster across three sides`() {
+        var s = session(listOf(
+            side(0, listOf(box("b0"))), side(1, listOf(box("b0"))), side(2, listOf(box("b0"))),
+        ))
+        s = SessionUseCases.addManualLink(s, 0, "b0", 1, "b0")
+        s = SessionUseCases.addManualLink(s, 1, "b0", 2, "b0")
+        assertEquals("three-side cluster", 3, SessionUseCases.getClusterMembers(s, 0, "b0").size)
+    }
+
+    @Test fun `delete prunes confirmed links touching the higher-side box`() {
+        var s = session(
+            sides = listOf(side(0, listOf(box("b0"))), side(1, listOf(box("b0")))),
+            links = listOf(CrossSideLink.create("L0", 0, "b0", 1, "b0")),
+        )
+        s = SessionUseCases.deleteBbox(s, 1, "b0") // delete the sideB endpoint
+        assertTrue("link dropped when its sideB box is deleted", s.confirmedLinks.isEmpty())
+    }
+
+    // ── Mismatch detection + resolution ────────────────────────────────────────
+
+    @Test fun `getMismatchedClusters flags a cluster with inconsistent classes`() {
+        val s = session(
+            sides = listOf(side(0, listOf(classed("b0", 0, "B1"))), side(1, listOf(classed("b0", 1, "B2")))),
+            links = listOf(CrossSideLink.create("L0", 0, "b0", 1, "b0")),
+        )
+        assertEquals(1, SessionUseCases.getMismatchedClusters(s).size)
+    }
+
+    @Test fun `getMismatchedClusters empty when cluster classes agree`() {
+        val s = session(
+            sides = listOf(side(0, listOf(classed("b0", 1, "B2"))), side(1, listOf(classed("b0", 1, "B2")))),
+            links = listOf(CrossSideLink.create("L0", 0, "b0", 1, "b0")),
+        )
+        assertTrue(SessionUseCases.getMismatchedClusters(s).isEmpty())
+    }
+
+    @Test fun `resolveAllMismatches makes the cluster consistent`() {
+        val s = session(
+            sides = listOf(side(0, listOf(classed("b0", 0, "B1"))), side(1, listOf(classed("b0", 1, "B2")))),
+            links = listOf(CrossSideLink.create("L0", 0, "b0", 1, "b0")),
+        )
+        val resolved = SessionUseCases.resolveAllMismatches(s)
+        assertTrue(SessionUseCases.getMismatchedClusters(resolved).isEmpty())
+        assertEquals(resolved.sides[0].bboxes[0].classId, resolved.sides[1].bboxes[0].classId)
+    }
+
+    @Test fun `propagate works across a three-side cluster`() {
+        var s = session(listOf(
+            side(0, listOf(classed("b0", 0, "B1"))),
+            side(1, listOf(classed("b0", 0, "B1"))),
+            side(2, listOf(classed("b0", 0, "B1"))),
+        ))
+        s = SessionUseCases.addManualLink(s, 0, "b0", 1, "b0")
+        s = SessionUseCases.addManualLink(s, 1, "b0", 2, "b0")
+        val updated = SessionUseCases.setBboxClass(s, 1, "b0", AnnotationClass.B3) // change the middle
+        assertEquals(2, updated.sides[0].bboxes[0].classId)
+        assertEquals(2, updated.sides[1].bboxes[0].classId)
+        assertEquals(2, updated.sides[2].bboxes[0].classId)
     }
 }
 

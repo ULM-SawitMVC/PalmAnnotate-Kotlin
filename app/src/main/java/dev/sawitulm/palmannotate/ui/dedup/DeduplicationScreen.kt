@@ -45,6 +45,7 @@ import dev.sawitulm.palmannotate.domain.model.*
 import dev.sawitulm.palmannotate.domain.usecase.SessionUseCases
 import dev.sawitulm.palmannotate.ui.common.AnnotationCanvas
 import dev.sawitulm.palmannotate.ui.common.CanvasTool
+import dev.sawitulm.palmannotate.ui.common.linkGroupColor
 import dev.sawitulm.palmannotate.ui.common.MismatchResolveModal
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -531,19 +532,18 @@ fun DeduplicationScreen(
                         return@HorizontalPager
                     }
 
-                    // Pair-specific links
-                    val pageLinks = viewModel.session?.confirmedLinks?.filter {
-                        (it.sideA == rIdx && it.sideB == lIdx) ||
-                        (it.sideA == lIdx && it.sideB == rIdx)
-                    } ?: emptyList()
-                    val linkedIds = pageLinks.flatMap { listOf(it.bboxIdA, it.bboxIdB) }.toSet()
+                    // Global, tree-wide link numbering (shared with the carousel via
+                    // SessionUseCases) so a link keeps the SAME number + colour everywhere — both
+                    // dedup canvases AND the chips below, and the carousel badges.
+                    val lLinkMap = viewModel.session?.let { SessionUseCases.linkGroupForSide(it, lIdx) } ?: emptyMap()
+                    val rLinkMap = viewModel.session?.let { SessionUseCases.linkGroupForSide(it, rIdx) } ?: emptyMap()
 
                     if (isPortrait) {
                         Column(modifier = Modifier.fillMaxSize()) {
                             DedupHalfCanvas(
                                 label = stringResource(R.string.dedup_side, lIdx + 1),
                                 side = lSide,
-                                linkedIds = linkedIds,
+                                linkedBoxes = lLinkMap,
                                 selectedId = viewModel.selectedSideB,
                                 pending = viewModel.pendingBboxId.takeIf { viewModel.pendingSide == lIdx },
                                 onTap = { viewModel.onBboxTap(lIdx, it) },
@@ -553,7 +553,7 @@ fun DeduplicationScreen(
                             DedupHalfCanvas(
                                 label = stringResource(R.string.dedup_side, rIdx + 1),
                                 side = rSide,
-                                linkedIds = linkedIds,
+                                linkedBoxes = rLinkMap,
                                 selectedId = viewModel.selectedSideA,
                                 pending = viewModel.pendingBboxId.takeIf { viewModel.pendingSide == rIdx },
                                 onTap = { viewModel.onBboxTap(rIdx, it) },
@@ -565,7 +565,7 @@ fun DeduplicationScreen(
                             DedupHalfCanvas(
                                 label = stringResource(R.string.dedup_side, lIdx + 1),
                                 side = lSide,
-                                linkedIds = linkedIds,
+                                linkedBoxes = lLinkMap,
                                 selectedId = viewModel.selectedSideB,
                                 pending = viewModel.pendingBboxId.takeIf { viewModel.pendingSide == lIdx },
                                 onTap = { viewModel.onBboxTap(lIdx, it) },
@@ -575,7 +575,7 @@ fun DeduplicationScreen(
                             DedupHalfCanvas(
                                 label = stringResource(R.string.dedup_side, rIdx + 1),
                                 side = rSide,
-                                linkedIds = linkedIds,
+                                linkedBoxes = rLinkMap,
                                 selectedId = viewModel.selectedSideA,
                                 pending = viewModel.pendingBboxId.takeIf { viewModel.pendingSide == rIdx },
                                 onTap = { viewModel.onBboxTap(rIdx, it) },
@@ -660,7 +660,7 @@ private fun PairNav(
 private fun DedupHalfCanvas(
     label: String,
     side: TreeSide,
-    linkedIds: Set<String>,
+    linkedBoxes: Map<String, Int>,
     selectedId: String?,
     pending: String?,
     onTap: (String) -> Unit,
@@ -675,6 +675,7 @@ private fun DedupHalfCanvas(
             imageHeight = side.imageHeight.coerceAtLeast(1),
             tool = CanvasTool.SELECT,
             showBoxes = true,
+            linkedBoxes = linkedBoxes,
             onBboxTap = { id -> if (id != null) onTap(id) },
             modifier = Modifier.fillMaxSize(),
         )
@@ -802,11 +803,29 @@ private fun BottomPanels(
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    for (link in confirmedLinks) {
+                    val groups = session?.let { SessionUseCases.linkGroupNumbers(it) } ?: emptyMap()
+                    confirmedLinks.forEach { link ->
+                        // Same number + colour as the on-canvas badge for this link, so the list
+                        // and the images read as one thing instead of bare "b2↔b3" text.
+                        val num = groups["${link.sideA}:${link.bboxIdA}"] ?: 1
+                        val gc = linkGroupColor(num)
                         InputChip(
                             selected = true,
                             onClick = { onRemoveLink(link.linkId) },
-                            label = { Text("${link.bboxIdA}↔${link.bboxIdB}", style = MaterialTheme.typography.labelMedium) },
+                            leadingIcon = {
+                                Box(
+                                    modifier = Modifier.size(22.dp).clip(CircleShape).background(gc),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(
+                                        num.toString(),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (gc.luminance() > 0.5f) Color.Black else Color.White,
+                                    )
+                                }
+                            },
+                            label = { Text("${link.bboxIdA} ↔ ${link.bboxIdB}", style = MaterialTheme.typography.labelMedium) },
                             trailingIcon = { Icon(Icons.Default.Close, stringResource(R.string.cd_remove_link), modifier = Modifier.size(16.dp)) },
                             modifier = Modifier.height(40.dp),
                         )

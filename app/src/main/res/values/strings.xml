@@ -118,6 +118,8 @@
     <string name="orbbec_usb_denied">USB access denied — tap \'Allow\' on the system dialog</string>
     <string name="orbbec_start_failed">Could not start the Orbbec camera. Reconnect it and try again.</string>
     <string name="orbbec_capture_failed">Capture failed: %1$s</string>
+    <string name="orbbec_needs_power">Depth needs more USB power than the tablet alone provides. Plug in the USB hub\'s power adapter, then tap “Find camera”. Capturing color photos only for now.</string>
+    <string name="orbbec_unstable">The depth camera keeps resetting — check the USB hub\'s power adapter and cable, then replug it, or switch to the built-in camera.</string>
 
     <!-- Carousel / annotation -->
     <string name="carousel_title_fallback">Annotate</string>
