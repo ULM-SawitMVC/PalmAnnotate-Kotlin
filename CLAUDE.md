@@ -6,6 +6,9 @@ Native Kotlin + Jetpack Compose rewrite of PalmAnnotate (originally Capacitor We
 
 ## Build & Run
 
+> Building locally is optional — every push to `master` produces a downloadable APK.
+> See [CI — GitHub Actions](#ci--github-actions).
+
 ### Prerequisites
 
 - **JDK 17** — `C:\tools\jdk17\jdk-17.0.19+10`
@@ -21,12 +24,16 @@ $env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
 .\gradlew.bat :app:assembleDebug --no-daemon --max-workers=4
 ```
 
-Output: `app/build/outputs/apk/debug/PalmAnnotate-debug.apk`
+Output: `app/build/outputs/apk/debug/PalmAnnotate-debug-v<version>.apk`
+— e.g. `PalmAnnotate-debug-v0.3.39.apk`. The version is part of the filename
+(see [Versioning](#versioning)), so don't hardcode it; resolve the newest APK instead.
 
 ### Install & Launch
 
 ```powershell
-& 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 install -r 'app/build/outputs/apk/debug/PalmAnnotate-debug.apk'
+$apk = Get-ChildItem 'app/build/outputs/apk/debug/PalmAnnotate-debug-v*.apk' |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+& 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 install -r $apk.FullName
 & 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 shell am force-stop dev.sawitulm.palmannotate.debug
 & 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 shell monkey -p dev.sawitulm.palmannotate.debug -c android.intent.category.LAUNCHER 1
 ```
@@ -215,6 +222,49 @@ val majorMinor = "0.3"   // ← change this
 ```
 Then commit. The build will produce e.g. `PalmAnnotate-debug-v0.3.36.apk`.
 
+## CI — GitHub Actions
+
+Local builds are no longer the only way to get an APK. Two workflows live in `.github/workflows/`.
+
+| Trigger | Android Build | Release |
+|---------|---------------|---------|
+| Push to `master` | ✅ APK as workflow artifact (30d) | ❌ |
+| PR to `master` | ✅ | ❌ |
+| Push tag `v*` | ❌ (branch-filtered) | ✅ tag + GitHub Release |
+| Actions → Run workflow | ✅ | ✅ (derives the tag from the build) |
+
+**Getting a CI APK:** Actions tab → pick the run → Artifacts. Or `gh run download`.
+Release assets are the raw `.apk`; workflow artifacts are ZIP-wrapped by GitHub, so
+the byte counts differ (~83 MB vs ~44 MB) for the *same* build. Install from a Release
+to skip the unzip.
+
+**Releases are deliberately manual.** `versionCode` increments on every commit, so
+auto-releasing each push would bury the one build that was actually field-verified
+under dozens of near-identical ones. Push daily → artifact; cut a Release only for a
+build you intend to carry into the field.
+
+### Invariants — do not break these
+
+- **`fetch-depth: 0` in both checkouts is REQUIRED, not cosmetic.** `app/build.gradle.kts`
+  derives `versionCode`/`versionName` from `git rev-list --count HEAD`. GitHub's default
+  shallow clone (depth 1) makes that return `1` and ships a silently downgraded
+  `v0.3.1` / `versionCode 1` APK.
+- **CI builds `debug`, not `release`.** There is no `signingConfig`, so a release APK
+  would be unsigned and uninstallable. Debug is also the variant the test devices run
+  (`dev.sawitulm.palmannotate.debug`). Adding release builds means storing a keystore
+  as a GitHub Secret first.
+- **`release.yml` fails the run if a pushed tag disagrees with the built version.** That
+  guard exists so a Release can never carry an APK whose internal version differs from
+  its label. Don't relax it.
+- **`git push --follow-tags` triggers both workflows** (branch push + tag push) — correct
+  output, one wasted build. Push commit and tag separately.
+
+### CI does NOT replace on-device verification
+
+A green CI run means it compiles and the unit tests pass. It says **nothing** about the
+Orbbec live depth preview, which no runner can exercise. Every APK still needs the
+on-device checklist before field use. See the 0% error tolerance block below.
+
 ## Working Rules
 
 > ### ⛔ 0% ERROR TOLERANCE — 0% BUG (read before every code change)
@@ -247,5 +297,6 @@ Then commit. The build will produce e.g. `PalmAnnotate-debug-v0.3.36.apk`.
 |------|---------|
 | `docs/MIGRATION_STATUS.md` | Migration progress (Done / Partial / Missing) |
 | `docs/PERF_GAIN.md` | Dedup performance optimization analysis |
+| `.github/workflows/` | CI: `android-build.yml` (APK per push) + `release.yml` (tagged Release) |
 | `HANDOFF.md` | Session handoff notes |
 | `README.md` | Project overview |
