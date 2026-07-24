@@ -68,10 +68,13 @@ object YoloParser {
         return bboxes
             .filter { it.classId in 0..3 }
             .joinToString("\n") { b ->
-                val cx = ((b.x1 + b.x2) / 2f) / imgW
-                val cy = ((b.y1 + b.y2) / 2f) / imgH
-                val w  = (b.x2 - b.x1) / imgW
-                val h  = (b.y2 - b.y1) / imgH
+                // D4-11: clamp to [0,1]. No-op for in-bounds producers, but guards resume/import
+                // (FolderResumeImporter feeds Bbox straight from JSON) so a stray value can never
+                // emit an out-of-range YOLO label that a trainer would reject or mis-scale.
+                val cx = (((b.x1 + b.x2) / 2f) / imgW).coerceIn(0f, 1f)
+                val cy = (((b.y1 + b.y2) / 2f) / imgH).coerceIn(0f, 1f)
+                val w  = ((b.x2 - b.x1) / imgW).coerceIn(0f, 1f)
+                val h  = ((b.y2 - b.y1) / imgH).coerceIn(0f, 1f)
                 "${b.classId} ${cx.f6()} ${cy.f6()} ${w.f6()} ${h.f6()}"
             }
     }

@@ -78,12 +78,18 @@ class SessionRepository(
 
     suspend fun createRun(variety: String, block: String, sideCount: Int, autoId: Boolean): String =
         withContext(Dispatchers.IO) {
+            val groupKey = groupKeyFor(variety, block)
+            // C-01: one run per variety+block. Re-using the same block must fold into the SAME run
+            // (so nextId keeps counting and treeName can never collide across runs), never spawn a
+            // parallel run. Mirrors FolderResumeImporter's groupKey reuse. When an existing run is
+            // reused, its sideCount/autoId are kept (the dialog's values for this call are ignored).
+            sessionDao.getByGroupKey(groupKey)?.let { return@withContext it.sessionId }
             val id = UUID.randomUUID().toString()
             val now = System.currentTimeMillis()
             sessionDao.upsert(
                 SessionEntity(
                     sessionId = id, variety = variety.trim(), block = block.trim(),
-                    groupKey = groupKeyFor(variety, block),
+                    groupKey = groupKey,
                     sideCount = sideCount.coerceAtLeast(2), autoId = autoId, nextId = 1,
                     createdAt = now, updatedAt = now,
                 )
@@ -384,6 +390,15 @@ class SessionRepository(
                             saf.writeText(safTreeUri, metaPath, depthMeta.readText())
                         }.onFailure { Log.w(TAG, "SAF mirror depth meta failed for side ${side.sideIndex}", it) }
                     }
+                }
+            } else {
+                // H-02: local has no depth for this side (never captured, or a re-shoot dropped it).
+                // Remove any depth previously mirrored to SAF so resume/import can't bring the stale
+                // depth back and pair it with the new RGB. Only touches SAF when something is there.
+                val rawPath = "dataset/depth/field/${treeName}_${side.sideIndex + 1}.raw"
+                if (saf.exists(safTreeUri, rawPath)) {
+                    runCatching { saf.deletePath(safTreeUri, rawPath) }
+                    runCatching { saf.deletePath(safTreeUri, "dataset/depth/field/${treeName}_${side.sideIndex + 1}.json") }
                 }
             }
         }

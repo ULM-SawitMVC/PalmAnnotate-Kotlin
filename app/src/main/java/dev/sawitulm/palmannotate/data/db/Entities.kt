@@ -12,7 +12,12 @@ import kotlinx.coroutines.flow.Flow
 //   SIDE/BBOX/LINK— belong to a TREE (keyed by treeKey).
 
 /** A capture run, locked to a single variety+block, holding many trees. */
-@Entity(tableName = "sessions")
+@Entity(
+    tableName = "sessions",
+    // groupKey (variety+block) is a run's unique identity: re-using the same block must fold into
+    // the SAME run/folder, never spawn a parallel run (which would collide treeName across runs).
+    indices = [Index(value = ["groupKey"], unique = true)],
+)
 data class SessionEntity(
     @PrimaryKey val sessionId: String,   // UUID (run id)
     val variety: String = "",
@@ -34,7 +39,10 @@ data class SessionEntity(
         childColumns = ["sessionId"],
         onDelete = ForeignKey.CASCADE,
     )],
-    indices = [Index("sessionId")],
+    // treeName is globally unique: on disk, files are keyed only by treeName, so a duplicate would
+    // let one tree's RGB pair with another tree's depth. This unique index is the DB-level backstop
+    // for C-01 (the app-layer guard is SessionRepository.createRun folding same-groupKey runs).
+    indices = [Index("sessionId"), Index(value = ["treeName"], unique = true)],
 )
 data class TreeEntity(
     @PrimaryKey val treeKey: String,     // UUID — the annotation key used across the UI/nav
@@ -121,6 +129,10 @@ interface SessionDao {
 
     @Query("SELECT * FROM sessions WHERE sessionId = :id")
     suspend fun getById(id: String): SessionEntity?
+
+    /** Find an existing run for a variety+block key (C-01: one run per groupKey). */
+    @Query("SELECT * FROM sessions WHERE groupKey = :groupKey LIMIT 1")
+    suspend fun getByGroupKey(groupKey: String): SessionEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(session: SessionEntity)

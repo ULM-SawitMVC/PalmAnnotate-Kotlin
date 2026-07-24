@@ -11,7 +11,7 @@ plugins {
 // ── Version config ──────────────────────────────────────────────────────
 // MAJOR.MINOR is manual — bump when you have a meaningful feature set.
 // PATCH is auto (git commit count) — every commit increments it.
-val majorMinor = "0.2"   // ← change this for new releases
+val majorMinor = "0.3"   // ← change this for new releases
 val commitCount = run {
     val stdout = ByteArrayOutputStream()
     exec {
@@ -41,8 +41,12 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            // ORB-09: R8 minify/shrink MUST stay OFF — it strips something the Orbbec SDK reaches
+            // via JNI/reflection and the live depth preview freezes ("one frame then freeze").
+            // See CLAUDE.md "R8 Minification — DO NOT ENABLE". Re-enable only after re-verifying
+            // the live Orbbec preview on a physical device.
+            isMinifyEnabled = false
+            isShrinkResources = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -90,6 +94,12 @@ android {
                 .outputFileName = "PalmAnnotate-${variant.name}-v${variant.versionName}.apk"
         }
     }
+}
+
+ksp {
+    // Room records the schema on disk when exportSchema=true, so explicit migrations can be
+    // validated against it. Enables safe, NON-destructive migrations — do NOT remove.
+    arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 dependencies {

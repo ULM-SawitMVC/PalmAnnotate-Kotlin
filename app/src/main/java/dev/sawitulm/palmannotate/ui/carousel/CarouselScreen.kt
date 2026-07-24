@@ -311,16 +311,23 @@ class CarouselViewModel @Inject constructor(
     fun detectCurrentSide() {
         val side = currentSide ?: return
         val uri = side.imageUri ?: return
+        val sideIndex = currentSideIndex   // H-08: capture BEFORE the suspending detect(); the user
+                                           // can swipe to another side while the model runs (seconds).
         viewModelScope.launch {
             isDetecting = true
             try {
                 val detections = detector.detect(uri)
                 val s = session ?: return@launch
+                // H-08: merge onto the side we actually ran detection on (by captured index) using its
+                // LATEST state — never onto whatever side is showing now. If the side list changed
+                // under us (image no longer matches), abort rather than corrupt the wrong side.
+                val targetSide = s.sides.getOrNull(sideIndex) ?: return@launch
+                if (targetSide.imageUri != uri) return@launch
                 // Never-reused ids: each new box derives its id from the running
                 // box list so a prior delete can't make a detect id collide.
-                val running = side.bboxes.toMutableList()
+                val running = targetSide.bboxes.toMutableList()
                 val newBoxes = detections.filter { d ->
-                    val overlaps = side.bboxes.any { existing ->
+                    val overlaps = targetSide.bboxes.any { existing ->
                         val existingArea = (existing.x2 - existing.x1) * (existing.y2 - existing.y1)
                         val detArea = (d.x2 - d.x1) * (d.y2 - d.y1)
                         val ix1 = maxOf(d.x1, existing.x1)
@@ -340,10 +347,10 @@ class CarouselViewModel @Inject constructor(
                 }
                 // For freshly captured trees the annot-log baseline is empty;
                 // seed originalBboxes with the detector output (the suggestion baseline).
-                val baseline = if (side.originalBboxes.isEmpty()) newBoxes else side.originalBboxes
+                val baseline = if (targetSide.originalBboxes.isEmpty()) newBoxes else targetSide.originalBboxes
                 val updatedSides = s.sides.toMutableList()
-                updatedSides[currentSideIndex] = side.copy(
-                    bboxes = side.bboxes + newBoxes,
+                updatedSides[sideIndex] = targetSide.copy(
+                    bboxes = targetSide.bboxes + newBoxes,
                     originalBboxes = baseline,
                 )
                 session = s.copy(sides = updatedSides)
@@ -482,19 +489,22 @@ fun CarouselScreen(
                         Icon(Icons.Default.MoreVert, stringResource(R.string.cd_more))
                     }
                     DropdownMenu(expanded = showMoreMenu, onDismissRequest = { showMoreMenu = false }) {
+                        // H-07: save-then-navigate (same as Back / Next Tree). Dedup & Results read
+                        // the tree back from the DB, so navigating without saving first would drop
+                        // in-memory edits (e.g. a class change made in REVIEW mode without a swipe).
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.menu_deduplication)) },
-                            onClick = { showMoreMenu = false; onDedup() },
+                            onClick = { showMoreMenu = false; viewModel.saveAndExit { onDedup() } },
                             leadingIcon = { Icon(Icons.Default.Link, null) },
                         )
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.menu_results)) },
-                            onClick = { showMoreMenu = false; onResults() },
+                            onClick = { showMoreMenu = false; viewModel.saveAndExit { onResults() } },
                             leadingIcon = { Icon(Icons.Default.Assessment, null) },
                         )
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.menu_depth_viewer)) },
-                            onClick = { showMoreMenu = false; onDepth() },
+                            onClick = { showMoreMenu = false; viewModel.saveAndExit { onDepth() } },
                             leadingIcon = { Icon(Icons.Default.Thermostat, null) },
                         )
                     }

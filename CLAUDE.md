@@ -217,6 +217,23 @@ Then commit. The build will produce e.g. `PalmAnnotate-debug-v0.3.36.apk`.
 
 ## Working Rules
 
+> ### ⛔ 0% ERROR TOLERANCE — 0% BUG (read before every code change)
+>
+> The operator has **no chance to re-test with the Orbbec camera before the day of dataset
+> collection** — the first time the app is opened again in the field *is* the collection day. There
+> is no room for error.
+>
+> - **Never introduce a bug.** Every edit must be additive, minimal, and isolated.
+> - **Check ALL related code** — every caller, every file/DB reader, every test — before saying
+>   "done". Not just the changed lines.
+> - **Finish the WHOLE fix** before reporting completion. No partial work.
+> - **Orbbec runtime is untestable here.** Any new SDK call must be wrapped in `try/catch`,
+>   **fail-safe** (a failure degrades to today's behavior — never crashes capture/preview, never
+>   writes corrupt data) and **isolated** (easy to roll back). Do **not** touch the live
+>   preview / frame-callback path.
+> - **Be honest about verification limits.** State plainly what is code-verified (compile + unit
+>   tests + caller trace) vs. what still needs the on-device checklist in `docs/AUDIT_RGBD_DEPTH.md` §8.
+
 1. **Don't overestimate.** State what is verified vs. assumed. If a change can only be confirmed on the device, say so.
 2. **Test on device.** UI changes must be verified on the physical device, not just in code.
 3. **Log first, optimize second.** Add performance logging before making optimization changes.

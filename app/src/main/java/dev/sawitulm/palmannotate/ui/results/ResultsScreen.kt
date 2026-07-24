@@ -155,6 +155,13 @@ class ResultsViewModel @Inject constructor(
                 exportStatus = "Select an export folder first"
                 return@launch
             }
+            // H-05: the persisted URI grant can silently die (permission revoked, SD remounted with
+            // a new volume UUID, folder moved/renamed from a PC). Detect it up front so we never show
+            // a green "exported" toast while nothing was actually written to removable storage.
+            if (!saf.isFolderAccessible(safUri)) {
+                exportStatus = "Export folder is not accessible — re-select it in Settings"
+                return@launch
+            }
             val checks = QualityCheck.analyzeTree(s)
             if (checks.status != QualityCheck.Level.OK) {
                 qualityIssues = checks.issues
@@ -176,11 +183,19 @@ class ResultsViewModel @Inject constructor(
         }
     }
 
+    /** H-05: turn a silent SAF write failure (returns false, no throw) into a loud one so
+     *  exportGated's catch reports it instead of falsely toasting "exported". */
+    private fun requireSafWrite(ok: Boolean) {
+        if (!ok) throw IllegalStateException(
+            "Export write failed — the export folder may have been moved or its permission revoked. Re-select it in Settings."
+        )
+    }
+
     fun exportOutputJson() = exportGated("Output JSON") { safUri ->
         val s = session ?: return@exportGated
         val r = results ?: return@exportGated
         val jsonText = ExportManager.generateOutputJson(s, r).toString(2)
-        saf.writeText(safUri, "Output JSON/${s.treeName}.json", jsonText)
+        requireSafWrite(saf.writeText(safUri, "Output JSON/${s.treeName}.json", jsonText))
         repo.saveOutputJson(s, r, safUri)
     }
 
@@ -189,7 +204,7 @@ class ResultsViewModel @Inject constructor(
         for (side in s.sides) {
             val yolo = ExportManager.generateYoloTxt(side)
             if (yolo.isNotBlank()) {
-                saf.writeText(safUri, "Output TXT/field/${s.treeName}_${side.sideIndex + 1}.txt", yolo)
+                requireSafWrite(saf.writeText(safUri, "Output TXT/field/${s.treeName}_${side.sideIndex + 1}.txt", yolo))
             }
         }
     }
@@ -198,14 +213,14 @@ class ResultsViewModel @Inject constructor(
         val s = session ?: return@exportGated
         val r = results ?: return@exportGated
         val csv = ExportManager.generateCsv(s, r)
-        saf.writeText(safUri, "exports/${s.treeName}_result.csv", csv)
+        requireSafWrite(saf.writeText(safUri, "exports/${s.treeName}_result.csv", csv))
     }
 
     fun exportIdentity() = exportGated("Identity JSON") { safUri ->
         val s = session ?: return@exportGated
         val r = results ?: return@exportGated
         val json = ExportManager.generateIdentityJson(s, r).toString(2)
-        saf.writeText(safUri, "exports/${s.treeName}_identity.json", json)
+        requireSafWrite(saf.writeText(safUri, "exports/${s.treeName}_identity.json", json))
     }
 
     fun dismissQualityGate(continueExport: Boolean) {

@@ -100,6 +100,7 @@ class OrbbecManager(private val appContext: Context) {
         val base64: String, val width: Int, val height: Int, val format: String, val valueScale: Float,
         val encoding: String = "uint16le", val unit: String = "mm", val alignedTo: String = "color",
         val displayFloorMm: Float = DEPTH_RANGE_FLOOR_MM, val displayCeilingMm: Float = DEPTH_RANGE_CEILING_MM,
+        val calibrationRawB64: String? = null, val calibrationDump: String? = null,
     )
     data class OrbbecCapture(val base64: String, val width: Int, val height: Int, val format: String, val sourceFormat: String, val depth: OrbbecDepthData?)
 
@@ -130,6 +131,14 @@ class OrbbecManager(private val appContext: Context) {
     private var selectedUid: String? = null
     private var streaming = false
     private var depthStreaming = false
+    // H-01: whether ALIGN_D2C_SW_MODE was actually accepted by the SDK for the CURRENT stream.
+    // Drives the depth sidecar's alignedTo so it reflects reality instead of an assumed "color".
+    @Volatile private var depthAlignApplied = false
+    // H-03: RGB-D calibration (Pipeline.getCameraParam) captured once per stream. Raw is the SDK's
+    // lossless CameraParam byte blob; dump is its readable toString(). Both null when depth is off
+    // or the SDK call fails — writing them is always best-effort and never blocks capture.
+    @Volatile private var depthCalibrationB64: String? = null
+    @Volatile private var depthCalibrationDump: String? = null
 
     private val flapLock = Any()
     private val recentDetaches = ArrayDeque<Long>()
@@ -310,7 +319,14 @@ class OrbbecManager(private val appContext: Context) {
             width = frame.color.width, height = frame.color.height,
             format = "jpeg", sourceFormat = frame.color.sourceFormat,
             depth = frame.depth?.let {
-                OrbbecDepthData(Base64.encodeToString(it.bytes, Base64.NO_WRAP), it.width, it.height, it.sourceFormat, it.valueScale)
+                OrbbecDepthData(
+                    Base64.encodeToString(it.bytes, Base64.NO_WRAP), it.width, it.height, it.sourceFormat, it.valueScale,
+                    // H-01: report alignment as it actually is, not an assumed default. If SW D2C was
+                    // not accepted, say "none" so the sidecar can be trusted (and fixed offline).
+                    alignedTo = if (depthAlignApplied) "color" else "none",
+                    // H-03: attach the per-stream calibration (null when unavailable).
+                    calibrationRawB64 = depthCalibrationB64, calibrationDump = depthCalibrationDump,
+                )
             },
         )
     }
@@ -472,6 +488,8 @@ class OrbbecManager(private val appContext: Context) {
         var openedDevice: Device? = null; var openedPipeline: Pipeline? = null; var config: Config? = null
         var selectedProfile: VideoStreamProfile? = null; var selectedDepthProfile: VideoStreamProfile? = null
         var depthEnabled = false
+        depthAlignApplied = false   // H-01: reset per stream; only set true if SW D2C is accepted.
+        depthCalibrationB64 = null; depthCalibrationDump = null   // H-03: reset per stream.
         try {
             val count = deviceList.getDeviceCount()
             if (count <= 0) throw IllegalStateException("No Orbbec device visible to SDK")
@@ -492,7 +510,7 @@ class OrbbecManager(private val appContext: Context) {
                 try {
                     selectedDepthProfile = chooseDepthProfile(openedPipeline)
                     if (selectedDepthProfile != null) config.enableStream(selectedDepthProfile) else config.enableStream(SensorType.DEPTH)
-                    try { config.setAlignMode(AlignMode.ALIGN_D2C_SW_MODE) } catch (e: Exception) { Log.w(TAG, "software D2C align unavailable", e) }
+                    try { config.setAlignMode(AlignMode.ALIGN_D2C_SW_MODE); depthAlignApplied = true } catch (e: Exception) { depthAlignApplied = false; Log.w(TAG, "software D2C align unavailable", e) }
                     try { config.setDepthScaleRequire(true) } catch (_: Exception) {}
                     try { config.setFrameAggregateOutputMode(FrameAggregateOutputMode.OB_FRAME_AGGREGATE_OUTPUT_ALL_TYPE_FRAME_REQUIRE) } catch (_: Exception) {}
                     depthEnabled = true
@@ -501,6 +519,18 @@ class OrbbecManager(private val appContext: Context) {
                 } finally { safeClose(depthSensor, "depth sensor") }
             }
             openedPipeline.start(config)
+            if (depthEnabled) {
+                // H-03: capture RGB-D calibration ONCE per stream — best-effort & fail-safe. A
+                // failure here must NEVER stop the stream (wrapped so the pipeline stays up). Stored
+                // raw (lossless) + toString() dump so an alignment problem (H-01) can be measured
+                // and corrected offline. Never touches the live preview / frame path.
+                try {
+                    val cp = openedPipeline.getCameraParam()
+                    val bytes = cp?.getBytes()
+                    if (bytes != null && bytes.isNotEmpty()) depthCalibrationB64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                    depthCalibrationDump = runCatching { cp?.toString() }.getOrNull()
+                } catch (e: Exception) { Log.w(TAG, "getCameraParam unavailable", e) }
+            }
             streaming = true; depthStreaming = depthEnabled
             device = openedDevice; pipeline = openedPipeline; selectedUid = uid
             openedDevice = null; openedPipeline = null
@@ -664,7 +694,7 @@ class OrbbecManager(private val appContext: Context) {
         return pixelsToJpeg(pixels, width, height)
     }
 
-    private fun encodeDepthFrame(frame: DepthFrame): CapturedDepth {
+    private fun encodeDepthFrame(frame: DepthFrame): CapturedDepth? {
         val width = frame.getWidth(); val height = frame.getHeight()
         if (width <= 0 || height <= 0) throw IllegalStateException("Invalid Orbbec depth frame size")
         val format = frame.getFormat(); val size = frame.getDataSize()
@@ -673,6 +703,14 @@ class OrbbecManager(private val appContext: Context) {
         if (copied < 0) throw IllegalStateException("Failed to copy Orbbec depth frame data")
         val data = if (copied in 0 until raw.size) raw.copyOf(copied) else raw
         val y16 = when (format) { Format.Y16, Format.Y10, Format.Y11, Format.Y12 -> data; else -> throw IllegalStateException("Unsupported depth format: $format") }
+        // ORB-05: a Y16 depth buffer MUST be exactly width*height*2 bytes. A short/over-sized buffer
+        // would write a .raw that silently mis-parses downstream (sidecar says full size, data is
+        // truncated). Drop depth for this frame — RGB survives and QualityCheck flags the missing
+        // depth — rather than ship a corrupt buffer. Both callers already tolerate a null return.
+        if (format == Format.Y16 && y16.size != width * height * 2) {
+            Log.w(TAG, "Depth dropped: Y16 size ${y16.size} != ${width * height * 2} for ${width}x$height")
+            return null
+        }
         return CapturedDepth(y16, width, height, format.name, frame.getValueScale())
     }
 

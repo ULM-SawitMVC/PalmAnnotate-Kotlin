@@ -39,6 +39,7 @@ class FolderResumeImporter @Inject constructor(
         private const val TAG = "FolderResume"
         private const val OUTPUT_JSON_DIR = "Output JSON"
         private const val IMAGES_DIR = "dataset/images/field"
+        private const val DEPTH_DIR = "dataset/depth/field"
         private const val METADATA_DIR = "dataset/metadata"
 
         /**
@@ -208,6 +209,11 @@ class FolderResumeImporter @Inject constructor(
         val labels = generateSideLabels(tree.sides.size)
         val sides = tree.sides.map { s ->
             val imgUri = copyImageToPrimary(safTreeUri, tree.treeName, s.sideIndex, imageNames)
+            // H-04: also copy the depth (.raw + .json) back from SAF so resumed trees keep their
+            // depth in later ZIP exports (the exporter reads depth from LOCAL storage only). No-op
+            // when the side has no depth in the folder. Runs BEFORE addTree, so the SAF mirror's
+            // stale-depth cleanup (H-02) sees the local depth present and won't remove it.
+            copyDepthToPrimary(safTreeUri, tree.treeName, s.sideIndex)
             val boxes = s.bboxes
             TreeSide(
                 sideIndex = s.sideIndex,
@@ -250,6 +256,29 @@ class FolderResumeImporter @Inject constructor(
             runCatching { storage.writeBytes(dest, bytes) }.getOrElse { return null }
         }
         return Uri.fromFile(dest)
+    }
+
+    /**
+     * H-04: copy a side's depth (.raw + .json) from the SAF folder back into app-external primary
+     * storage. Later ZIP exports resolve depth from LOCAL storage only, so without this a resumed
+     * tree would export with empty depth despite the depth surviving in the SAF folder. No-op when
+     * the side has no depth in the folder, or when the local file already exists. Best-effort.
+     */
+    private fun copyDepthToPrimary(safTreeUri: Uri, treeName: String, sideIndex: Int) {
+        val rawDest = storage.depthRawFile(treeName, sideIndex)
+        if (!rawDest.exists()) {
+            saf.readBytes(safTreeUri, "$DEPTH_DIR/${treeName}_${sideIndex + 1}.raw")?.let { bytes ->
+                runCatching { storage.writeBytes(rawDest, bytes) }
+                    .onFailure { Log.w(TAG, "resume depth raw copy failed for ${treeName}_${sideIndex + 1}.raw", it) }
+            }
+        }
+        val jsonDest = storage.depthJsonFile(treeName, sideIndex)
+        if (!jsonDest.exists()) {
+            saf.readText(safTreeUri, "$DEPTH_DIR/${treeName}_${sideIndex + 1}.json")?.let { text ->
+                runCatching { storage.writeText(jsonDest, text) }
+                    .onFailure { Log.w(TAG, "resume depth json copy failed for ${treeName}_${sideIndex + 1}.json", it) }
+            }
+        }
     }
 
     private fun deriveVariety(treeName: String): String =

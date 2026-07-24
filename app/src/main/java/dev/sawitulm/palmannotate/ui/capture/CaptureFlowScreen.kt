@@ -445,8 +445,9 @@ class CaptureFlowViewModel @Inject constructor(
                             throw IllegalStateException("Side ${index + 1}: captured file has zero dimensions")
                         }
 
-                        // Depth sidecar — best-effort, never blocks save
-                        capturedDepths.getOrNull(index)?.let { depth ->
+                        // Depth sidecar — best-effort, never blocks save.
+                        val depth = capturedDepths.getOrNull(index)
+                        if (depth != null) {
                             try {
                                 val rawBytes = Base64.decode(depth.base64, Base64.NO_WRAP)
                                 storage.writeBytes(storage.depthRawFile(treeName, index), rawBytes)
@@ -460,11 +461,28 @@ class CaptureFlowViewModel @Inject constructor(
                                     put("alignedTo", depth.alignedTo)
                                     put("displayFloorMm", depth.displayFloorMm)
                                     put("displayCeilingMm", depth.displayCeilingMm)
+                                    // H-03: RGB-D calibration for offline reprojection / alignment
+                                    // audit. calibrationRawB64 is the lossless Orbbec CameraParam
+                                    // byte blob; calibrationDump is the SDK's readable form. Both
+                                    // absent when depth calibration was unavailable.
+                                    depth.calibrationRawB64?.let { put("calibrationRawB64", it) }
+                                    depth.calibrationDump?.let { put("calibrationDump", it) }
                                 }
                                 storage.writeText(storage.depthJsonFile(treeName, index), meta.toString())
                                 // Log.i("CaptureFlow", "Depth sidecar written for side $index (${rawBytes.size} bytes)")
                             } catch (e: Exception) {
                                 Log.w("CaptureFlow", "Depth sidecar write failed for side $index", e)
+                            }
+                        } else {
+                            // H-02: this side has NO depth now. Remove any stale .raw/.json left by a
+                            // prior capture of the same treeName/side — otherwise the old depth would
+                            // silently pair with the freshly-written RGB. (The SAF mirror is cleaned
+                            // in SessionRepository.mirrorSafArtifacts so resume can't re-import it.)
+                            try {
+                                storage.deleteFile(storage.depthRawFile(treeName, index))
+                                storage.deleteFile(storage.depthJsonFile(treeName, index))
+                            } catch (e: Exception) {
+                                Log.w("CaptureFlow", "Stale depth cleanup failed for side $index", e)
                             }
                         }
 
