@@ -4,7 +4,6 @@ import dev.sawitulm.palmannotate.domain.model.*
 import dev.sawitulm.palmannotate.domain.results.ResultsComputer
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -86,6 +85,11 @@ object ExportManager {
                 put("width", side.imageWidth)
                 put("height", side.imageHeight)
                 put("bbox_count", side.bboxes.size)
+                if (side.rgbSha256.matches(Regex("^[0-9a-fA-F]{64}$"))) {
+                    put("rgb_sha256", side.rgbSha256.lowercase(Locale.US))
+                }
+                put("capture_origin", side.captureOrigin.name)
+                put("depth_required", side.depthRequired)
                 put("annotations", annotations)
             })
         }
@@ -308,24 +312,6 @@ object ExportManager {
         out.put("classMismatchCount", mismatchCount)
         out.put("bunches", bunches)
         return out
-    }
-
-    // ─── File writing ─────────────────────────────────────────────────────────
-
-    fun writeExports(session: ActiveSession, outputDir: File, results: TreeResults? = null) {
-        val r = results ?: ResultsComputer.compute(session)
-        outputDir.mkdirs()
-        File(outputDir, "${session.treeName}.json").writeText(generateOutputJson(session, r).toString(2))
-        for (side in session.sides) {
-            val yolo = generateYoloTxt(side)
-            if (yolo.isNotBlank()) {
-                val labelDir = File(outputDir, "Output TXT/${if (session.split == "unknown") "field" else session.split}")
-                labelDir.mkdirs()
-                File(labelDir, "${session.treeName}_${side.sideIndex + 1}.txt").writeText(yolo)
-            }
-        }
-        File(outputDir, "${session.treeName}_result.csv").writeText(generateCsv(session, r))
-        File(outputDir, "${session.treeName}_identity.json").writeText(generateIdentityJson(session, r).toString(2))
     }
 
     private fun Float.f6(): String = String.format(Locale.US, "%.6f", this)

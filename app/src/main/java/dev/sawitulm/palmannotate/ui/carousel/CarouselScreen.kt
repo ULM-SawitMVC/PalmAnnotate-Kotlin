@@ -38,7 +38,6 @@ import dev.sawitulm.palmannotate.data.detection.OnnxDetector
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
 import dev.sawitulm.palmannotate.domain.model.*
-import dev.sawitulm.palmannotate.domain.results.ResultsComputer
 import dev.sawitulm.palmannotate.domain.usecase.SessionUseCases
 import dev.sawitulm.palmannotate.domain.util.OperationQueue
 import dev.sawitulm.palmannotate.ui.common.AnnotationCanvas
@@ -46,6 +45,7 @@ import dev.sawitulm.palmannotate.ui.common.CanvasTool
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
@@ -162,13 +162,10 @@ class CarouselViewModel @Inject constructor(
         val s = session ?: return
         dirty = false
         viewModelScope.launch {
-            autoSaveMutex.lock()
-            try {
+            autoSaveMutex.withLock {
                 val safTreeUri = exportFolder.folderUri.first()
                 repo.saveSession(s, safTreeUri)
                 savedTick = System.currentTimeMillis()
-            } finally {
-                autoSaveMutex.unlock()
             }
         }
     }
@@ -289,21 +286,34 @@ class CarouselViewModel @Inject constructor(
     fun save() {
         val s = session ?: return
         opq.enqueue("save-carousel") {
-            val safTreeUri = exportFolder.folderUri.first()
-            repo.saveSession(s, safTreeUri)
+            autoSaveMutex.withLock {
+                val safTreeUri = exportFolder.folderUri.first()
+                repo.saveSession(s, safTreeUri)
+            }
         }
     }
 
     fun saveAndExit(onDone: () -> Unit) {
         val s = session ?: return
         opq.enqueue("save-carousel") {
-            val safTreeUri = exportFolder.folderUri.first()
-            repo.saveSession(s, safTreeUri)
-            // Finalize: generate Output JSON + mark tree complete so leaving the
-            // carousel (Back / Next Tree) always finalizes the tree — not just when
-            // the user happens to visit the Results screen.
-            val result = withContext(Dispatchers.Default) { ResultsComputer.compute(s) }
-            repo.saveOutputJson(s, result, safTreeUri)
+            autoSaveMutex.withLock {
+                val safTreeUri = exportFolder.folderUri.first()
+                repo.saveSession(s, safTreeUri)
+                // Finalize only when actually leaving the annotation workflow.
+                repo.saveOutputJson(s, safTreeUri)
+            }
+            withContext(Dispatchers.Main) { onDone() }
+        }
+    }
+
+    /** Save before opening another editor/viewer, without falsely marking the tree complete. */
+    fun saveAndNavigate(onDone: () -> Unit) {
+        val s = session ?: return
+        opq.enqueue("save-carousel") {
+            autoSaveMutex.withLock {
+                val safTreeUri = exportFolder.folderUri.first()
+                repo.saveSession(s, safTreeUri)
+            }
             withContext(Dispatchers.Main) { onDone() }
         }
     }
@@ -489,22 +499,21 @@ fun CarouselScreen(
                         Icon(Icons.Default.MoreVert, stringResource(R.string.cd_more))
                     }
                     DropdownMenu(expanded = showMoreMenu, onDismissRequest = { showMoreMenu = false }) {
-                        // H-07: save-then-navigate (same as Back / Next Tree). Dedup & Results read
-                        // the tree back from the DB, so navigating without saving first would drop
-                        // in-memory edits (e.g. a class change made in REVIEW mode without a swipe).
+                        // H-07: these are sub-screens, not completion actions. Persist edits first,
+                        // but do not generate final output / mark the tree complete.
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.menu_deduplication)) },
-                            onClick = { showMoreMenu = false; viewModel.saveAndExit { onDedup() } },
+                            onClick = { showMoreMenu = false; viewModel.saveAndNavigate { onDedup() } },
                             leadingIcon = { Icon(Icons.Default.Link, null) },
                         )
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.menu_results)) },
-                            onClick = { showMoreMenu = false; viewModel.saveAndExit { onResults() } },
+                            onClick = { showMoreMenu = false; viewModel.saveAndNavigate { onResults() } },
                             leadingIcon = { Icon(Icons.Default.Assessment, null) },
                         )
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.menu_depth_viewer)) },
-                            onClick = { showMoreMenu = false; viewModel.saveAndExit { onDepth() } },
+                            onClick = { showMoreMenu = false; viewModel.saveAndNavigate { onDepth() } },
                             leadingIcon = { Icon(Icons.Default.Thermostat, null) },
                         )
                     }

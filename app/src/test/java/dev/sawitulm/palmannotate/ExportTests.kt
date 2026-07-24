@@ -111,6 +111,25 @@ class ExportOutputJsonTest {
         assertEquals(4, ann0.getJSONArray("bbox_pixel").length())
     }
 
+    @Test fun `image block binds annotations to capture provenance and RGB hash`() {
+        val hash = "ab".repeat(32)
+        val captured = side(0, listOf(box("b0", 0))).copy(
+            rgbSha256 = hash,
+            captureOrigin = CaptureOrigin.ORBBEC,
+            depthRequired = true,
+        )
+        val out = ExportManager.generateOutputJson(session("T_0001", listOf(captured)))
+        val image = out.getJSONObject("images").getJSONObject("side_1")
+        assertEquals(hash, image.getString("rgb_sha256"))
+        assertEquals("ORBBEC", image.getString("capture_origin"))
+        assertTrue(image.getBoolean("depth_required"))
+
+        val parsed = OutputSchema.toSessionData(out).sides.single()
+        assertEquals(hash, parsed.rgbSha256)
+        assertEquals(CaptureOrigin.ORBBEC, parsed.captureOrigin)
+        assertTrue(parsed.depthRequired)
+    }
+
     @Test fun `bbox_yolo is normalized center-form numbers with 6-decimal precision`() {
         // box 100..300 x, 200..600 y on a 1000x2000 image → cx .2 cy .2 w .2 h .2.
         // Emitted as JSON numbers (not strings), matching the curated example_dataset reference.

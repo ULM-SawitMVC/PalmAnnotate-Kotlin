@@ -109,6 +109,7 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.documentfile)
+    implementation(libs.androidx.exifinterface)
 
     // Compose
     implementation(platform(libs.compose.bom))

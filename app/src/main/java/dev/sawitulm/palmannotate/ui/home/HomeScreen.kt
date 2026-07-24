@@ -116,8 +116,15 @@ class HomeViewModel @Inject constructor(
     val isExportFolderSet: StateFlow<Boolean> = exportFolder.isConfigured
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
 
-    fun createRun(variety: String, block: String, sideCount: Int, autoId: Boolean, onDone: (String) -> Unit) {
+    fun createRun(
+        variety: String,
+        block: String,
+        sideCount: Int,
+        autoId: Boolean,
+        onDone: (runId: String, resumedExisting: Boolean) -> Unit,
+    ) {
         viewModelScope.launch {
+            val existingId = repo.runGroupKeyToId()[repo.groupKeyFor(variety, block)]
             val id = try {
                 repo.createRun(variety, block, sideCount, autoId)
             } catch (e: Exception) {
@@ -125,7 +132,7 @@ class HomeViewModel @Inject constructor(
                 Log.e("HomeVM", "createRun failed", e)
                 return@launch
             }
-            onDone(id)
+            onDone(id, existingId == id)
         }
     }
 
@@ -385,8 +392,11 @@ fun HomeScreen(
         NewSessionDialog(
             onDismiss = { showNewDialog = false },
             onCreate = { variety, block, sideCount, autoId ->
-                viewModel.createRun(variety, block, sideCount, autoId) { runId ->
+                viewModel.createRun(variety, block, sideCount, autoId) { runId, resumedExisting ->
                     showNewDialog = false
+                    if (resumedExisting) {
+                        toasts.info(context.getString(R.string.home_run_resumed, block))
+                    }
                     onSessionClick(runId)
                 }
             },

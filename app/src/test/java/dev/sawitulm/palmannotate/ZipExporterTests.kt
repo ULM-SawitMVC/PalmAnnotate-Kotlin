@@ -23,9 +23,9 @@ class ZipSanitizeTest {
 }
 
 class ZipLayoutTest {
-    @Test fun `entry count is four per side plus two tree-level files`() {
-        assertEquals(4 * 2 + 2, DatasetZipLayout.zipEntriesFor("T_0001", 2).size)
-        assertEquals(4 * 4 + 2, DatasetZipLayout.zipEntriesFor("T_0001", 4).size)
+    @Test fun `entry count is four per side plus three tree-level files`() {
+        assertEquals(4 * 2 + 3, DatasetZipLayout.zipEntriesFor("T_0001", 2).size)
+        assertEquals(4 * 4 + 3, DatasetZipLayout.zipEntriesFor("T_0001", 4).size)
     }
 
     @Test fun `paths follow the flat training layout with 1-based side numbers`() {
@@ -37,6 +37,7 @@ class ZipLayoutTest {
         assertTrue(paths.contains("depth/T_0001_2.json"))
         assertTrue(paths.contains("json/T_0001.json"))
         assertTrue(paths.contains("metadata/T_0001.json"))
+        assertTrue(paths.contains("manifests/T_0001.json"))
     }
 
     @Test fun `per-side specs carry a side index and tree-level specs do not`() {
@@ -45,5 +46,6 @@ class ZipLayoutTest {
         assertEquals(listOf(0, 1, 2), specs.filter { it.kind == FileKind.LABEL }.map { it.sideIndex })
         assertNull(specs.first { it.kind == FileKind.OUTPUT_JSON }.sideIndex)
         assertNull(specs.first { it.kind == FileKind.METADATA }.sideIndex)
+        assertNull(specs.first { it.kind == FileKind.MANIFEST }.sideIndex)
     }
 }

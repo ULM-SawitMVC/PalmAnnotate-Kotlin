@@ -563,6 +563,27 @@ class YoloParserEdgeTest {
     @Test fun `parse skips NaN and Inf coordinates`() {
         assertEquals(0, YoloParser.parse("0 NaN 0.5 0.1 0.2\n0 Infinity 0.5 0.1 0.2", 1000, 1000).size)
     }
+
+    @Test fun `serialize clamps imported out-of-bounds boxes to unit range`() {
+        val text = YoloParser.serialize(
+            listOf(Bbox("b0", 0, "B1", -500f, -500f, 1500f, 2000f)),
+            imgW = 1000,
+            imgH = 1000,
+        )
+        assertEquals("0 0.500000 0.750000 1.000000 1.000000", text)
+    }
+
+    @Test fun `serialize never emits a negative width or height`() {
+        val text = YoloParser.serialize(
+            listOf(Bbox("b0", 0, "B1", 800f, 900f, 200f, 100f)),
+            imgW = 1000,
+            imgH = 1000,
+        )
+        val values = text.split(' ').drop(1).map(String::toFloat)
+        assertTrue(values.all { it in 0f..1f })
+        assertEquals(0f, values[2], 0f)
+        assertEquals(0f, values[3], 0f)
+    }
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -713,6 +734,34 @@ class QualityCheckTest {
         assertEquals(QualityCheck.Level.ERROR, missingSides.status)
         val noGps = QualityCheck.analyzeCaptureShots(4, 4, 4, hasGps = false, hasVariety = true, hasBlock = true)
         assertEquals(QualityCheck.Level.WARN, noGps.status)
+    }
+
+    @Test fun `tablet RGB-only capture does not require depth`() {
+        val r = QualityCheck.analyzeCaptureShots(
+            capturedSides = 4,
+            expectedSides = 4,
+            depthSides = 0,
+            requiredDepthSides = 0,
+            hasGps = true,
+            hasVariety = true,
+            hasBlock = true,
+        )
+        assertEquals(QualityCheck.Level.OK, r.status)
+        assertTrue(r.issues.none { it.code == "capture_rgb_depth_incomplete" })
+    }
+
+    @Test fun `Orbbec capture warns when any required depth is missing`() {
+        val r = QualityCheck.analyzeCaptureShots(
+            capturedSides = 4,
+            expectedSides = 4,
+            depthSides = 1,
+            requiredDepthSides = 2,
+            hasGps = true,
+            hasVariety = true,
+            hasBlock = true,
+        )
+        assertEquals(QualityCheck.Level.WARN, r.status)
+        assertTrue(r.issues.any { it.code == "capture_rgb_depth_incomplete" })
     }
 
     // ─── Tree QA ───

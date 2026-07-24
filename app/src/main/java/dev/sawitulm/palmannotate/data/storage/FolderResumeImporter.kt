@@ -1,9 +1,11 @@
 package dev.sawitulm.palmannotate.data.storage
 
 import android.net.Uri
+import android.graphics.BitmapFactory
 import android.util.Log
 import dev.sawitulm.palmannotate.domain.model.AnnotationClass
 import dev.sawitulm.palmannotate.domain.model.Bbox
+import dev.sawitulm.palmannotate.domain.model.CaptureOrigin
 import dev.sawitulm.palmannotate.domain.model.CrossSideLink
 import dev.sawitulm.palmannotate.domain.model.OutputSchema
 import dev.sawitulm.palmannotate.domain.model.TreeMetadata
@@ -12,6 +14,8 @@ import dev.sawitulm.palmannotate.domain.model.generateSideLabels
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.io.File
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -38,9 +42,11 @@ class FolderResumeImporter @Inject constructor(
     companion object {
         private const val TAG = "FolderResume"
         private const val OUTPUT_JSON_DIR = "Output JSON"
+        private const val OUTPUT_TXT_DIR = "Output TXT/field"
         private const val IMAGES_DIR = "dataset/images/field"
         private const val DEPTH_DIR = "dataset/depth/field"
         private const val METADATA_DIR = "dataset/metadata"
+        private const val MANIFEST_DIR = "dataset/manifests"
 
         /**
          * Pure grouping + dedupe (no Android deps — unit-testable). Groups scanned
@@ -88,6 +94,14 @@ class FolderResumeImporter @Inject constructor(
         val imageWidth: Int,
         val imageHeight: Int,
         val bboxes: List<Bbox>,
+        val rgbSha256: String? = null,
+        val captureOrigin: CaptureOrigin = CaptureOrigin.UNKNOWN,
+        val depthRequired: Boolean = false,
+    )
+
+    private data class RestoredDepth(
+        val valid: Boolean = false,
+        val contentBound: Boolean = false,
     )
 
     /** A run to (re)create plus the trees that should be inserted under it. */
@@ -149,12 +163,35 @@ class FolderResumeImporter @Inject constructor(
         val json = runCatching { JSONObject(text) }.getOrNull() ?: return null
         val parsed = runCatching { OutputSchema.toSessionData(json) }.getOrNull() ?: return null
         if (parsed.sides.isEmpty()) return null
+        ArtifactIdentityPolicy.treeNameError(parsed.treeName)?.let {
+            Log.w(TAG, "resume skipped unsafe tree name '${parsed.treeName}': $it")
+            return null
+        }
+        ArtifactIdentityPolicy.sideSetError(parsed.sides.map { it.sideIndex })?.let {
+            Log.w(TAG, "resume skipped ${parsed.treeName}: $it")
+            return null
+        }
+        val manifestText = saf.readText(safTreeUri, "$MANIFEST_DIR/${parsed.treeName}.json")
+        val requiresManifest = parsed.sides.all {
+            it.rgbSha256 != null && it.captureOrigin != CaptureOrigin.UNKNOWN
+        }
+        if (requiresManifest && manifestText == null) {
+            Log.w(TAG, "resume skipped ${parsed.treeName}: strict package has no commit manifest")
+            return null
+        }
+        if (manifestText != null &&
+            !manifestMatchesMirror(safTreeUri, parsed.treeName, text, manifestText)
+        ) {
+            Log.w(TAG, "resume skipped ${parsed.treeName}: package manifest mismatch")
+            return null
+        }
 
-        // Confirm at least one side image exists in the folder (skip orphaned JSON).
-        val hasAnyImage = parsed.sides.any { s ->
+        // A tree is one package. Never reconstruct a partial side list from a JSON that names
+        // images missing from the mirror.
+        val hasEveryImage = parsed.sides.isNotEmpty() && parsed.sides.all { s ->
             imageNames.contains("${parsed.treeName}_${s.sideIndex + 1}.jpg")
         }
-        if (!hasAnyImage) return null
+        if (!hasEveryImage) return null
 
         val variety = json.optJSONObject("metadata")?.optString("variety")?.takeIf { it.isNotBlank() }
             ?: deriveVariety(parsed.treeName)
@@ -167,6 +204,9 @@ class FolderResumeImporter @Inject constructor(
                 imageWidth = s.imageWidth,
                 imageHeight = s.imageHeight,
                 bboxes = s.bboxes.map { Bbox(it.id, it.classId, it.className, it.x1, it.y1, it.x2, it.y2) },
+                rgbSha256 = s.rgbSha256,
+                captureOrigin = s.captureOrigin,
+                depthRequired = s.depthRequired,
             )
         }
         // createOrNull (not create): one degenerate link in an imported Output JSON must
@@ -180,6 +220,174 @@ class FolderResumeImporter @Inject constructor(
             variety = variety, block = block, groupKey = repo.groupKeyFor(variety, block),
             sides = sides, confirmedLinks = links,
         )
+    }
+
+    private fun manifestMatchesMirror(
+        safTreeUri: Uri,
+        treeName: String,
+        outputJsonText: String,
+        manifestText: String,
+    ): Boolean {
+        return runCatching {
+            val manifest = JSONObject(manifestText)
+            val parsed = OutputSchema.toSessionData(JSONObject(outputJsonText))
+            if (parsed.treeName != treeName) return@runCatching false
+            val parsedBySide = parsed.sides.associateBy { it.sideIndex }
+            if (parsedBySide.size != parsed.sides.size) return@runCatching false
+            if (manifest.optInt("schemaVersion") != 1) return@runCatching false
+            if (manifest.optString("treeName") != treeName) return@runCatching false
+            val outputRecord = manifest.optJSONObject("outputJson")
+                ?: return@runCatching false
+            if (outputRecord.optString("file") != "$treeName.json") {
+                return@runCatching false
+            }
+            val expectedOutput = outputRecord
+                ?.optString("sha256")
+                ?.takeIf { it.isNotBlank() }
+                ?: return@runCatching false
+            if (!expectedOutput.equals(
+                    DepthArtifactContract.sha256Hex(outputJsonText.toByteArray()),
+                    ignoreCase = true,
+                )
+            ) {
+                return@runCatching false
+            }
+            val metadataRecord = manifest.optJSONObject("metadata")
+                ?: return@runCatching false
+            if (metadataRecord.optString("file") != "$treeName.json") {
+                return@runCatching false
+            }
+            val metadataExpected = metadataRecord
+                ?.optString("sha256")
+                ?.takeIf { it.isNotBlank() }
+                ?: return@runCatching false
+            val metadataText = saf.readText(safTreeUri, "$METADATA_DIR/$treeName.json")
+                ?: return@runCatching false
+            if (!metadataExpected.equals(
+                    DepthArtifactContract.sha256Hex(metadataText.toByteArray(Charsets.UTF_8)),
+                    ignoreCase = true,
+                )
+            ) {
+                return@runCatching false
+            }
+            val sides = manifest.optJSONArray("sides") ?: return@runCatching false
+            if (sides.length() != parsed.sides.size) return@runCatching false
+            val seenSides = HashSet<Int>()
+            val labelHashes = ArrayList<Pair<Int, String>>()
+            val rgbHashes = ArrayList<Pair<Int, String>>()
+            for (i in 0 until sides.length()) {
+                val side = sides.optJSONObject(i) ?: return@runCatching false
+                val sideIndex = side.optInt("sideIndex", -1)
+                if (sideIndex < 0 || !seenSides.add(sideIndex)) return@runCatching false
+                val parsedSide = parsedBySide[sideIndex] ?: return@runCatching false
+                if (CaptureOrigin.fromPersisted(side.optString("captureOrigin")) !=
+                    parsedSide.captureOrigin
+                ) {
+                    return@runCatching false
+                }
+                if (side.optBoolean("depthRequired") != parsedSide.depthRequired) {
+                    return@runCatching false
+                }
+
+                val rgb = side.optJSONObject("rgb") ?: return@runCatching false
+                val rgbFile = rgb.optString("file")
+                val rgbExpected = rgb.optString("sha256")
+                if (rgbFile != "${treeName}_${sideIndex + 1}.jpg" ||
+                    parsedSide.rgbSha256 == null ||
+                    !rgbExpected.equals(parsedSide.rgbSha256, ignoreCase = true)
+                ) {
+                    return@runCatching false
+                }
+                val rgbBytes = saf.readBytes(safTreeUri, "$IMAGES_DIR/$rgbFile")
+                    ?: return@runCatching false
+                if (!rgbExpected.equals(
+                        DepthArtifactContract.sha256Hex(rgbBytes),
+                        ignoreCase = true,
+                    )
+                ) {
+                    return@runCatching false
+                }
+                rgbHashes.add(sideIndex to rgbExpected.lowercase())
+
+                val label = side.optJSONObject("label") ?: return@runCatching false
+                val labelFile = label.optString("file")
+                val labelExpected = label.optString("sha256")
+                if (labelFile != "${treeName}_${sideIndex + 1}.txt" ||
+                    labelExpected.isBlank()
+                ) {
+                    return@runCatching false
+                }
+                val labelBytes = saf.readBytes(safTreeUri, "$OUTPUT_TXT_DIR/$labelFile")
+                    ?: return@runCatching false
+                if (!labelExpected.equals(
+                        DepthArtifactContract.sha256Hex(labelBytes),
+                        ignoreCase = true,
+                    )
+                ) {
+                    return@runCatching false
+                }
+                labelHashes.add(sideIndex to labelExpected.lowercase())
+
+                val depth = side.optJSONObject("depth")
+                if (side.optBoolean("depthRequired") && depth == null) {
+                    return@runCatching false
+                }
+                if (parsedSide.captureOrigin == CaptureOrigin.PHONE_CAMERA && depth != null) {
+                    return@runCatching false
+                }
+                if (depth != null) {
+                    if (depth.optString("rawFile") != "${treeName}_${sideIndex + 1}.raw" ||
+                        depth.optString("jsonFile") != "${treeName}_${sideIndex + 1}.json"
+                    ) {
+                        return@runCatching false
+                    }
+                    val raw = saf.readBytes(
+                        safTreeUri,
+                        "$DEPTH_DIR/${depth.optString("rawFile")}",
+                    ) ?: return@runCatching false
+                    val depthJson = saf.readBytes(
+                        safTreeUri,
+                        "$DEPTH_DIR/${depth.optString("jsonFile")}",
+                    ) ?: return@runCatching false
+                    if (!depth.optString("rawSha256").equals(
+                            DepthArtifactContract.sha256Hex(raw),
+                            ignoreCase = true,
+                        ) ||
+                        !depth.optString("jsonSha256").equals(
+                            DepthArtifactContract.sha256Hex(depthJson),
+                            ignoreCase = true,
+                        )
+                    ) {
+                        return@runCatching false
+                    }
+                }
+            }
+            if (seenSides != parsedBySide.keys) return@runCatching false
+
+            val captureSetId = DepthArtifactContract.sha256Hex(
+                rgbHashes.sortedBy { it.first }
+                    .joinToString("|") { "${it.first}:${it.second}" }
+                    .toByteArray(Charsets.UTF_8),
+            )
+            if (!manifest.optString("captureSetId")
+                    .equals(captureSetId, ignoreCase = true)
+            ) {
+                return@runCatching false
+            }
+            val annotationRevision = DepthArtifactContract.sha256Hex(
+                (
+                    expectedOutput.lowercase() + "|" +
+                        labelHashes.sortedBy { it.first }
+                            .joinToString("|") { it.second }
+                    ).toByteArray(Charsets.UTF_8),
+            )
+            if (!manifest.optString("annotationRevision")
+                    .equals(annotationRevision, ignoreCase = true)
+            ) {
+                return@runCatching false
+            }
+            true
+        }.getOrDefault(false)
     }
 
     /** Read block from the metadata sidecar ("blok"), else parse it from the tree name. */
@@ -206,16 +414,57 @@ class FolderResumeImporter @Inject constructor(
         tree: ScannedTree,
         imageNames: Set<String>,
     ): Boolean {
+        val stagingDir = runCatching {
+            storage.captureStagingDir(UUID.randomUUID().toString())
+        }.getOrElse {
+            Log.w(TAG, "ingest could not create staging for ${tree.treeName}", it)
+            return false
+        }
+        try {
         val labels = generateSideLabels(tree.sides.size)
-        val sides = tree.sides.map { s ->
-            val imgUri = copyImageToPrimary(safTreeUri, tree.treeName, s.sideIndex, imageNames)
+        val sides = ArrayList<TreeSide>()
+        for (s in tree.sides) {
+            val imgUri = copyImageToStaging(
+                safTreeUri,
+                stagingDir,
+                tree.treeName,
+                s.sideIndex,
+                imageNames,
+                s.rgbSha256,
+                s.imageWidth,
+                s.imageHeight,
+            ) ?: run {
+                Log.w(TAG, "ingest rejected ${tree.treeName}: side ${s.sideIndex + 1} RGB missing/hash mismatch")
+                return false
+            }
             // H-04: also copy the depth (.raw + .json) back from SAF so resumed trees keep their
             // depth in later ZIP exports (the exporter reads depth from LOCAL storage only). No-op
             // when the side has no depth in the folder. Runs BEFORE addTree, so the SAF mirror's
             // stale-depth cleanup (H-02) sees the local depth present and won't remove it.
-            copyDepthToPrimary(safTreeUri, tree.treeName, s.sideIndex)
+            val restoredDepth = copyDepthToStaging(
+                safTreeUri,
+                stagingDir,
+                tree.treeName,
+                s.sideIndex,
+            )
+            val decision = CaptureIntegrityPolicy.evaluate(
+                storedOrigin = s.captureOrigin,
+                declaredDepthRequired = s.depthRequired,
+                hasAnyDepth = restoredDepth.valid,
+                hasValidDepth = restoredDepth.valid,
+                hasVerifiedDepthBinding = restoredDepth.contentBound,
+                rejectUnverifiedLegacy = false,
+            )
+            if (decision.error != null) {
+                Log.w(
+                    TAG,
+                    "ingest rejected ${tree.treeName}: side ${s.sideIndex + 1}: " +
+                        decision.error,
+                )
+                return false
+            }
             val boxes = s.bboxes
-            TreeSide(
+            sides.add(TreeSide(
                 sideIndex = s.sideIndex,
                 label = labels.getOrElse(s.sideIndex) { "Side ${s.sideIndex + 1}" },
                 imageUri = imgUri,
@@ -224,60 +473,133 @@ class FolderResumeImporter @Inject constructor(
                 imageHeight = s.imageHeight,
                 bboxes = boxes,
                 originalBboxes = boxes,
-            )
+                rgbSha256 = imgUri.getQueryParameter("v").orEmpty(),
+                captureOrigin = decision.captureOrigin,
+                depthRequired = decision.depthRequired,
+            ))
         }
         val metadata = TreeMetadata(variety = tree.variety, block = tree.block, treeId = tree.treeId.toString())
         return runCatching {
-            // addTree persists sides/bboxes + labels and advances the run's nextId.
-            val treeKey = repo.addTree(runId, tree.treeName, tree.treeId, tree.split, sides, metadata, safTreeUri)
-            // Restore confirmed links (addTree does not carry them).
-            if (tree.confirmedLinks.isNotEmpty()) {
-                repo.replaceConfirmedLinks(treeKey, tree.confirmedLinks)
-            }
+            repo.commitTreePackage(
+                sessionId = runId,
+                treeName = tree.treeName,
+                treeId = tree.treeId,
+                split = tree.split,
+                sides = sides,
+                metadata = metadata,
+                stagingDir = stagingDir,
+                requiredDepthSides = sides
+                    .filter { it.depthRequired }
+                    .mapTo(mutableSetOf()) { it.sideIndex },
+                confirmedLinks = tree.confirmedLinks,
+                safTreeUri = safTreeUri,
+            )
             true
         }.getOrElse {
             Log.w(TAG, "ingestTree failed for ${tree.treeName}", it)
             false
         }
+        } finally {
+            if (!storage.deleteCaptureStaging(stagingDir)) {
+                Log.w(TAG, "ingest could not clean staging for ${tree.treeName}")
+            }
+        }
     }
 
-    /** Copy a side image from the SAF folder into app-external; return its file URI (or null). */
-    private fun copyImageToPrimary(
+    /** Copy a side image into an uncommitted package; return its eventual canonical URI. */
+    private fun copyImageToStaging(
         safTreeUri: Uri,
+        stagingDir: File,
         treeName: String,
         sideIndex: Int,
         imageNames: Set<String>,
+        expectedRgbSha256: String?,
+        expectedWidth: Int,
+        expectedHeight: Int,
     ): Uri? {
         val fileName = "${treeName}_${sideIndex + 1}.jpg"
         if (fileName !in imageNames) return null
-        val dest = storage.imageFile(treeName, sideIndex)
-        if (!dest.exists()) {
-            val bytes = saf.readBytes(safTreeUri, "$IMAGES_DIR/$fileName") ?: return null
-            runCatching { storage.writeBytes(dest, bytes) }.getOrElse { return null }
+        val stagedImage = storage.stagedImageFile(stagingDir, treeName, sideIndex)
+        val bytes = saf.readBytes(safTreeUri, "$IMAGES_DIR/$fileName") ?: return null
+        val actualSha256 = DepthArtifactContract.sha256Hex(bytes)
+        if (expectedRgbSha256 != null &&
+            !expectedRgbSha256.equals(actualSha256, ignoreCase = true)
+        ) {
+            Log.w(TAG, "resume RGB checksum mismatch for $fileName")
+            return null
         }
-        return Uri.fromFile(dest)
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            Log.w(TAG, "resume rejected undecodable RGB $fileName")
+            return null
+        }
+        if ((expectedWidth > 0 && bounds.outWidth != expectedWidth) ||
+            (expectedHeight > 0 && bounds.outHeight != expectedHeight)
+        ) {
+            Log.w(
+                TAG,
+                "resume RGB dimensions mismatch for $fileName: " +
+                    "${bounds.outWidth}x${bounds.outHeight} != ${expectedWidth}x$expectedHeight",
+            )
+            return null
+        }
+        runCatching { storage.writeBytes(stagedImage, bytes) }.getOrElse { return null }
+        return storage.versionedImageUri(storage.imageFile(treeName, sideIndex), bytes)
     }
 
     /**
-     * H-04: copy a side's depth (.raw + .json) from the SAF folder back into app-external primary
-     * storage. Later ZIP exports resolve depth from LOCAL storage only, so without this a resumed
-     * tree would export with empty depth despite the depth surviving in the SAF folder. No-op when
-     * the side has no depth in the folder, or when the local file already exists. Best-effort.
+     * H-04: restore one complete, validated depth pair from SAF. Independent raw/json copies are
+     * forbidden: an interrupted mirror or an older app may have left only one half behind.
      */
-    private fun copyDepthToPrimary(safTreeUri: Uri, treeName: String, sideIndex: Int) {
-        val rawDest = storage.depthRawFile(treeName, sideIndex)
-        if (!rawDest.exists()) {
-            saf.readBytes(safTreeUri, "$DEPTH_DIR/${treeName}_${sideIndex + 1}.raw")?.let { bytes ->
-                runCatching { storage.writeBytes(rawDest, bytes) }
-                    .onFailure { Log.w(TAG, "resume depth raw copy failed for ${treeName}_${sideIndex + 1}.raw", it) }
-            }
+    private fun copyDepthToStaging(
+        safTreeUri: Uri,
+        stagingDir: File,
+        treeName: String,
+        sideIndex: Int,
+    ): RestoredDepth {
+        val stem = "${treeName}_${sideIndex + 1}"
+        val raw = saf.readBytes(safTreeUri, "$DEPTH_DIR/$stem.raw")
+        val metadata = saf.readText(safTreeUri, "$DEPTH_DIR/$stem.json")
+        if (raw == null && metadata == null) return RestoredDepth()
+        if (raw == null || metadata == null) {
+            Log.w(TAG, "resume skipped incomplete depth pair for $stem")
+            return RestoredDepth()
         }
-        val jsonDest = storage.depthJsonFile(treeName, sideIndex)
-        if (!jsonDest.exists()) {
-            saf.readText(safTreeUri, "$DEPTH_DIR/${treeName}_${sideIndex + 1}.json")?.let { text ->
-                runCatching { storage.writeText(jsonDest, text) }
-                    .onFailure { Log.w(TAG, "resume depth json copy failed for ${treeName}_${sideIndex + 1}.json", it) }
+        val image = storage.stagedImageFile(stagingDir, treeName, sideIndex)
+        val validationError = runCatching {
+            DepthArtifactContract.validationError(
+                raw.size.toLong(),
+                metadata,
+                actualRawSha256 = DepthArtifactContract.sha256Hex(raw),
+                actualRgbSha256 = if (image.isFile) DepthArtifactContract.sha256Hex(image) else null,
+            )
+        }.getOrElse { "checksum failed: ${it.message}" }
+        validationError?.let { error ->
+            Log.w(TAG, "resume skipped invalid depth pair for $stem: $error")
+            return RestoredDepth()
+        }
+        val staged = runCatching {
+            storage.writeBytes(
+                storage.stagedDepthRawFile(stagingDir, treeName, sideIndex),
+                raw,
+            )
+            storage.writeText(
+                storage.stagedDepthJsonFile(stagingDir, treeName, sideIndex),
+                metadata,
+            )
+        }
+            .onFailure {
+                Log.w(TAG, "resume depth pair staging failed for $stem", it)
             }
+            .isSuccess
+        return if (staged) {
+            RestoredDepth(
+                valid = true,
+                contentBound = DepthArtifactContract.hasContentBindings(metadata),
+            )
+        } else {
+            RestoredDepth()
         }
     }
 

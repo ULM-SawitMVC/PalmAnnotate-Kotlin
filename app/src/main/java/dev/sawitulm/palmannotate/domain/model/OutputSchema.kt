@@ -24,6 +24,9 @@ object OutputSchema {
     data class ParsedSide(
         val sideIndex: Int, val imageWidth: Int, val imageHeight: Int,
         val bboxes: List<ParsedBbox>,
+        val rgbSha256: String? = null,
+        val captureOrigin: CaptureOrigin = CaptureOrigin.UNKNOWN,
+        val depthRequired: Boolean = false,
     )
 
     /** A link oriented to its adjacent pair (sideA may be > sideB for the wraparound pair). */
@@ -62,7 +65,20 @@ object OutputSchema {
                     )
                 )
             }
-            sides.add(ParsedSide(sideIndex, s.optInt("width", s.optInt("imageWidth")), s.optInt("height", s.optInt("imageHeight")), bboxes))
+            val rgbSha256 = s.optString("rgb_sha256")
+                .takeIf { it.matches(Regex("^[0-9a-fA-F]{64}$")) }
+                ?.lowercase()
+            sides.add(
+                ParsedSide(
+                    sideIndex = sideIndex,
+                    imageWidth = s.optInt("width", s.optInt("imageWidth")),
+                    imageHeight = s.optInt("height", s.optInt("imageHeight")),
+                    bboxes = bboxes,
+                    rgbSha256 = rgbSha256,
+                    captureOrigin = CaptureOrigin.fromPersisted(s.optString("capture_origin")),
+                    depthRequired = s.optBoolean("depth_required", false),
+                )
+            )
         }
         sides.sortBy { it.sideIndex }
 

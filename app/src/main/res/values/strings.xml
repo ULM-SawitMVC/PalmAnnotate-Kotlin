@@ -38,6 +38,7 @@
     <string name="home_empty_body">Tap “New Session” to start documenting trees.</string>
     <string name="home_folder_new">New folder set</string>
     <string name="home_folder_resumed">Resumed %1$d tree(s) from folder</string>
+    <string name="home_run_resumed">Continuing existing run for block %1$s</string>
     <string name="home_group_summary">%1$d session(s) · %2$d trees</string>
     <string name="home_run_summary">%1$d trees · %2$d photos/tree</string>
     <string name="home_delete_session_title">Delete session?</string>
@@ -103,6 +104,9 @@
     <string name="capture_save_error">Save error: %1$s</string>
     <string name="capture_no_images">No captured photos to save — take at least one shot first.</string>
     <string name="capture_save_failed">Could not save this tree. Check storage and try again.</string>
+    <string name="capture_tree_name_exists">%1$s already exists. Delete the existing tree before capturing the same ID again.</string>
+    <string name="capture_orbbec_depth_required">Orbbec capture rejected: Y16 depth was not received. Retake the photo or reset the camera.</string>
+    <string name="capture_orbbec_pair_missing_side">Side %1$d was captured with Orbbec but has no Y16 depth. Retake that side.</string>
     <!-- Orbbec -->
     <string name="orbbec_starting">Starting Orbbec preview…</string>
     <string name="orbbec_detected">Orbbec camera detected</string>

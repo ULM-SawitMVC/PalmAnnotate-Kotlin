@@ -33,7 +33,6 @@ import dev.sawitulm.palmannotate.data.export.ExportManager
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
 import dev.sawitulm.palmannotate.data.storage.SafMirrorStore
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
-import dev.sawitulm.palmannotate.data.yolo.YoloParser
 import dev.sawitulm.palmannotate.domain.model.*
 import dev.sawitulm.palmannotate.domain.quality.QualityCheck
 import dev.sawitulm.palmannotate.domain.results.ResultsComputer
@@ -94,16 +93,16 @@ class ResultsViewModel @Inject constructor(
 
     /**
      * Finish this tree: persist the Output JSON (+ mark complete), then run [onNavigate].
-     * Output JSON local write + DB flag are synchronous; the SAF mirror is backgrounded,
-     * so this returns fast and navigation (next capture / tree list) feels instant.
+     * Finalization waits for SAF write + read-back verification when an export folder is selected,
+     * so navigation cannot imply success while the removable-storage package is incomplete.
      */
     fun finishAndThen(onNavigate: () -> Unit) {
         val s = session ?: return
-        val r = results ?: return
+        if (results == null) return
         viewModelScope.launch {
             try {
                 val safTreeUri = exportFolder.folderUri.first()
-                repo.saveOutputJson(s, r, safTreeUri)
+                repo.saveOutputJson(s, safTreeUri)
                 exportStatus = "Output JSON saved"
             } catch (e: Exception) {
                 // A failed finish must NOT crash nor silently advance: surface it and stay
@@ -133,11 +132,11 @@ class ResultsViewModel @Inject constructor(
 
     fun saveOutputJson() {
         val s = session ?: return
-        val r = results ?: return
+        if (results == null) return
         viewModelScope.launch {
             try {
                 val safTreeUri = exportFolder.folderUri.first()
-                repo.saveOutputJson(s, r, safTreeUri)
+                repo.saveOutputJson(s, safTreeUri)
                 exportStatus = "Output JSON saved"
             } catch (e: Exception) {
                 Log.e(TAG, "saveOutputJson failed", e)
@@ -193,20 +192,18 @@ class ResultsViewModel @Inject constructor(
 
     fun exportOutputJson() = exportGated("Output JSON") { safUri ->
         val s = session ?: return@exportGated
-        val r = results ?: return@exportGated
-        val jsonText = ExportManager.generateOutputJson(s, r).toString(2)
-        requireSafWrite(saf.writeText(safUri, "Output JSON/${s.treeName}.json", jsonText))
-        repo.saveOutputJson(s, r, safUri)
+        if (results == null) return@exportGated
+        // Output JSON, every YOLO TXT, and the manifest are one annotation revision.
+        // Never write one format directly: a partial update could leave a same-name stale peer.
+        repo.saveOutputJson(s, safUri)
     }
 
     fun exportYolo() = exportGated("YOLO") { safUri ->
         val s = session ?: return@exportGated
-        for (side in s.sides) {
-            val yolo = ExportManager.generateYoloTxt(side)
-            if (yolo.isNotBlank()) {
-                requireSafWrite(saf.writeText(safUri, "Output TXT/field/${s.treeName}_${side.sideIndex + 1}.txt", yolo))
-            }
-        }
+        if (results == null) return@exportGated
+        // This intentionally commits Output JSON as well: TXT and JSON must describe the same
+        // Room snapshot, including the valid empty-string TXT for a side with zero boxes.
+        repo.saveOutputJson(s, safUri)
     }
 
     fun exportCsv() = exportGated("CSV") { safUri ->

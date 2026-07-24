@@ -8,10 +8,17 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.sawitulm.palmannotate.data.db.TreeDao
 import dev.sawitulm.palmannotate.data.db.TreeEntity
 import dev.sawitulm.palmannotate.data.storage.AndroidStorageManager
+import dev.sawitulm.palmannotate.data.storage.ArtifactCoordinator
+import dev.sawitulm.palmannotate.data.storage.ArtifactIdentityPolicy
+import dev.sawitulm.palmannotate.data.storage.CaptureIntegrityPolicy
+import dev.sawitulm.palmannotate.data.storage.DepthArtifactContract
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
 import dev.sawitulm.palmannotate.data.storage.SafMirrorStore
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
+import dev.sawitulm.palmannotate.data.storage.TreePackageManifest
 import kotlinx.coroutines.flow.first
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileInputStream
@@ -52,6 +59,7 @@ class DatasetZipExporter @Inject constructor(
     private val treeDao: TreeDao,
     private val exportFolder: ExportFolderRepository,
     private val repo: SessionRepository,
+    private val artifactCoordinator: ArtifactCoordinator,
 ) {
 
     companion object {
@@ -83,43 +91,51 @@ class DatasetZipExporter @Inject constructor(
         sessionId: String,
         onProgress: (Progress) -> Unit,
         isCancelled: () -> Boolean,
-    ): Outcome {
+    ): Outcome = artifactCoordinator.withExclusiveAccess {
         val trees = treeDao.getBySession(sessionId)
-        val base = trees.firstOrNull()?.let { sanitize("${it.variety}_${it.block}") }?.takeIf { it.isNotBlank() }
+        val base = trees.firstOrNull()
+            ?.let { sanitize("${it.variety}_${it.block}") }
+            ?.takeIf { it.isNotBlank() }
             ?: "session"
-        return export(trees, "${base}_${timestamp()}", onProgress, isCancelled)
+        exportLocked(trees, "${base}_${timestamp()}", onProgress, isCancelled)
     }
 
     /** Export every tree across all sessions into one zip. Runs on the IO dispatcher. */
     suspend fun exportAll(
         onProgress: (Progress) -> Unit,
         isCancelled: () -> Boolean,
-    ): Outcome {
+    ): Outcome = artifactCoordinator.withExclusiveAccess {
         val trees = treeDao.getAllOnce()
-        return export(trees, "PalmAnnotate_all_${timestamp()}", onProgress, isCancelled)
+        exportLocked(trees, "PalmAnnotate_all_${timestamp()}", onProgress, isCancelled)
     }
 
     // ─── Core ────────────────────────────────────────────────────────────────────
 
-    private suspend fun export(
+    private suspend fun exportLocked(
         trees: List<TreeEntity>,
         zipBaseName: String,
         onProgress: (Progress) -> Unit,
         isCancelled: () -> Boolean,
     ): Outcome {
-        // Regenerate every tree's rich Output JSON (v4: images + bunches + _confirmedLinks +
-        // summary) straight from the DB BEFORE listing files, so the export always ships a
-        // complete, current `json/<tree>.json` — including the operator's cross-side links.
-        // Previously the zip only copied whatever the Results screen had written, so a dataset
-        // captured + linked but never "computed" exported with NO json/ and the links never left
-        // the device. Generating fresh also picks up links added after a tree was marked complete.
-        for (t in trees) materializeOutputJson(t)
+        // Rebuild every mutable annotation artifact from Room, bind it to the current RGB hashes,
+        // and reject the whole export if any committed tree is incomplete or cross-generation.
+        for (t in trees) {
+            materializeAndValidateTree(t)?.let { error ->
+                return Outcome.Failed("${t.treeName}: $error")
+            }
+        }
 
         // Build the full (source, zipPath, tree) work list up front so total is exact.
         data class Item(val entry: FileEntry, val treeName: String)
         val items = ArrayList<Item>()
         for (t in trees) {
-            for (e in entriesForTree(t.treeName, t.sideCount)) items.add(Item(e, t.treeName))
+            val committedSideIndices = repo.loadActiveSession(t.treeKey)
+                ?.sides
+                ?.mapTo(mutableSetOf()) { it.sideIndex }
+                ?: return Outcome.Failed("${t.treeName}: committed side set disappeared")
+            for (e in entriesForTree(t.treeName, t.sideCount, committedSideIndices)) {
+                items.add(Item(e, t.treeName))
+            }
         }
         if (items.isEmpty()) return Outcome.Empty
 
@@ -155,25 +171,116 @@ class DatasetZipExporter @Inject constructor(
     }
 
     /**
-     * Rebuild a tree's canonical `json/<tree>.json` from the DB (the source of truth) so the
-     * zip's [FileKind.OUTPUT_JSON] entry finds a complete, current file. [ExportManager
-     * .generateOutputJson] emits the v4 schema with `_confirmedLinks`; [SessionRepository
-     * .loadActiveSession] carries the links straight from the link table. Best-effort: a tree
-     * that fails to load is skipped (its other files still export) rather than failing the zip.
+     * Treat one Room tree as a committed package. TXT/Output JSON are mutable projections of the
+     * annotation DB, so they are regenerated together. The manifest is written last and binds
+     * their hashes to the immutable RGB/depth capture.
      */
-    private suspend fun materializeOutputJson(tree: TreeEntity) {
-        val session = repo.loadActiveSession(tree.treeKey) ?: return
-        runCatching {
-            val json = ExportManager.generateOutputJson(session).toString(2)
-            storage.writeText(storage.outputJsonFile(tree.treeName), json)
-        }.onFailure { Log.w(TAG, "outputJson regen failed for ${tree.treeName}", it) }
+    private suspend fun materializeAndValidateTree(tree: TreeEntity): String? {
+        return try {
+            ArtifactIdentityPolicy.treeNameError(tree.treeName)?.let {
+                return "unsafe tree identity: $it"
+            }
+            val session = repo.loadActiveSession(tree.treeKey)
+                ?: return "committed tree could not be loaded"
+            val sideIndices = session.sides.map { it.sideIndex }
+            if (sideIndices.isEmpty() ||
+                sideIndices.distinct().size != sideIndices.size ||
+                sideIndices.any { it !in 0 until tree.sideCount }
+            ) {
+                return "side set is empty, duplicated, or outside the declared range"
+            }
+
+            val verifiedSides = session.sides.sortedBy { it.sideIndex }.map { side ->
+                val image = storage.imageFile(tree.treeName, side.sideIndex)
+                if (!image.isFile || image.length() <= 0L) {
+                    return "side ${side.sideIndex + 1} RGB is missing"
+                }
+                val actualRgbSha256 = DepthArtifactContract.sha256Hex(image)
+                val expectedRgbSha256 = side.rgbSha256.takeIf { it.isNotBlank() }
+                    ?: side.imageUri?.getQueryParameter("v")
+                if (expectedRgbSha256 != null &&
+                    !expectedRgbSha256.equals(actualRgbSha256, ignoreCase = true)
+                ) {
+                    return "side ${side.sideIndex + 1} RGB checksum mismatch"
+                }
+
+                val raw = storage.depthRawFile(tree.treeName, side.sideIndex)
+                val json = storage.depthJsonFile(tree.treeName, side.sideIndex)
+                val hasAnyDepth = raw.exists() || json.exists()
+                val hasValidDepth = storage.hasValidDepthPair(tree.treeName, side.sideIndex)
+                val hasVerifiedDepthBinding =
+                    hasValidDepth &&
+                        storage.depthMetadataHasContentBindings(tree.treeName, side.sideIndex)
+                val decision = CaptureIntegrityPolicy.evaluate(
+                    storedOrigin = side.captureOrigin,
+                    declaredDepthRequired = side.depthRequired,
+                    hasAnyDepth = hasAnyDepth,
+                    hasValidDepth = hasValidDepth,
+                    hasVerifiedDepthBinding = hasVerifiedDepthBinding,
+                    rejectUnverifiedLegacy = true,
+                )
+                decision.error?.let {
+                    return "side ${side.sideIndex + 1}: $it"
+                }
+                side.copy(
+                    rgbSha256 = actualRgbSha256,
+                    captureOrigin = decision.captureOrigin,
+                    depthRequired = decision.depthRequired,
+                )
+            }
+            val verifiedSession = session.copy(sides = verifiedSides)
+
+            // Both annotation formats come from exactly the same Room snapshot.
+            check(storage.deleteFile(storage.manifestFile(tree.treeName))) {
+                "could not invalidate the previous package manifest"
+            }
+            for (side in verifiedSides) {
+                storage.writeText(
+                    storage.labelFile(tree.treeName, side.sideIndex),
+                    ExportManager.generateYoloTxt(side),
+                )
+            }
+            storage.writeText(
+                storage.outputJsonFile(tree.treeName),
+                ExportManager.generateOutputJson(verifiedSession).toString(2),
+            )
+            materializeMetadata(tree, verifiedSides)
+            TreePackageManifest.materialize(storage, tree.treeName, verifiedSides)
+            null
+        } catch (e: Exception) {
+            Log.w(TAG, "package materialization failed for ${tree.treeName}", e)
+            e.message ?: "package materialization failed"
+        }
     }
 
     /** Collect the existing local files for one tree, mapped to their zip-internal paths.
-     *  The path layout itself is the pure [DatasetZipLayout.zipEntriesFor]; here we resolve each
-     *  spec to its on-disk [File] and keep only the ones that actually exist. */
-    private fun entriesForTree(treeName: String, sideCount: Int): List<FileEntry> {
+     *  Depth is all-or-nothing; invalid/partial pairs were already rejected by preflight. */
+    private fun entriesForTree(
+        treeName: String,
+        sideCount: Int,
+        committedSideIndices: Set<Int>,
+    ): List<FileEntry> {
+        val validDepthSides = HashSet<Int>()
+        for (sideIndex in committedSideIndices.sorted()) {
+            if (storage.hasValidDepthPair(treeName, sideIndex)) {
+                validDepthSides.add(sideIndex)
+            } else {
+                val hasRaw = storage.depthRawFile(treeName, sideIndex).exists()
+                val hasJson = storage.depthJsonFile(treeName, sideIndex).exists()
+                check(!hasRaw && !hasJson) {
+                    "Preflight allowed invalid depth for ${treeName}_${sideIndex + 1}"
+                }
+            }
+        }
         return DatasetZipLayout.zipEntriesFor(treeName, sideCount).mapNotNull { spec ->
+            if (spec.sideIndex != null && spec.sideIndex !in committedSideIndices) {
+                return@mapNotNull null
+            }
+            if ((spec.kind == FileKind.DEPTH_RAW || spec.kind == FileKind.DEPTH_JSON) &&
+                spec.sideIndex !in validDepthSides
+            ) {
+                return@mapNotNull null
+            }
             val f = sourceFileFor(spec, treeName)
             if (f.exists() && f.isFile) FileEntry(f, spec.zipPath) else null
         }
@@ -186,6 +293,36 @@ class DatasetZipExporter @Inject constructor(
         FileKind.DEPTH_JSON -> storage.depthJsonFile(treeName, spec.sideIndex!!)
         FileKind.OUTPUT_JSON -> storage.outputJsonFile(treeName)
         FileKind.METADATA -> storage.metadataFile(treeName)
+        FileKind.MANIFEST -> storage.manifestFile(treeName)
+    }
+
+    private fun materializeMetadata(
+        tree: TreeEntity,
+        sides: List<dev.sawitulm.palmannotate.domain.model.TreeSide>,
+    ) {
+        val file = storage.metadataFile(tree.treeName)
+        val metadata = storage.readText(file)
+            ?.let { runCatching { JSONObject(it) }.getOrNull() }
+            ?: JSONObject()
+        metadata.put("artifactSchemaVersion", 1)
+        metadata.put("name", tree.treeName)
+        metadata.put("variety", tree.variety)
+        metadata.put("blok", tree.block)
+        metadata.put("treeId", tree.treeId)
+        metadata.put("artifacts", JSONObject().apply {
+            put("sides", JSONArray().apply {
+                for (side in sides) {
+                    put(JSONObject().apply {
+                        put("sideIndex", side.sideIndex)
+                        put("filename", "${tree.treeName}_${side.sideIndex + 1}.jpg")
+                        put("rgbSha256", side.rgbSha256)
+                        put("captureOrigin", side.captureOrigin.name)
+                        put("depthRequired", side.depthRequired)
+                    })
+                }
+            })
+        })
+        storage.writeText(file, metadata.toString(2))
     }
 
     /**
@@ -221,7 +358,15 @@ class DatasetZipExporter @Inject constructor(
 }
 
 /** Kind of source file, so the exporter can resolve a [ZipPathSpec] back to its on-disk [File]. */
-internal enum class FileKind { IMAGE, LABEL, DEPTH_RAW, DEPTH_JSON, OUTPUT_JSON, METADATA }
+internal enum class FileKind {
+    IMAGE,
+    LABEL,
+    DEPTH_RAW,
+    DEPTH_JSON,
+    OUTPUT_JSON,
+    METADATA,
+    MANIFEST,
+}
 
 /** One candidate zip entry: its [kind], the owning [sideIndex] (null for tree-level files), and
  *  the path it occupies inside the archive. */
@@ -248,6 +393,7 @@ internal object DatasetZipLayout {
         }
         list.add(ZipPathSpec(FileKind.OUTPUT_JSON, null, "json/$treeName.json"))
         list.add(ZipPathSpec(FileKind.METADATA, null, "metadata/$treeName.json"))
+        list.add(ZipPathSpec(FileKind.MANIFEST, null, "manifests/$treeName.json"))
         return list
     }
 }

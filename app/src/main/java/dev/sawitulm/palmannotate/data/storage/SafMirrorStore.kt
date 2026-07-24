@@ -276,9 +276,11 @@ class SafMirrorStore(private val context: Context) {
             deletePath(treeUri, "dataset/images/field/${treeName}_${i + 1}.jpg")
             deletePath(treeUri, "dataset/depth/field/${treeName}_${i + 1}.raw")
             deletePath(treeUri, "dataset/depth/field/${treeName}_${i + 1}.json")
+            deletePath(treeUri, "dataset/annotlog/field/${treeName}_${i + 1}.json")
             deletePath(treeUri, "Output TXT/field/${treeName}_${i + 1}.txt")
         }
         deletePath(treeUri, "dataset/metadata/${treeName}.json")
+        deletePath(treeUri, "dataset/manifests/${treeName}.json")
         deletePath(treeUri, "Output JSON/${treeName}.json")
     }
 }

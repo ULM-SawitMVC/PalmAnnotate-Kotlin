@@ -84,17 +84,21 @@ private object BitmapCache {
 }
 
 /**
- * Cache key that includes the file's last-modified time + size, not just the URI.
+ * Prefer the SHA-256 content version embedded in new persistent image URIs. Older database
+ * records do not have that version, so last-modified time + size remain as a compatibility
+ * fallback.
  *
  * Image paths are derived from the tree name (e.g. `…/DAMIMAS_A21B_0001_1.jpg`).
  * After a tree is deleted and a fresh one is captured, the id resets so the new
  * photo lands at the SAME path. Keying the bitmap cache by URI alone then served
- * the deleted tree's stale bitmap. Folding mtime+size into the key makes an
- * overwritten or recreated file miss the cache and re-decode the new content.
+ * the deleted tree's stale bitmap. A content-versioned URI makes that collision
+ * impossible for newly captured/imported images.
  */
 private fun bitmapCacheKey(uriString: String): String {
     return try {
-        val path = android.net.Uri.parse(uriString).path
+        val uri = android.net.Uri.parse(uriString)
+        if (!uri.getQueryParameter("v").isNullOrBlank()) return uriString
+        val path = uri.path
         if (path != null) {
             val f = File(path)
             if (f.exists()) return "$uriString|${f.lastModified()}|${f.length()}"
@@ -190,46 +194,51 @@ fun AnnotationCanvas(
     // several canvases composed at once) does not decode multiple full-res JPEGs on the UI
     // thread — that was the cause of the slow/heavy dedup screen.
     val context = LocalContext.current
-    val bitmap by produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null, imageUriString) {
-        val uriStr = imageUriString ?: run { value = null; return@produceState }
-        // Key by URI + file mtime/size so a reused path (delete + recapture with a
-        // reset tree id) doesn't serve the previous tree's stale bitmap.
-        val cacheKey = withContext(Dispatchers.IO) { bitmapCacheKey(uriStr) }
-        val cached = BitmapCache.get(cacheKey)
-        if (cached != null) {
-            // Log.d(CANVAS_TAG, "Image CACHE HIT - uri=${uriStr.takeLast(50)}")
-            value = cached
-        } else {
-            // Log.d(CANVAS_TAG, "Image LOAD START - uri=${uriStr.takeLast(50)}")
-            val loadStart = System.currentTimeMillis()
-            value = null
-            value = withContext(Dispatchers.IO) {
-                decodeDownsampled(context, uriStr, maxDimension = 1600)?.also {
-                    BitmapCache.put(cacheKey, it)
-                    val loadTime = System.currentTimeMillis() - loadStart
-                    // Log.d(CANVAS_TAG, "Image LOAD END - uri=${uriStr.takeLast(50)}, time=${loadTime}ms")
+    val bitmapState = key(imageUriString) {
+        // A keyed producer creates a fresh null state in the same composition where the URI
+        // changes; there is no frame where the previous side can remain visible.
+        produceState<androidx.compose.ui.graphics.ImageBitmap?>(initialValue = null) {
+            val uriStr = imageUriString ?: run {
+                value = null
+                return@produceState
+            }
+            // New records carry a SHA-256 content version in the URI. Legacy records fall
+            // back to URI + file mtime/size.
+            val cacheKey = withContext(Dispatchers.IO) { bitmapCacheKey(uriStr) }
+            val cached = BitmapCache.get(cacheKey)
+            if (cached != null) {
+                value = cached
+            } else {
+                val loadStart = System.currentTimeMillis()
+                value = withContext(Dispatchers.IO) {
+                    decodeDownsampled(context, uriStr, maxDimension = 1600)?.also {
+                        BitmapCache.put(cacheKey, it)
+                        val loadTime = System.currentTimeMillis() - loadStart
+                        // Log.d(CANVAS_TAG, "Image LOAD END - uri=${uriStr.takeLast(50)}, time=${loadTime}ms")
+                    }
                 }
             }
         }
     }
+    val bitmap by bitmapState
 
     // Viewport transform
-    var scale by remember { mutableFloatStateOf(1f) }
-    var offset by remember { mutableStateOf(Offset.Zero) }
+    var scale by remember(imageUriString) { mutableFloatStateOf(1f) }
+    var offset by remember(imageUriString) { mutableStateOf(Offset.Zero) }
 
     // Drawing state
-    var drawStart by remember { mutableStateOf<Offset?>(null) }
-    var drawCurrent by remember { mutableStateOf<Offset?>(null) }
+    var drawStart by remember(imageUriString) { mutableStateOf<Offset?>(null) }
+    var drawCurrent by remember(imageUriString) { mutableStateOf<Offset?>(null) }
 
     // Drag state (move/resize)
-    var dragState by remember { mutableStateOf<DragState?>(null) }
+    var dragState by remember(imageUriString) { mutableStateOf<DragState?>(null) }
 
     // True the instant a touch-down lands on an existing box — set in a dedicated
     // pointerInput below at ACTION_DOWN, before any drag-slop is resolved. dragState/
     // drawStart alone are not enough to gate the parent pager: they are only set inside
     // detectDragGestures' onDragStart, i.e. AFTER slop, the exact moment the pager's own
     // slop-based swipe detector is racing to claim the same touch.
-    var touchOnBox by remember { mutableStateOf(false) }
+    var touchOnBox by remember(imageUriString) { mutableStateOf(false) }
 
     // Live snapshots of the mutating inputs the gesture handlers read. The gesture
     // pointerInput blocks are keyed on `tool` ONLY (not bboxes/selectedBboxId), so that a
@@ -247,7 +256,7 @@ fun AnnotationCanvas(
     val currentOnCanvasTap by rememberUpdatedState(onCanvasTap)
 
     // Fit image on first composition
-    var didFit by remember { mutableStateOf(false) }
+    var didFit by remember(imageUriString, imageWidth, imageHeight) { mutableStateOf(false) }
 
     // Reused across draw frames — allocating a Paint per frame churned the GC during pan/zoom.
     val labelPaint = remember {
@@ -313,13 +322,19 @@ fun AnnotationCanvas(
             .fillMaxSize()
             // No zoom/pan in VIEW mode: it would consume the horizontal drag and block the
             // carousel's swipe-between-sides. Editing modes keep pinch-zoom/pan.
-            .then(if (tool != CanvasTool.VIEW) Modifier.transformable(state = transformState, canPan = canPanViewport) else Modifier)
+            .then(
+                if (bitmap != null && tool != CanvasTool.VIEW) {
+                    Modifier.transformable(state = transformState, canPan = canPanViewport)
+                } else {
+                    Modifier
+                }
+            )
             // Early "down landed on an existing box" signal, observed at ACTION_DOWN
             // before any drag-slop is resolved. Never consumes — purely observes — so the
             // tap/drag detectors below still see every event normally. Closes the race
             // against the parent pager's own slop-based swipe detector (see isActiveEdit).
-            .pointerInput(tool) {
-                if (tool == CanvasTool.SELECT || tool == CanvasTool.DRAW) {
+            .pointerInput(tool, bitmap) {
+                if (bitmap != null && (tool == CanvasTool.SELECT || tool == CanvasTool.DRAW)) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         val img = screenToImage(down.position.x, down.position.y)
@@ -336,8 +351,10 @@ fun AnnotationCanvas(
             // a class without leaving to Review — only the last-drawn box was reachable
             // before. A tap and a draw-drag don't conflict: detectTapGestures fires only on
             // a tap (no slop), detectDragGestures only after slop is crossed.
-            .pointerInput(tool) {
-                if (tool == CanvasTool.SELECT || tool == CanvasTool.VIEW || tool == CanvasTool.DRAW) {
+            .pointerInput(tool, bitmap) {
+                if (bitmap != null &&
+                    (tool == CanvasTool.SELECT || tool == CanvasTool.VIEW || tool == CanvasTool.DRAW)
+                ) {
                     detectTapGestures { tapScreen ->
                         val img = screenToImage(tapScreen.x, tapScreen.y)
                         // Tolerant + smallest-first pick so tiny boxes (and tiny boxes stacked
@@ -348,7 +365,8 @@ fun AnnotationCanvas(
                     }
                 }
             }
-            .pointerInput(tool) {
+            .pointerInput(tool, bitmap) {
+                if (bitmap == null) return@pointerInput
                 when (tool) {
                     CanvasTool.SELECT -> {
                         detectDragGestures(
@@ -470,6 +488,8 @@ fun AnnotationCanvas(
                 topLeft = offset,
                 size = Size(imageWidth.toFloat() * scale, imageHeight.toFloat() * scale),
             )
+            // Never draw or edit a new side's boxes over a loading/failed image.
+            return@Canvas
         }
 
         if (!showBoxes) return@Canvas

@@ -11,6 +11,7 @@ import dev.sawitulm.palmannotate.data.camera.OrbbecManager
 import dev.sawitulm.palmannotate.data.detection.OnnxDetector
 import dev.sawitulm.palmannotate.data.location.GpsProvider
 import dev.sawitulm.palmannotate.data.storage.AndroidStorageManager
+import dev.sawitulm.palmannotate.data.storage.ArtifactCoordinator
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
 import dev.sawitulm.palmannotate.data.storage.InputCache
 import dev.sawitulm.palmannotate.data.storage.SafMirrorStore
@@ -58,7 +59,18 @@ object AppModule {
         storage: AndroidStorageManager,
         saf: SafMirrorStore,
         db: PalmAnnotateDatabase,
-    ): SessionRepository = SessionRepository(sessionDao, treeDao, sideDao, bboxDao, linkDao, storage, saf, db)
+        artifactCoordinator: ArtifactCoordinator,
+    ): SessionRepository = SessionRepository(
+        sessionDao,
+        treeDao,
+        sideDao,
+        bboxDao,
+        linkDao,
+        storage,
+        saf,
+        db,
+        artifactCoordinator,
+    )
 
     @Provides @Singleton
     fun provideOrbbecManager(@ApplicationContext ctx: Context): OrbbecManager =

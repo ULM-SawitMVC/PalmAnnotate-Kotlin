@@ -118,48 +118,26 @@ class DepthViewerViewModel @Inject constructor(
                 sideCount = tree.sideCount
 
                 val result = withContext(Dispatchers.IO) {
+                    if (!storage.hasValidDepthPair(name, sideIndex)) return@withContext null
                     val rawFile = storage.depthRawFile(name, sideIndex)
-                    if (!rawFile.exists()) return@withContext null
-
-                    // Read dimension sidecar if available, fall back to square root guess
                     val jsonFile = storage.depthJsonFile(name, sideIndex)
-                    var width = 0; var height = 0
-                    if (jsonFile.exists()) {
-                        runCatching {
-                            val j = JSONObject(jsonFile.readText())
-                            width = j.optInt("width", 0)
-                            height = j.optInt("height", 0)
-                        }
-                    }
+                    val metadata = JSONObject(jsonFile.readText())
+                    val width = metadata.getInt("width")
+                    val height = metadata.getInt("height")
+                    val scale = metadata.getDouble("valueScale").toFloat()
 
                     val raw = rawFile.readBytes()
                     val rawDepths = DepthUtil.toUint16(raw)
+                    val pixelCount = rawDepths.size
+                    if (width.toLong() * height.toLong() != pixelCount.toLong()) {
+                        return@withContext null
+                    }
 
                     // Apply valueScale so values are in mm (Gemini 335L: scale ≈ 0.1, raw 5000 = 500mm)
-                    var scale = 1.0f
-                    if (jsonFile.exists()) {
-                        runCatching { scale = JSONObject(jsonFile.readText()).optDouble("valueScale", 1.0).toFloat() }
-                    }
                     val depths = if (scale == 1.0f) rawDepths else IntArray(rawDepths.size) { (rawDepths[it] * scale).toInt() }
 
                     val range = DepthUtil.range(depths, 7000, 250)
                     if (range.valid == 0) return@withContext Triple(null, range, Triple(rawDepths, 0, 0))
-
-                    // If sidecar dimensions missing, derive from pixel count
-                    val pixelCount = depths.size
-                    if (width <= 0 || height <= 0 || width * height != pixelCount) {
-                        // Common Orbbec resolutions: 1280x800, 1280x720, 640x400, 640x360
-                        width = when {
-                            pixelCount == 1280 * 800 -> 1280
-                            pixelCount == 1280 * 720 -> 1280
-                            pixelCount == 640 * 400 -> 640
-                            pixelCount == 640 * 360 -> 640
-                            pixelCount == 848 * 480 -> 848
-                            else -> { val s = Math.sqrt(pixelCount.toDouble()).toInt(); if (s * s == pixelCount) s else 1280 }
-                        }
-                        height = pixelCount / width
-                    }
-                    if (width <= 0 || height <= 0) return@withContext Triple(null, range, Triple(rawDepths, 0, 0))
 
                     // Build ARGB pixel array off the main thread
                     val pixels = IntArray(pixelCount)

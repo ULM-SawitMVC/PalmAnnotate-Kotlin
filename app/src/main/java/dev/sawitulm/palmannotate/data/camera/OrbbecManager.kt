@@ -120,6 +120,10 @@ class OrbbecManager(private val appContext: Context) {
     private data class CapturedJpeg(val bytes: ByteArray, val width: Int, val height: Int, val sourceFormat: String)
     private data class CapturedDepth(val bytes: ByteArray, val width: Int, val height: Int, val sourceFormat: String, val valueScale: Float)
     private data class CapturedRgbd(val color: CapturedJpeg, val depth: CapturedDepth?)
+    private data class DepthProfileSelection(
+        val profile: VideoStreamProfile?,
+        val d2cCompatible: Boolean,
+    )
 
     private val cameraExec = Executors.newSingleThreadExecutor { r -> Thread(r, "PalmAnnotate-Orbbec").apply { isDaemon = true } }
     private val cameraDispatcher = cameraExec.asCoroutineDispatcher()
@@ -508,9 +512,19 @@ class OrbbecManager(private val appContext: Context) {
                 safeClose(depthSensor, "depth sensor (color-only)")
             } else if (depthSensor != null) {
                 try {
-                    selectedDepthProfile = chooseDepthProfile(openedPipeline)
+                    val depthSelection = chooseDepthProfile(openedPipeline, selectedProfile)
+                    selectedDepthProfile = depthSelection.profile
                     if (selectedDepthProfile != null) config.enableStream(selectedDepthProfile) else config.enableStream(SensorType.DEPTH)
-                    try { config.setAlignMode(AlignMode.ALIGN_D2C_SW_MODE); depthAlignApplied = true } catch (e: Exception) { depthAlignApplied = false; Log.w(TAG, "software D2C align unavailable", e) }
+                    try {
+                        config.setAlignMode(AlignMode.ALIGN_D2C_SW_MODE)
+                        // setAlignMode itself does not prove that independently selected stream
+                        // profiles can be aligned. Report "color" only when this depth profile came
+                        // from the SDK's color-specific D2C compatibility list.
+                        depthAlignApplied = depthSelection.d2cCompatible
+                    } catch (e: Exception) {
+                        depthAlignApplied = false
+                        Log.w(TAG, "software D2C align unavailable", e)
+                    }
                     try { config.setDepthScaleRequire(true) } catch (_: Exception) {}
                     try { config.setFrameAggregateOutputMode(FrameAggregateOutputMode.OB_FRAME_AGGREGATE_OUTPUT_ALL_TYPE_FRAME_REQUIRE) } catch (_: Exception) {}
                     depthEnabled = true
@@ -568,8 +582,50 @@ class OrbbecManager(private val appContext: Context) {
         return selected
     }
 
-    private fun chooseDepthProfile(pipeline: Pipeline): VideoStreamProfile? {
-        val profileList: StreamProfileList = pipeline.getStreamProfileList(SensorType.DEPTH) ?: return null
+    /**
+     * Prefer a depth profile that the SDK explicitly declares compatible with the selected color
+     * profile for software D2C. If the optional lookup fails or has no usable Y16 entry, fall back
+     * to the previous generic depth-profile selection (RGB-D capture still works, but sidecar
+     * alignment is honestly reported as "none").
+     */
+    private fun chooseDepthProfile(
+        pipeline: Pipeline,
+        colorProfile: VideoStreamProfile?,
+    ): DepthProfileSelection {
+        if (colorProfile != null) {
+            val d2cList = try {
+                pipeline.getD2CDepthProfileList(colorProfile, AlignMode.ALIGN_D2C_SW_MODE)
+            } catch (e: Exception) {
+                Log.w(TAG, "D2C-compatible depth profile lookup unavailable; using generic depth", e)
+                null
+            }
+            if (d2cList != null) {
+                val compatibleProfile = try {
+                    chooseDepthProfileFromList(d2cList, colorProfile.getFps())
+                } catch (e: Exception) {
+                    Log.w(TAG, "D2C-compatible depth profile selection failed; using generic depth", e)
+                    null
+                }
+                compatibleProfile?.let {
+                    return DepthProfileSelection(it, d2cCompatible = true)
+                }
+                Log.w(TAG, "No Y16 profile in D2C compatibility list; using generic depth")
+            }
+        }
+
+        val genericList = pipeline.getStreamProfileList(SensorType.DEPTH)
+            ?: return DepthProfileSelection(null, d2cCompatible = false)
+        return DepthProfileSelection(
+            profile = chooseDepthProfileFromList(genericList, colorProfile?.getFps()),
+            d2cCompatible = false,
+        )
+    }
+
+    /** Select and retain one Y16 profile; closes the list and all unselected profiles. */
+    private fun chooseDepthProfileFromList(
+        profileList: StreamProfileList,
+        targetFps: Int?,
+    ): VideoStreamProfile? {
         val profiles = ArrayList<VideoStreamProfile>()
         try {
             for (i in 0 until profileList.getCount()) {
@@ -578,7 +634,19 @@ class OrbbecManager(private val appContext: Context) {
             }
         } finally { safeClose(profileList, "depth profileList") }
         if (profiles.isEmpty()) return null
-        profiles.sortWith(compareBy<VideoStreamProfile> { depthFormatPriority(it.getFormat()) }.thenBy { kotlin.math.abs(it.getWidth() - 1280) }.thenByDescending { it.getFps() }.thenByDescending { it.getWidth() * it.getHeight() })
+        profiles.sortWith(
+            compareBy<VideoStreamProfile> {
+                if (targetFps == null) 0 else kotlin.math.abs(it.getFps() - targetFps)
+            }.thenBy {
+                depthFormatPriority(it.getFormat())
+            }.thenBy {
+                kotlin.math.abs(it.getWidth() - 1280)
+            }.thenByDescending {
+                it.getFps()
+            }.thenByDescending {
+                it.getWidth() * it.getHeight()
+            }
+        )
         val selected = profiles.first(); for (p in profiles.drop(1)) safeClose(p, "unselected depth profile")
         return selected
     }
@@ -697,21 +765,33 @@ class OrbbecManager(private val appContext: Context) {
     private fun encodeDepthFrame(frame: DepthFrame): CapturedDepth? {
         val width = frame.getWidth(); val height = frame.getHeight()
         if (width <= 0 || height <= 0) throw IllegalStateException("Invalid Orbbec depth frame size")
-        val format = frame.getFormat(); val size = frame.getDataSize()
+        val format = frame.getFormat()
+        // The collector's persisted contract is explicitly uint16 little-endian. Y10/Y11/Y12
+        // may be packed differently by a profile/SDK and must not be relabelled as uint16le.
+        if (format != Format.Y16) {
+            Log.w(TAG, "Depth dropped: expected Y16, got $format")
+            return null
+        }
+        val size = frame.getDataSize()
         if (size <= 0) throw IllegalStateException("Empty Orbbec depth frame")
         val raw = ByteArray(size); val copied = frame.getData(raw)
         if (copied < 0) throw IllegalStateException("Failed to copy Orbbec depth frame data")
         val data = if (copied in 0 until raw.size) raw.copyOf(copied) else raw
-        val y16 = when (format) { Format.Y16, Format.Y10, Format.Y11, Format.Y12 -> data; else -> throw IllegalStateException("Unsupported depth format: $format") }
         // ORB-05: a Y16 depth buffer MUST be exactly width*height*2 bytes. A short/over-sized buffer
         // would write a .raw that silently mis-parses downstream (sidecar says full size, data is
-        // truncated). Drop depth for this frame — RGB survives and QualityCheck flags the missing
-        // depth — rather than ship a corrupt buffer. Both callers already tolerate a null return.
-        if (format == Format.Y16 && y16.size != width * height * 2) {
-            Log.w(TAG, "Depth dropped: Y16 size ${y16.size} != ${width * height * 2} for ${width}x$height")
+        // truncated). Reject depth for this frame; the capture flow then rejects the Orbbec RGB
+        // too, preserving the product rule that an Orbbec shot is one RGB-D unit.
+        val expectedBytes = width.toLong() * height.toLong() * 2L
+        if (data.size.toLong() != expectedBytes) {
+            Log.w(TAG, "Depth dropped: Y16 size ${data.size} != $expectedBytes for ${width}x$height")
             return null
         }
-        return CapturedDepth(y16, width, height, format.name, frame.getValueScale())
+        val valueScale = frame.getValueScale()
+        if (!valueScale.isFinite() || valueScale <= 0f) {
+            Log.w(TAG, "Depth dropped: invalid valueScale=$valueScale")
+            return null
+        }
+        return CapturedDepth(data, width, height, format.name, valueScale)
     }
 
     // ── Live preview encoders ────────────────────────────────────────────────
@@ -799,8 +879,8 @@ class OrbbecManager(private val appContext: Context) {
         Format.MJPG -> 0; Format.RGB -> 1; Format.BGR -> 2; Format.RGBA, Format.BGRA -> 3
         Format.YUYV, Format.YUY2, Format.NV21, Format.NV12 -> 4; Format.UYVY, Format.I420 -> 5; else -> 99
     }
-    private fun isCapturableDepthFormat(format: Format) = when (format) { Format.Y16, Format.Y10, Format.Y11, Format.Y12 -> true; else -> false }
-    private fun depthFormatPriority(format: Format) = when (format) { Format.Y16 -> 0; Format.Y12 -> 1; Format.Y11 -> 2; Format.Y10 -> 3; else -> 99 }
+    private fun isCapturableDepthFormat(format: Format) = format == Format.Y16
+    private fun depthFormatPriority(format: Format) = if (format == Format.Y16) 0 else 99
 
     private fun safeStopAndClose(pipeline: Pipeline?) { if (pipeline == null) return; try { pipeline.stop() } catch (e: Exception) { /* Log.d(TAG, "pipeline stop ignored", e) */ }; safeClose(pipeline, "pipeline") }
     private fun safeClose(closeable: AutoCloseable?, label: String) { if (closeable == null) return; try { closeable.close() } catch (e: Exception) { /* Log.d(TAG, "close $label ignored", e) */ } }

@@ -3,6 +3,22 @@ package dev.sawitulm.palmannotate.domain.model
 import android.net.Uri
 
 /**
+ * Provenance of one RGB side. This is persisted because depth requirements must remain
+ * enforceable long after the capture screen has been closed.
+ */
+enum class CaptureOrigin {
+    PHONE_CAMERA,
+    ORBBEC,
+    IMPORTED_LEGACY,
+    UNKNOWN;
+
+    companion object {
+        fun fromPersisted(value: String?): CaptureOrigin =
+            entries.firstOrNull { it.name == value } ?: UNKNOWN
+    }
+}
+
+/**
  * One photo (side) of a tree, with its annotations.
  */
 data class TreeSide(
@@ -14,6 +30,11 @@ data class TreeSide(
     val imageHeight: Int,
     val bboxes: List<Bbox>,
     val originalBboxes: List<Bbox>, // snapshot at load time (for annot-log diffing)
+    /** Stable identity of the JPEG bytes; never inferred from the filename. */
+    val rgbSha256: String = "",
+    val captureOrigin: CaptureOrigin = CaptureOrigin.UNKNOWN,
+    /** True for Orbbec sides: export/resume must reject RGB without valid metric depth. */
+    val depthRequired: Boolean = false,
 ) {
     val assignedBboxCount: Int get() = bboxes.count { it.isAssigned }
     val unassignedBboxCount: Int get() = bboxes.count { !it.isAssigned }

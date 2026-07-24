@@ -77,6 +77,9 @@ data class SideEntity(
     val imageWidth: Int,
     val imageHeight: Int,
     val labelUri: String? = null,
+    @ColumnInfo(defaultValue = "''") val rgbSha256: String = "",
+    @ColumnInfo(defaultValue = "'UNKNOWN'") val captureOrigin: String = "UNKNOWN",
+    @ColumnInfo(defaultValue = "0") val depthRequired: Boolean = false,
 )
 
 @Entity(
@@ -134,8 +137,12 @@ interface SessionDao {
     @Query("SELECT * FROM sessions WHERE groupKey = :groupKey LIMIT 1")
     suspend fun getByGroupKey(groupKey: String): SessionEntity?
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(session: SessionEntity)
+    /**
+     * New runs must never use INSERT OR REPLACE. A groupKey conflict under rapid double-submit
+     * would DELETE the existing parent row and cascade-delete every captured tree in that run.
+     */
+    @Insert
+    suspend fun insert(session: SessionEntity)
 
     /**
      * Update an EXISTING run in place. Must NOT go through INSERT-OR-REPLACE:
@@ -172,8 +179,12 @@ interface TreeDao {
     @Query("SELECT * FROM trees ORDER BY updatedAt DESC")
     suspend fun getAllOnce(): List<TreeEntity>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun upsert(tree: TreeEntity)
+    /**
+     * A duplicate treeName must fail. REPLACE would delete the old tree row and make a partially
+     * written same-name re-shoot look committed.
+     */
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insert(tree: TreeEntity)
 
     /**
      * Update an EXISTING tree in place. Must NOT use INSERT-OR-REPLACE: REPLACE on

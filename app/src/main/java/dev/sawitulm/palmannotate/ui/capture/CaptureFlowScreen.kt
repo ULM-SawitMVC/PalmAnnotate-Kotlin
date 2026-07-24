@@ -59,7 +59,9 @@ import dev.sawitulm.palmannotate.data.camera.OrbbecManager
 import dev.sawitulm.palmannotate.data.db.SessionEntity
 import dev.sawitulm.palmannotate.data.location.GpsProvider
 import dev.sawitulm.palmannotate.data.storage.AndroidStorageManager
+import dev.sawitulm.palmannotate.data.storage.DepthArtifactContract
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
+import dev.sawitulm.palmannotate.data.storage.JpegOrientationNormalizer
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
 import dev.sawitulm.palmannotate.domain.model.*
 import dev.sawitulm.palmannotate.domain.quality.QualityCheck
@@ -97,6 +99,7 @@ class CaptureFlowViewModel @Inject constructor(
     var currentSide by mutableIntStateOf(0)
     val capturedImages = mutableStateListOf<Uri?>()
     val capturedDepths = mutableStateListOf<OrbbecManager.OrbbecDepthData?>()
+    private val capturedSources = mutableStateListOf<CaptureSource?>()
     var manualId by mutableStateOf("")
     var gpsStatus by mutableStateOf<String?>(null)
     var currentStep by mutableStateOf(SideStep.PREVIEW)
@@ -110,6 +113,8 @@ class CaptureFlowViewModel @Inject constructor(
     var isSaving by mutableStateOf(false)
         private set
     var saveError by mutableStateOf<String?>(null)
+        private set
+    var captureError by mutableStateOf<String?>(null)
         private set
     var captureSource by mutableStateOf(CaptureSource.PHONE_CAMERA)
         private set
@@ -245,22 +250,41 @@ class CaptureFlowViewModel @Inject constructor(
     }
 
     fun captureOrbbecFrame(context: Context) {
+        // Bind RGB + depth to the side showing when the shutter was pressed. Reading currentSide
+        // after the blocking camera call could attach a valid pair to a different side.
+        val capturedSideIndex = currentSide
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val frame = orbbec.capture()
+                val depth = frame.depth
+                if (depth == null) {
+                    Log.w(
+                        "CaptureFlow",
+                        "Orbbec capture rejected for side $capturedSideIndex: Y16 depth missing",
+                    )
+                    withContext(Dispatchers.Main) {
+                        captureError = appContext.getString(R.string.capture_orbbec_depth_required)
+                    }
+                    return@launch
+                }
                 val colorBytes = Base64.decode(frame.base64, Base64.NO_WRAP)
                 val ts = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
                 val file = File(context.cacheDir, "orbbec_$ts.jpg")
                 file.writeBytes(colorBytes)
-                val idx = currentSide
-                if (idx < capturedDepths.size) capturedDepths[idx] = frame.depth
                 withContext(Dispatchers.Main) {
-                    onImageCaptured(Uri.fromFile(file))
+                    if (capturedSideIndex in capturedImages.indices) {
+                        capturedDepths[capturedSideIndex] = depth
+                        capturedImages[capturedSideIndex] = Uri.fromFile(file)
+                        capturedSources[capturedSideIndex] = CaptureSource.ORBBEC
+                        captureError = null
+                        if (currentSide == capturedSideIndex) currentStep = SideStep.REVIEW
+                    }
                 }
             } catch (e: Exception) {
                 Log.e("CaptureFlow", "Orbbec capture failed", e)
                 withContext(Dispatchers.Main) {
                     orbbecStateMsg = appContext.getString(R.string.orbbec_capture_failed, e.message ?: "")
+                    captureError = orbbecStateMsg
                 }
             }
         }
@@ -286,16 +310,31 @@ class CaptureFlowViewModel @Inject constructor(
     // ── Standard capture logic ────────────────────────────────────────────────
 
     fun dismissQa() { showQaDialog = false }
+    fun dismissCaptureError() { captureError = null }
 
     fun requestSave(runId: String, context: Context, onDone: (String) -> Unit) {
         val r = run ?: return
         val capturedCount = capturedImages.count { it != null }
         val depthSides = capturedDepths.count { it != null }
+        val orbbecSides = capturedSources.count { it == CaptureSource.ORBBEC }
+        val missingOrbbecDepth = capturedImages.indices.firstOrNull { index ->
+            capturedImages[index] != null &&
+                capturedSources.getOrNull(index) == CaptureSource.ORBBEC &&
+                capturedDepths.getOrNull(index) == null
+        }
+        if (missingOrbbecDepth != null) {
+            saveError = appContext.getString(
+                R.string.capture_orbbec_pair_missing_side,
+                missingOrbbecDepth + 1,
+            )
+            return
+        }
         val hasGps = latitude != null && longitude != null
         val report = QualityCheck.analyzeCaptureShots(
             capturedSides = capturedCount,
             expectedSides = sideCount,
             depthSides = depthSides,
+            requiredDepthSides = orbbecSides,
             hasGps = hasGps,
             hasVariety = r.variety.isNotBlank(),
             hasBlock = r.block.isNotBlank(),
@@ -321,9 +360,11 @@ class CaptureFlowViewModel @Inject constructor(
             manualId = r.nextId.toString()
             capturedImages.clear()
             capturedDepths.clear()
+            capturedSources.clear()
             repeat(sideCount) {
                 capturedImages.add(null)
                 capturedDepths.add(null)
+                capturedSources.add(null)
             }
             currentSide = 0
             currentStep = SideStep.PREVIEW
@@ -361,6 +402,9 @@ class CaptureFlowViewModel @Inject constructor(
     fun onImageCaptured(uri: Uri) {
         if (currentSide < capturedImages.size) {
             capturedImages[currentSide] = uri
+            capturedDepths[currentSide] = null
+            capturedSources[currentSide] = CaptureSource.PHONE_CAMERA
+            captureError = null
             currentStep = SideStep.REVIEW
         }
     }
@@ -376,6 +420,7 @@ class CaptureFlowViewModel @Inject constructor(
         if (currentSide < capturedImages.size) {
             capturedImages[currentSide] = null
             capturedDepths.getOrNull(currentSide)?.let { capturedDepths[currentSide] = null }
+            if (currentSide < capturedSources.size) capturedSources[currentSide] = null
         }
         currentStep = SideStep.PREVIEW
     }
@@ -395,6 +440,7 @@ class CaptureFlowViewModel @Inject constructor(
         if (index in 0 until capturedImages.size) {
             capturedImages[index] = null
             if (index < capturedDepths.size) capturedDepths[index] = null
+            if (index < capturedSources.size) capturedSources[index] = null
             currentSide = index
             currentStep = SideStep.PREVIEW
             phase = CapturePhase.SIDES
@@ -417,48 +463,90 @@ class CaptureFlowViewModel @Inject constructor(
 
     private fun save(runId: String, context: Context, onDone: (String) -> Unit) {
         val r = run ?: return
+        // Latch synchronously on the main thread. Waiting until the launched coroutine starts
+        // leaves a small double-tap window where two saves can race on the same .tmp filenames.
+        if (isSaving) return
+        isSaving = true
         saveError = null
         viewModelScope.launch {
-            isSaving = true
+            var stagingDir: File? = null
             try {
                 val treeId = if (r.autoId) r.nextId else (manualId.toIntOrNull() ?: r.nextId).coerceAtLeast(1)
                 val v = safe(r.variety)
                 val b = safeBlock(r.block)
                 val treeName = if (b.isNotEmpty()) "${v}_${b}_${"%04d".format(treeId)}" else "${v}_${"%04d".format(treeId)}"
 
+                // Never overwrite a committed tree in-place. The operator must explicitly delete
+                // the old tree first; until then its RGB/depth/annotations remain one intact unit.
+                if (repo.treeNameExists(treeName)) {
+                    saveError = appContext.getString(R.string.capture_tree_name_exists, treeName)
+                    return@launch
+                }
+
                 val sides = withContext(Dispatchers.IO) {
+                    val stage = storage.captureStagingDir(UUID.randomUUID().toString())
+                    stagingDir = stage
                     val allSides = mutableListOf<TreeSide>()
                     capturedImages.forEachIndexed { index, uri ->
                         if (uri == null) return@forEachIndexed
-                        val dest = storage.imageFile(treeName, index)
-                        val bytes = try {
+                        val stagedImage = storage.stagedImageFile(stage, treeName, index)
+                        val source = capturedSources.getOrNull(index)
+                        val capturedBytes = try {
                             readBytes(context, uri)
                         } catch (e: Exception) {
                             Log.e("CaptureFlow", "Failed to read captured image for side $index", e)
                             null
                         }
-                        if (bytes == null) throw IllegalStateException("Side ${index + 1}: captured image could not be read")
-                        storage.writeBytes(dest, bytes)
+                        if (capturedBytes == null) {
+                            throw IllegalStateException(
+                                "Side ${index + 1}: captured image could not be read",
+                            )
+                        }
+                        // CameraX commonly stores landscape sensor pixels plus an EXIF rotation.
+                        // Coil honors EXIF in the capture review, but BitmapFactory/detector/YOLO do
+                        // not. Materialize that transform once before hashing or measuring so every
+                        // downstream consumer sees the same canonical pixel coordinate system.
+                        val bytes = if (source == CaptureSource.PHONE_CAMERA) {
+                            JpegOrientationNormalizer.normalize(capturedBytes)
+                        } else {
+                            capturedBytes
+                        }
+                        val depth = capturedDepths.getOrNull(index)
+                        if (source == CaptureSource.ORBBEC && depth == null) {
+                            throw IllegalStateException(
+                                "Side ${index + 1}: Orbbec RGB capture is missing required Y16 depth",
+                            )
+                        }
+                        storage.writeBytes(stagedImage, bytes)
                         val dims = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                        BitmapFactory.decodeFile(dest.path, dims)
+                        BitmapFactory.decodeFile(stagedImage.path, dims)
                         if (dims.outWidth <= 0 || dims.outHeight <= 0) {
                             throw IllegalStateException("Side ${index + 1}: captured file has zero dimensions")
                         }
 
-                        // Depth sidecar — best-effort, never blocks save.
-                        val depth = capturedDepths.getOrNull(index)
+                        // Depth sidecar is a single fail-closed artifact. A tree must never be
+                        // accepted with only half of the decoder pair or with stale depth from a
+                        // previous manual-ID re-shoot.
                         if (depth != null) {
                             try {
                                 val rawBytes = Base64.decode(depth.base64, Base64.NO_WRAP)
-                                storage.writeBytes(storage.depthRawFile(treeName, index), rawBytes)
                                 val meta = JSONObject().apply {
+                                    put("schemaVersion", 2)
                                     put("width", depth.width)
                                     put("height", depth.height)
                                     put("format", depth.format)
                                     put("valueScale", depth.valueScale)
                                     put("encoding", depth.encoding)
                                     put("unit", depth.unit)
+                                    put("decodeFormula", "depth_mm = uint16_le * valueScale")
+                                    put("invalidValue", 0)
                                     put("alignedTo", depth.alignedTo)
+                                    put("rgbWidth", dims.outWidth)
+                                    put("rgbHeight", dims.outHeight)
+                                    // Bind all three artifacts. A same-size stale raw/RGB file is
+                                    // now detectable even when its filename and dimensions match.
+                                    put("rawSha256", DepthArtifactContract.sha256Hex(rawBytes))
+                                    put("rgbSha256", DepthArtifactContract.sha256Hex(bytes))
                                     put("displayFloorMm", depth.displayFloorMm)
                                     put("displayCeilingMm", depth.displayCeilingMm)
                                     // H-03: RGB-D calibration for offline reprojection / alignment
@@ -467,35 +555,51 @@ class CaptureFlowViewModel @Inject constructor(
                                     // absent when depth calibration was unavailable.
                                     depth.calibrationRawB64?.let { put("calibrationRawB64", it) }
                                     depth.calibrationDump?.let { put("calibrationDump", it) }
+                                    if (depth.calibrationRawB64 != null || depth.calibrationDump != null) {
+                                        put("calibration", JSONObject().apply {
+                                            depth.calibrationRawB64?.let { put("cameraParamRawB64", it) }
+                                            depth.calibrationDump?.let { put("cameraParamDump", it) }
+                                        })
+                                    }
                                 }
-                                storage.writeText(storage.depthJsonFile(treeName, index), meta.toString())
-                                // Log.i("CaptureFlow", "Depth sidecar written for side $index (${rawBytes.size} bytes)")
+                                storage.writeBytes(
+                                    storage.stagedDepthRawFile(stage, treeName, index),
+                                    rawBytes,
+                                )
+                                storage.writeText(
+                                    storage.stagedDepthJsonFile(stage, treeName, index),
+                                    meta.toString(),
+                                )
                             } catch (e: Exception) {
-                                Log.w("CaptureFlow", "Depth sidecar write failed for side $index", e)
-                            }
-                        } else {
-                            // H-02: this side has NO depth now. Remove any stale .raw/.json left by a
-                            // prior capture of the same treeName/side — otherwise the old depth would
-                            // silently pair with the freshly-written RGB. (The SAF mirror is cleaned
-                            // in SessionRepository.mirrorSafArtifacts so resume can't re-import it.)
-                            try {
-                                storage.deleteFile(storage.depthRawFile(treeName, index))
-                                storage.deleteFile(storage.depthJsonFile(treeName, index))
-                            } catch (e: Exception) {
-                                Log.w("CaptureFlow", "Stale depth cleanup failed for side $index", e)
+                                throw IllegalStateException(
+                                    "Side ${index + 1}: depth could not be staged safely",
+                                    e,
+                                )
                             }
                         }
 
+                        val rgbSha256 = DepthArtifactContract.sha256Hex(bytes)
+                        val origin = when (source) {
+                            CaptureSource.ORBBEC -> CaptureOrigin.ORBBEC
+                            CaptureSource.PHONE_CAMERA -> CaptureOrigin.PHONE_CAMERA
+                            null -> CaptureOrigin.UNKNOWN
+                        }
                         allSides.add(
                             TreeSide(
                                 sideIndex = index,
                                 label = "Side ${index + 1}",
-                                imageUri = Uri.fromFile(dest),
+                                imageUri = storage.versionedImageUri(
+                                    storage.imageFile(treeName, index),
+                                    bytes,
+                                ),
                                 labelUri = null,
                                 imageWidth = dims.outWidth,
                                 imageHeight = dims.outHeight,
                                 bboxes = emptyList(),
                                 originalBboxes = emptyList(),
+                                rgbSha256 = rgbSha256,
+                                captureOrigin = origin,
+                                depthRequired = source == CaptureSource.ORBBEC,
                             )
                         )
                     }
@@ -508,7 +612,7 @@ class CaptureFlowViewModel @Inject constructor(
 
                 val safTreeUri = exportFolder.folderUri.first()
 
-                val treeKey = repo.addTree(
+                val treeKey = repo.commitTreePackage(
                     sessionId = runId,
                     treeName = treeName,
                     treeId = treeId,
@@ -521,6 +625,10 @@ class CaptureFlowViewModel @Inject constructor(
                         latitude = latitude,
                         longitude = longitude,
                     ),
+                    stagingDir = requireNotNull(stagingDir),
+                    requiredDepthSides = sides
+                        .filter { it.depthRequired }
+                        .mapTo(mutableSetOf()) { it.sideIndex },
                     safTreeUri = safTreeUri,
                 )
                 onDone(treeKey)
@@ -528,6 +636,13 @@ class CaptureFlowViewModel @Inject constructor(
                 Log.e("CaptureFlow", "Failed to save tree", e)
                 saveError = appContext.getString(R.string.capture_save_failed)
             } finally {
+                stagingDir?.let { stage ->
+                    withContext(Dispatchers.IO) {
+                        if (!storage.deleteCaptureStaging(stage)) {
+                            Log.w("CaptureFlow", "Could not clean staging directory ${stage.path}")
+                        }
+                    }
+                }
                 isSaving = false
             }
         }
@@ -584,6 +699,13 @@ fun CaptureFlowScreen(
     LaunchedEffect(viewModel.captureSource, viewModel.orbbecAvailable) {
         if (viewModel.captureSource == CaptureSource.ORBBEC && viewModel.orbbecAvailable) {
             viewModel.startOrbbecPreviewIfReady()
+        }
+    }
+
+    LaunchedEffect(viewModel.captureError) {
+        viewModel.captureError?.let { message ->
+            toasts.error(message)
+            viewModel.dismissCaptureError()
         }
     }
 

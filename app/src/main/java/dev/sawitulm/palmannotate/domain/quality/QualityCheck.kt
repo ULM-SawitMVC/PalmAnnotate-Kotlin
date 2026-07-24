@@ -43,6 +43,7 @@ object QualityCheck {
         capturedSides: Int,
         expectedSides: Int,
         depthSides: Int,
+        requiredDepthSides: Int = capturedSides,
         hasGps: Boolean,
         hasVariety: Boolean,
         hasBlock: Boolean,
@@ -53,9 +54,9 @@ object QualityCheck {
             issues.add(Issue("capture_view_missing", Level.ERROR,
                 "Hanya $capturedSides dari $expectedSides sisi yang berhasil ditangkap."))
         }
-        if (depthSides < capturedSides) {
+        if (depthSides < requiredDepthSides) {
             issues.add(Issue("capture_rgb_depth_incomplete", Level.WARN,
-                "Hanya $depthSides dari $capturedSides foto yang memiliki data depth."))
+                "Hanya $depthSides dari $requiredDepthSides foto Orbbec yang memiliki data depth."))
         }
         if (!hasGps) {
             issues.add(Issue("metadata_gps_missing", Level.WARN,
@@ -80,6 +81,7 @@ object QualityCheck {
                 "capturedSides" to capturedSides,
                 "expectedSides" to expectedSides,
                 "depthSides" to depthSides,
+                "requiredDepthSides" to requiredDepthSides,
             ),
             issues = issues,
         )

@@ -15,7 +15,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         BboxEntity::class,
         ConfirmedLinkEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class PalmAnnotateDatabase : RoomDatabase() {
@@ -47,6 +47,20 @@ abstract class PalmAnnotateDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v3 -> v4: persist per-side capture provenance and RGB content identity.
+         *
+         * Legacy rows remain readable but are explicitly UNKNOWN/lower-assurance until their
+         * next verified import/export materializes a content hash.
+         */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `sides` ADD COLUMN `rgbSha256` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `sides` ADD COLUMN `captureOrigin` TEXT NOT NULL DEFAULT 'UNKNOWN'")
+                db.execSQL("ALTER TABLE `sides` ADD COLUMN `depthRequired` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun create(context: Context): PalmAnnotateDatabase =
             Room.databaseBuilder(
                 context.applicationContext,
@@ -56,7 +70,7 @@ abstract class PalmAnnotateDatabase : RoomDatabase() {
                 // Explicit, NON-destructive migration. fallbackToDestructiveMigration() was removed:
                 // it silently dropped every table on any schema bump (or downgrade), which would
                 // wipe all annotations/links in the field. A missing migration now fails loud.
-                .addMigrations(MIGRATION_2_3)
+                .addMigrations(MIGRATION_2_3, MIGRATION_3_4)
                 .build()
     }
 }
