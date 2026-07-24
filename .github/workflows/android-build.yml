@@ -1,0 +1,65 @@
+name: Android Build
+
+# Build a debug APK on every push to master + on PRs.
+# The APK is attached to the workflow run as an artifact (no GitHub Release).
+# For a real Release with a permanent download link, push a tag — see release.yml.
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          # REQUIRED: app/build.gradle.kts derives versionCode/versionName from
+          # `git rev-list --count HEAD`. The default shallow clone (depth 1) would
+          # make that return 1 and produce a bogus v0.3.1 APK.
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle (with cache)
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Run unit tests
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
+
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug --no-daemon
+
+      - name: Resolve version
+        id: version
+        run: |
+          APK=$(find app/build/outputs/apk/debug -name '*.apk' | head -1)
+          echo "apk=$APK" >> "$GITHUB_OUTPUT"
+          echo "version=$(basename "$APK" .apk | sed 's/^PalmAnnotate-debug-v//')" >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PalmAnnotate-debug-v${{ steps.version.outputs.version }}
+          path: app/build/outputs/apk/debug/*.apk
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload test report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: app/build/reports/tests/
+          retention-days: 7
