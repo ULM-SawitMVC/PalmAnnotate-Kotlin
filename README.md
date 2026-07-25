@@ -1,8 +1,21 @@
 # PalmAnnotate Native
 
+[![Android Build](https://github.com/ULM-SawitMVC/PalmAnnotate-Kotlin/actions/workflows/android-build.yml/badge.svg)](https://github.com/ULM-SawitMVC/PalmAnnotate-Kotlin/actions/workflows/android-build.yml)
+
 Rewrite dari PalmAnnotate (Capacitor WebView hybrid) ke **native Kotlin + Jetpack Compose**.
 
 > **Status migrasi ada di [`docs/MIGRATION_STATUS.md`](docs/MIGRATION_STATUS.md).**
+
+## Download APK
+
+Tidak perlu build sendiri:
+
+- **[Releases](../../releases)** — APK versi rilis, link permanen. Ambil dari sini untuk dipasang.
+- **[Actions](../../actions/workflows/android-build.yml)** — APK dari setiap push ke `master`
+  (bagian *Artifacts*, retensi 30 hari). Berkasnya dibungkus ZIP oleh GitHub, jadi perlu di-unzip.
+
+Debug build, `arm64-v8a` saja, `applicationId` = `dev.sawitulm.palmannotate.debug`.
+Perlu Android 7.0 (API 24) atau lebih baru.
 
 ## License
 
@@ -83,12 +96,21 @@ $env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
 # Build
 .\gradlew.bat :app:assembleDebug --no-daemon --max-workers=4
 
-# Install
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+# Install — nama file APK mengandung versi (PalmAnnotate-debug-v0.3.40.apk),
+# jadi ambil yang terbaru daripada menuliskan namanya
+$apk = Get-ChildItem 'app/build/outputs/apk/debug/PalmAnnotate-debug-v*.apk' |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+adb install -r $apk.FullName
 
 # Test
 .\gradlew.bat :app:testDebugUnitTest --no-daemon
 ```
+
+Versi (`versionName`/`versionCode`) dihitung otomatis dari jumlah commit — lihat
+bagian Versioning di [`CLAUDE.md`](CLAUDE.md).
+
+CI membangun APK yang sama lewat GitHub Actions setiap push ke `master`; lihat
+[Download APK](#download-apk) di atas kalau tidak mau build lokal.
 
 ## Architecture
 
@@ -103,3 +125,6 @@ UI (Compose) → ViewModel → UseCase → Repository → Room + Filesystem + SA
 
 - [`docs/MIGRATION_STATUS.md`](docs/MIGRATION_STATUS.md) — Status migrasi dari web app
 - [`docs/PERF_GAIN.md`](docs/PERF_GAIN.md) — Analisis optimasi performa
+- [`CLAUDE.md`](CLAUDE.md) — Panduan build, versioning, CI, dan catatan teknis
+- [`.github/workflows/`](.github/workflows) — CI: `android-build.yml` (APK per push),
+  `release.yml` (Release bertag)
