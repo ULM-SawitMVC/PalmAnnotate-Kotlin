@@ -56,6 +56,13 @@ android {
             isMinifyEnabled = false
             applicationIdSuffix = ".debug"
         }
+        create("trace") {
+            initWith(getByName("debug"))
+            isDebuggable = true
+            isMinifyEnabled = false
+            applicationIdSuffix = ".trace"
+            matchingFallbacks += listOf("debug")
+        }
         create("field") {
             initWith(getByName("release"))
             isDebuggable = false

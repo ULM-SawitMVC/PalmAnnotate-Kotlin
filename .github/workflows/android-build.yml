@@ -1,6 +1,6 @@
 name: Android Build
 
-# Build field + debug APKs on every push to master + on PRs.
+# Build field + diagnostic APKs on every push to master + on PRs.
 # APKs are attached to the workflow run as artifacts (no GitHub Release).
 # For a real Release with a permanent download link, push a tag — see release.yml.
 on:
@@ -38,8 +38,8 @@ jobs:
       - name: Run unit tests
         run: ./gradlew :app:testDebugUnitTest --no-daemon
 
-      - name: Build field and debug APKs
-        run: ./gradlew :app:assembleField :app:assembleDebug --no-daemon
+      - name: Build field and diagnostic APKs
+        run: ./gradlew :app:assembleField :app:assembleDebug :app:assembleTrace --no-daemon
 
       - name: Resolve version
         id: version
@@ -60,6 +60,14 @@ jobs:
         with:
           name: PalmAnnotate-debug-v${{ steps.version.outputs.version }}
           path: app/build/outputs/apk/debug/*.apk
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload side-by-side debug APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PalmAnnotate-trace-v${{ steps.version.outputs.version }}
+          path: app/build/outputs/apk/trace/*.apk
           retention-days: 30
           if-no-files-found: error
 
