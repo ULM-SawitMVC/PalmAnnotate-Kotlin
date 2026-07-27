@@ -116,43 +116,48 @@ class FolderResumeImporter @Inject constructor(
     /**
      * Scan the chosen SAF folder, reconstruct prior runs/trees, ingest into Room.
      * Returns the number of trees imported (0 = nothing to resume / new folder).
-     * Never throws.
+     * Malformed packages are skipped. Storage failures are reported to the caller so an
+     * interrupted import can be retried on the next launch.
      */
     suspend fun resumeFromFolder(safTreeUri: Uri): Int = withContext(Dispatchers.IO) {
-        try {
-            val jsonNames = saf.listFiles(safTreeUri, OUTPUT_JSON_DIR, ".json")
-            if (jsonNames.isEmpty()) return@withContext 0
+        val jsonNames = saf.listFiles(safTreeUri, OUTPUT_JSON_DIR, ".json")
+        if (jsonNames.isEmpty()) return@withContext 0
 
-            val imageNames = saf.listFiles(safTreeUri, IMAGES_DIR, ".jpg").toHashSet()
+        val imageNames = saf.listFiles(safTreeUri, IMAGES_DIR, ".jpg").toHashSet()
 
-            val scanned = ArrayList<ScannedTree>()
-            for (name in jsonNames) {
-                val parsed = runCatching { scanOne(safTreeUri, name, imageNames) }.getOrNull()
-                if (parsed != null) scanned.add(parsed)
+        val scanned = ArrayList<ScannedTree>()
+        var scanFailures = 0
+        for (name in jsonNames) {
+            val scanResult = runCatching { scanOne(safTreeUri, name, imageNames) }
+            scanResult.exceptionOrNull()?.let {
+                scanFailures++
+                Log.w(TAG, "resume scan failed for $name", it)
             }
-            if (scanned.isEmpty()) return@withContext 0
-
-            // Dedupe against runs/trees already in Room.
-            val existingTreeNames = repo.allTreeNames().toHashSet()
-            val existingGroupRuns = repo.runGroupKeyToId()
-            val plans = planRuns(scanned, existingTreeNames)
-            if (plans.isEmpty()) return@withContext 0
-
-            var imported = 0
-            for (plan in plans) {
-                // Reuse an existing run with the same group key, else create one.
-                val runId = existingGroupRuns[plan.groupKey]
-                    ?: repo.createRun(plan.variety, plan.block, plan.sideCount, autoId = true)
-                for (tree in plan.trees) {
-                    val ok = ingestTree(safTreeUri, runId, tree, imageNames)
-                    if (ok) imported++
-                }
-            }
-            imported
-        } catch (e: Exception) {
-            Log.w(TAG, "resumeFromFolder failed", e)
-            0
+            val parsed = scanResult.getOrNull()
+            if (parsed != null) scanned.add(parsed)
         }
+        check(scanFailures == 0) { "Failed to scan $scanFailures tree package(s)" }
+        if (scanned.isEmpty()) return@withContext 0
+
+        // Dedupe against runs/trees already in Room.
+        val existingTreeNames = repo.allTreeNames().toHashSet()
+        val existingGroupRuns = repo.runGroupKeyToId()
+        val plans = planRuns(scanned, existingTreeNames)
+        if (plans.isEmpty()) return@withContext 0
+
+        var imported = 0
+        var failed = 0
+        for (plan in plans) {
+            // Reuse an existing run with the same group key, else create one.
+            val runId = existingGroupRuns[plan.groupKey]
+                ?: repo.createRun(plan.variety, plan.block, plan.sideCount, autoId = true)
+            for (tree in plan.trees) {
+                val ok = ingestTree(safTreeUri, runId, tree, imageNames)
+                if (ok) imported++ else failed++
+            }
+        }
+        check(failed == 0) { "Failed to resume $failed valid tree package(s)" }
+        imported
     }
 
     // ─── internals ───────────────────────────────────────────────────────────
@@ -492,7 +497,10 @@ class FolderResumeImporter @Inject constructor(
                     .filter { it.depthRequired }
                     .mapTo(mutableSetOf()) { it.sideIndex },
                 confirmedLinks = tree.confirmedLinks,
-                safTreeUri = safTreeUri,
+                // Resume is a read-only operation for the selected SAF folder. The imported
+                // package is copied into local storage and Room, but its verified remote source
+                // must not be deleted and rewritten as if it were a brand-new capture.
+                safTreeUri = null,
             )
             true
         }.getOrElse {

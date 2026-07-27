@@ -162,6 +162,15 @@ class SessionRepository(
         if (treeDao.getByName(treeName) != null) {
             throw IllegalStateException("Tree name already exists: $treeName")
         }
+        if (safTreeUri != null) {
+            val remoteCollision = ArtifactIdentityPolicy.collisionProbePaths(
+                treeName,
+                sides.map { it.sideIndex },
+            ).firstOrNull { saf.exists(safTreeUri, it) }
+            check(remoteCollision == null) {
+                "Tree name already exists in the export folder: $treeName"
+            }
+        }
 
         val declaredRequiredDepth = sides
             .filter { it.depthRequired || it.captureOrigin == CaptureOrigin.ORBBEC }

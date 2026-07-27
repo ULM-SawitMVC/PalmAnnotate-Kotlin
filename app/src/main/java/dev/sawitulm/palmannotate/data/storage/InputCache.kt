@@ -29,4 +29,13 @@ class InputCache @Inject constructor(@ApplicationContext context: Context) {
     var lastCaptureUsesOrbbec: Boolean
         get() = prefs.getBoolean("last_capture_uses_orbbec", false)
         set(value) = prefs.edit().putBoolean("last_capture_uses_orbbec", value).apply()
+
+    var resumedFolderUri: String?
+        get() = prefs.getString("resumed_folder_uri", null)
+        set(value) {
+            val editor = prefs.edit()
+            if (value == null) editor.remove("resumed_folder_uri")
+            else editor.putString("resumed_folder_uri", value)
+            editor.apply()
+        }
 }

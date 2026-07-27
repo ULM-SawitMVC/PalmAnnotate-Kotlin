@@ -16,4 +16,19 @@ internal object ArtifactIdentityPolicy {
         sideIndices.distinct().size != sideIndices.size -> "side indices must be unique"
         else -> null
     }
+
+    fun collisionProbePaths(treeName: String, sideIndices: List<Int>): List<String> =
+        buildList {
+            add("dataset/manifests/$treeName.json")
+            add("dataset/metadata/$treeName.json")
+            add("Output JSON/$treeName.json")
+            for (sideIndex in sideIndices) {
+                val stem = "${treeName}_${sideIndex + 1}"
+                add("dataset/images/field/$stem.jpg")
+                add("dataset/depth/field/$stem.raw")
+                add("dataset/depth/field/$stem.json")
+                add("dataset/annotlog/field/$stem.json")
+                add("Output TXT/field/$stem.txt")
+            }
+        }
 }

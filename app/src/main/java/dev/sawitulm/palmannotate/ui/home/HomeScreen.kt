@@ -38,6 +38,7 @@ import dev.sawitulm.palmannotate.data.storage.RunSummary
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
 import dev.sawitulm.palmannotate.ui.common.NewSessionDialog
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -45,6 +46,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import dev.sawitulm.palmannotate.BuildConfig
 import java.text.SimpleDateFormat
 import java.util.*
@@ -116,6 +119,29 @@ class HomeViewModel @Inject constructor(
     val isExportFolderSet: StateFlow<Boolean> = exportFolder.isConfigured
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
 
+    private val folderResumeMutex = Mutex()
+    private val _isResumingFolder = MutableStateFlow(true)
+    val isResumingFolder: StateFlow<Boolean> = _isResumingFolder
+    private val initialFolderResume = viewModelScope.async {
+        try {
+            val uri = exportFolder.folderUri.first()
+            if (uri != null && inputCache.resumedFolderUri != uri.toString()) {
+                val imported = folderResumeMutex.withLock {
+                    folderResumeImporter.resumeFromFolder(uri)
+                }
+                inputCache.resumedFolderUri = uri.toString()
+                imported
+            } else {
+                0
+            }
+        } catch (e: Exception) {
+            Log.e("HomeVM", "initial folder resume failed", e)
+            0
+        } finally {
+            _isResumingFolder.value = false
+        }
+    }
+
     fun createRun(
         variety: String,
         block: String,
@@ -124,15 +150,17 @@ class HomeViewModel @Inject constructor(
         onDone: (runId: String, resumedExisting: Boolean) -> Unit,
     ) {
         viewModelScope.launch {
-            val existingId = repo.runGroupKeyToId()[repo.groupKeyFor(variety, block)]
-            val id = try {
-                repo.createRun(variety, block, sideCount, autoId)
+            val result = try {
+                initialFolderResume.await()
+                val existingId = repo.runGroupKeyToId()[repo.groupKeyFor(variety, block)]
+                val id = repo.createRun(variety, block, sideCount, autoId)
+                id to (existingId == id)
             } catch (e: Exception) {
                 // Navigation must not fire (nor the app crash) on a failed create.
                 Log.e("HomeVM", "createRun failed", e)
                 return@launch
             }
-            onDone(id, existingId == id)
+            onDone(result.first, result.second)
         }
     }
 
@@ -150,7 +178,10 @@ class HomeViewModel @Inject constructor(
     }
 
     fun setFolder(uri: android.net.Uri) {
-        viewModelScope.launch { exportFolder.saveFolder(uri) }
+        viewModelScope.launch {
+            inputCache.resumedFolderUri = null
+            exportFolder.saveFolder(uri)
+        }
     }
 
     /**
@@ -161,14 +192,31 @@ class HomeViewModel @Inject constructor(
      */
     fun setFolderAndResume(uri: android.net.Uri, onResult: (Int) -> Unit) {
         viewModelScope.launch {
-            exportFolder.saveFolder(uri)
-            val imported = folderResumeImporter.resumeFromFolder(uri)
-            onResult(imported)
+            initialFolderResume.await()
+            _isResumingFolder.value = true
+            try {
+                val imported = folderResumeMutex.withLock {
+                    inputCache.resumedFolderUri = null
+                    exportFolder.saveFolder(uri)
+                    val resumed = folderResumeImporter.resumeFromFolder(uri)
+                    inputCache.resumedFolderUri = uri.toString()
+                    resumed
+                }
+                onResult(imported)
+            } catch (e: Exception) {
+                Log.e("HomeVM", "folder resume failed", e)
+                onResult(0)
+            } finally {
+                _isResumingFolder.value = false
+            }
         }
     }
 
     fun clearFolder() {
-        viewModelScope.launch { exportFolder.clear() }
+        viewModelScope.launch {
+            inputCache.resumedFolderUri = null
+            exportFolder.clear()
+        }
     }
 
     // ─── Dataset ZIP export ──────────────────────────────────────────────────────
@@ -230,6 +278,7 @@ fun HomeScreen(
     val groups by viewModel.groups.collectAsState()
     val folderName by viewModel.folderName.collectAsState()
     val isExportFolderSet by viewModel.isExportFolderSet.collectAsState()
+    val isResumingFolder by viewModel.isResumingFolder.collectAsState()
     val exportState by viewModel.exportState.collectAsState()
 
     val folderPicker = rememberLauncherForActivityResult(
@@ -315,13 +364,15 @@ fun HomeScreen(
             )
         },
         floatingActionButton = {
-            ExtendedFloatingActionButton(
-                onClick = { if (isExportFolderSet) showNewDialog = true else showNoFolderConfirm = true },
-                icon = { Icon(Icons.Default.Add, null) },
-                text = { Text(stringResource(R.string.home_new_session)) },
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
-            )
+            if (!isResumingFolder) {
+                ExtendedFloatingActionButton(
+                    onClick = { if (isExportFolderSet) showNewDialog = true else showNoFolderConfirm = true },
+                    icon = { Icon(Icons.Default.Add, null) },
+                    text = { Text(stringResource(R.string.home_new_session)) },
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                )
+            }
         },
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
@@ -353,10 +404,23 @@ fun HomeScreen(
             if (runs.isEmpty()) {
                 item {
                     ElevatedCard(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(24.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Icon(Icons.Default.Forest, null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
-                            Text(stringResource(R.string.home_empty_title), style = MaterialTheme.typography.titleMedium)
-                            Text(stringResource(R.string.home_empty_body), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        Column(
+                            Modifier.padding(24.dp).fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            if (isResumingFolder) {
+                                CircularProgressIndicator()
+                                Text(
+                                    stringResource(R.string.home_folder_resuming),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            } else {
+                                Icon(Icons.Default.Forest, null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
+                                Text(stringResource(R.string.home_empty_title), style = MaterialTheme.typography.titleMedium)
+                                Text(stringResource(R.string.home_empty_body), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                            }
                         }
                     }
                 }
