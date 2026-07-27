@@ -237,6 +237,10 @@ Local builds are no longer the only way to get an APK. Two workflows live in `.g
 | Push tag `v*` | ❌ (branch-filtered) | ✅ tag + GitHub Release |
 | Actions → Run workflow | ✅ | ✅ (derives the tag from the build) |
 
+Build variants: `field` (collection), `debug` (local development), `trace` (side-by-side
+diagnostics on a tablet whose old debug app is signed with a different key). See the
+invariants below for which one is safe to hand to an operator.
+
 **Getting a CI APK:** Actions tab → pick the run → Artifacts. Or `gh run download`.
 Release assets are the raw `.apk`; workflow artifacts are ZIP-wrapped by GitHub, so
 the byte counts differ (~83 MB vs ~44 MB) for the *same* build. Install from a Release
@@ -253,9 +257,16 @@ build you intend to carry into the field.
   derives `versionCode`/`versionName` from `git rev-list --count HEAD`. GitHub's default
   shallow clone (depth 1) makes that return `1` and ships a silently downgraded
   `v0.3.1` / `versionCode 1` APK.
-- **CI builds both `field` and `debug`, not `release`.** Field is signed with the debug
-  signing config but is not debuggable; it has a separate application id so it cannot
-  overwrite the existing debug app's private dataset. R8 and resource shrinking remain off.
+- **CI never builds `release`.** `android-build.yml` builds `field`, `debug` and `trace`;
+  `release.yml` publishes `field` + `trace` only. All three are signed with the debug
+  signing config, all keep R8 and resource shrinking off, and each has its own application
+  id so none can overwrite another's app-private dataset. Only `field` is non-debuggable.
+- **Only the `field` APK may be used for dataset collection.** `trace` is `initWith(debug)`
+  and therefore debuggable, which costs roughly the 19 ms median frame measured in
+  `docs/FIELD_REPORT_20260727.md` §4.5. `release.yml` used to copy the trace APK to
+  `PalmAnnotate-debug-v<version>.apk`, so a release asset labelled "debug" actually carried
+  `dev.sawitulm.palmannotate.trace`. Fixed — assets now keep their variant name. The
+  v0.3.44 assets predate the fix; treat `PalmAnnotate-debug-v0.3.44.apk` as a trace build.
 - **A runner-generated debug keystore is not a stable update identity.** Before distributing a
   field Release, either configure a persistent signing keystore in repository secrets or replace
   the CI asset with a locally built APK whose signer matches the APK validated on the device.

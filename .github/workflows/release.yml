@@ -40,19 +40,21 @@ jobs:
       - name: Run unit tests
         run: ./gradlew :app:testDebugUnitTest --no-daemon
 
-      - name: Build field and debug APKs
+      - name: Build field and trace APKs
         run: ./gradlew :app:assembleField :app:assembleTrace --no-daemon
 
       - name: Resolve version and tag
         id: version
         run: |
           FIELD_APK=$(find app/build/outputs/apk/field -name '*.apk' | head -1)
+          # Keep the trace APK under its own name. It was previously copied to
+          # PalmAnnotate-debug-v<version>.apk, which made an asset labelled "debug"
+          # actually carry applicationId dev.sawitulm.palmannotate.trace — an
+          # operator downloading it in the field would install the debuggable app.
           TRACE_APK=$(find app/build/outputs/apk/trace -name '*.apk' | head -1)
           VERSION=$(basename "$FIELD_APK" .apk | sed 's/^PalmAnnotate-field-v//')
-          DEBUG_APK="$(dirname "$TRACE_APK")/PalmAnnotate-debug-v${VERSION}.apk"
-          cp "$TRACE_APK" "$DEBUG_APK"
           echo "field_apk=$FIELD_APK" >> "$GITHUB_OUTPUT"
-          echo "debug_apk=$DEBUG_APK" >> "$GITHUB_OUTPUT"
+          echo "trace_apk=$TRACE_APK" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             TAG="${GITHUB_REF_NAME}"
@@ -72,8 +74,9 @@ jobs:
         run: |
           {
             printf 'This release contains two apps with identical capture and output logic.\n\n'
+            printf '**Install `PalmAnnotate-field-*.apk` for real dataset collection.**\n'
             printf 'Field: `dev.sawitulm.palmannotate.field`, non-debuggable, for real collection and performance measurement.\n'
-            printf 'Debug: `dev.sawitulm.palmannotate.trace`, debuggable, for reproducing and tracing problems without replacing older app data.\n\n'
+            printf 'Trace: `dev.sawitulm.palmannotate.trace`, **debuggable and measurably slower**, for reproducing and tracing problems without replacing older app data. Do not collect a dataset with it.\n\n'
             printf '> Built by CI. **Not a substitute for on-device verification**. The Orbbec\n'
             printf '> live depth preview must still be checked on a physical device before any\n'
             printf '> field dataset collection. The CI debug signing key is not a durable update\n'
@@ -85,14 +88,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
           FIELD_APK: ${{ steps.version.outputs.field_apk }}
-          DEBUG_APK: ${{ steps.version.outputs.debug_apk }}
+          TRACE_APK: ${{ steps.version.outputs.trace_apk }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists; replacing APK assets."
-            gh release upload "$TAG" "$FIELD_APK" "$DEBUG_APK" --clobber
+            gh release upload "$TAG" "$FIELD_APK" "$TRACE_APK" --clobber
           else
-            gh release create "$TAG" "$FIELD_APK" "$DEBUG_APK" \
+            gh release create "$TAG" "$FIELD_APK" "$TRACE_APK" \
               --title "PalmAnnotate $VERSION" \
               --target "$GITHUB_SHA" \
               --notes-file "$RUNNER_TEMP/notes.md"

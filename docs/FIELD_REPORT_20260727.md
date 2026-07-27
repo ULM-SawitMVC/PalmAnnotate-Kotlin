@@ -445,6 +445,10 @@ Bagian ini ditulis agar sesi lain dapat melanjutkan tanpa mengulang investigasi.
 **Belum ada satu baris kode pun yang diubah.** Seluruh temuan di atas masih berupa analisis.
 Yang berubah di repositori hanyalah dokumen ini. `Dataset-27July2026/` masih untracked.
 
+> **Pemutakhiran 28 Juli 2026 — bagian ini sudah usang.** Perbaikan dikerjakan pada
+> `b99a3c5` (v0.3.43) dan `9a43483` (v0.3.44). Status per butir ada di §5.7 di bawah.
+> Paragraf di atas sengaja dipertahankan sebagai catatan sejarah investigasi.
+
 Perangkat uji:
 
 | Serial ADB | Isi | Catatan |
@@ -577,3 +581,60 @@ $adb='C:\tools\android-sdk\platform-tools\adb.exe'; $d='<serial>'; $p='dev.sawit
   ulang artefak dan menyetel `isComplete`. Gunakan run percobaan tersendiri.
 - **Jangan memindahkan mirror SAF kembali ke jalur save yang memblokir** (CLAUDE.md); arah
   perbaikan butir (3) justru kebalikannya.
+
+## 5.7 Status perbaikan per 28 Juli 2026
+
+Diverifikasi dari kode (baca ulang berkas, penelusuran seluruh pemanggil, 178 uji unit hijau)
+dan sebagian dari perangkat `b98cea56`. Versi: `b99a3c5` = v0.3.43, `9a43483` = v0.3.44,
+`5d7c67b` = v0.3.45 (CI, tanpa tag).
+
+| Butir | Status | Bukti |
+|---|---|---|
+| §1 crash `USB_DEVICE_ATTACHED` | **Selesai** lewat opsi D, bukan A/B | AAR di-repack; `javap` atas `Enumerator.requireUsbPermission` menunjukkan cabang `SDK_INT >= 33` memanggil `registerReceiver(receiver, filter, 4)`, yaitu `RECEIVER_NOT_EXPORTED`. SHA-256 dikunci `OrbbecVendorPatchTests.kt`. `targetSdk` tetap 34. Pelapis: `onCleared` memanggil `orbbec.close()` (`CaptureFlowScreen.kt:306`) |
+| §4.1 `load()` idempoten | **Selesai** | `CaptureFlowScreen.kt:361-365` |
+| §4.1 draft persistence | **Tidak dikerjakan** | Tidak ada `SavedStateHandle`/`rememberSaveable` di seluruh `app/src/main`. Kematian proses tetap menghapus rujukan foto |
+| §4.2 SAF menahan navigasi | **Selesai sebagian** | `writeAnnotationRevision` memisahkan `verifySaf`/`awaitSaf` (`SessionRepository.kt:559-563`); pemanggil navigasi memakai `awaitSafVerification = false` (`CarouselScreen.kt:303`, `ResultsScreen.kt:105`). Baseline 9,60 detik **belum diukur ulang** |
+| §4.2 status verifikasi per pohon | **Tidak dikerjakan** | `TreeEntity` tanpa kolom verifikasi; kegagalan verifikasi hanya `Log.w` (`SessionRepository.kt:639-651`) sementara `isComplete = true` sudah ditulis (`:848`) |
+| §4.3 preferensi sumber kamera | **Selesai** | `InputCache.lastCaptureUsesOrbbec`, dibaca `CaptureFlowScreen.kt:121-124`, ditulis `:183` |
+| §4.3 flap ladder + tombol Reset | **Sebagian** | `FLAP_RESET_QUIET_MS` tetap 30 detik (`OrbbecManager.kt:72`). Tambahan: `resetFlapLadder()` setelah stream stabil 4 detik (`:440-443`). Tombol Reset masih hanya di cabang "no device" (`CaptureFlowScreen.kt:1520-1531`) |
+| §4.4 buka Orbbec + preview Base64 | **Tidak tersentuh** | `OPEN_RETRIES`, `DEVICE_QUERY_RETRIES`, dan jalur `emitPreview` → Base64 → `BitmapFactory` identik |
+| §4.5 build type `field` | **Selesai** | `app/build.gradle.kts:66-74`; R8 tetap mati |
+| §4.6 ANR `stopPump`/`stateLock` | **Selesai untuk gejala ANR** | `stopPreview` dibungkus `withContext(cameraDispatcher)` (`OrbbecManager.kt:342-345`); `pumpRunning` `@Volatile`, `streamPump` `AtomicReference`; `stopPump`/`joinPump` tidak mengambil `stateLock`. `stateLock` sendiri masih dipegang melintasi panggilan native, tetapi seluruh pengambilnya kini di `cameraExec` |
+| §3.3 GPS last-known tanpa batas umur | **Selesai** | `MAX_LAST_KNOWN_AGE_MS = 60_000L`, `isFresh()` (`GpsProvider.kt:31-34`, `:177-183`) |
+| §3.3 field `operator` | **Tidak dikerjakan** | `SessionRepository.kt:355` masih `put("operator", "")` |
+| §3.1 tabrakan nama antar-tablet | **Tidak dikerjakan** | Tidak ada token perangkat pada penamaan pohon |
+| §3.4 `data.yaml`/`classes.txt`/README di ZIP | **Tidak dikerjakan** | Nol kecocokan di `app/src/main` |
+
+### Risiko baru yang lahir dari perbaikan itu sendiri
+
+1. **Probe tabrakan SAF dapat mengunci koleksi.** `commitTreePackage` (`SessionRepository.kt:165-172`)
+   melempar bila salah satu artefak pohon sudah ada di folder ekspor. Nama pohon berasal dari
+   `run.nextId` yang tidak pernah maju setelah gagal, dan pada run `autoId` tidak ada field
+   Tree ID untuk menimpanya secara manual; galat hanya muncul sebagai `capture_save_failed`.
+   Pemicunya adalah divergensi Room vs folder ekspor — misalnya satu pohon dilewati saat resume.
+   **Sengaja tidak diubah:** menghapus `check()` akan membuat aplikasi menimpa paket kemarin
+   secara diam-diam, karena pemeriksaan di `:162` hanya melihat Room. Mitigasi: pakai folder
+   ekspor kosong, atau pastikan jumlah pohon hasil resume sama persis dengan isi folder.
+2. **`FolderResumeImporter` melempar pada paket gagal** (`:139`, `:159`). Karena `HomeScreen.kt:206`
+   menangkapnya, `inputCache.resumedFolderUri` tidak pernah disetel, sehingga pemindaian SAF
+   penuh berulang pada setiap cold start. **Sengaja tidak diubah:** mengembalikannya menjadi log
+   membuat impor parsial dianggap sukses dan langsung memicu risiko (1).
+3. **AutoSave carousel tetap tidak berjalan pada ON_STOP.** Menambahkannya tidak aman:
+   `autoSave()` menyetel `dirty = false` sinkron lalu meluncurkan coroutine di `viewModelScope`,
+   sedangkan `saveSession` menghapus manifest lokal sebelum menulis ulang (`SessionRepository.kt:421`).
+   Pada Navigation-Compose, ON_STOP terjadi tepat sebelum `onCleared` membatalkan scope itu;
+   pembatalan di tengah meninggalkan pohon tanpa manifest — ditolak resume (`FolderResumeImporter.kt:183`)
+   dan ditolak preflight ekspor ZIP. Disiplin operasional lebih aman sampai ada perangkat untuk verifikasi.
+
+### Verifikasi perangkat 28 Juli 2026 (tablet `b98cea56`, sebelum koleksi)
+
+`.field` v0.3.44 terpasang. Resume dari `Documents/Dataset` berhasil penuh: nama pohon di SAF
+dan di penyimpanan `.field` cocok **42/42**, tanpa selisih dua arah. `nextId` = 43, sehingga
+risiko (1) di atas laten dan tidak aktif selama folder ekspor tidak diganti. Paket `.debug`
+v0.3.41 masih terpasang dan memegang data 27 Juli; `.trace` tidak terpasang.
+
+### Masih harus diverifikasi dengan perangkat keras
+
+Belum berubah dari §5.4: efektivitas tambalan AAR saat colok-ulang, durasi pembukaan Orbbec,
+keselarasan D2C depth. Ditambah: latensi Next Tree yang baru terhadap baseline 9,60 detik, dan
+median frame varian `field` terhadap 19 ms.
