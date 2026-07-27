@@ -47,8 +47,10 @@ jobs:
         id: version
         run: |
           FIELD_APK=$(find app/build/outputs/apk/field -name '*.apk' | head -1)
-          DEBUG_APK=$(find app/build/outputs/apk/trace -name '*.apk' | head -1)
+          TRACE_APK=$(find app/build/outputs/apk/trace -name '*.apk' | head -1)
           VERSION=$(basename "$FIELD_APK" .apk | sed 's/^PalmAnnotate-field-v//')
+          DEBUG_APK="$(dirname "$TRACE_APK")/PalmAnnotate-debug-v${VERSION}.apk"
+          cp "$TRACE_APK" "$DEBUG_APK"
           echo "field_apk=$FIELD_APK" >> "$GITHUB_OUTPUT"
           echo "debug_apk=$DEBUG_APK" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
