@@ -11,10 +11,9 @@ Rewrite dari PalmAnnotate (Capacitor WebView hybrid) ke **native Kotlin + Jetpac
 Tidak perlu build sendiri:
 
 - **[Releases](../../releases)**: APK versi rilis, link permanen. Untuk koleksi lapangan,
-  pilih `PalmAnnotate-field-*.apk`. Aset lain adalah build diagnostik yang **debuggable**
-  dan terukur lebih lambat; jangan dipakai mengambil dataset. Khusus rilis v0.3.44, aset
-  bernama `PalmAnnotate-debug-*.apk` sebenarnya berisi paket `.trace` — penamaan itu sudah
-  diperbaiki untuk rilis setelahnya.
+  pilih `PalmAnnotate-field-*.apk`. Aset `PalmAnnotate-debug-*.apk` adalah aplikasi diagnostik
+  berdampingan (`applicationId` = `dev.sawitulm.palmannotate.trace`) yang **debuggable** dan
+  terukur lebih lambat; jangan dipakai mengambil dataset.
 - **[Actions](../../actions/workflows/android-build.yml)**: APK verifikasi dari setiap push ke
   `master` (bagian *Artifacts*, retensi 30 hari). Jangan memakai artifact CI untuk memperbarui
   instalasi lapangan karena debug keystore runner tidak dijamin tetap sama.

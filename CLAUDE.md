@@ -263,10 +263,12 @@ build you intend to carry into the field.
   id so none can overwrite another's app-private dataset. Only `field` is non-debuggable.
 - **Only the `field` APK may be used for dataset collection.** `trace` is `initWith(debug)`
   and therefore debuggable, which costs roughly the 19 ms median frame measured in
-  `docs/FIELD_REPORT_20260727.md` §4.5. `release.yml` used to copy the trace APK to
-  `PalmAnnotate-debug-v<version>.apk`, so a release asset labelled "debug" actually carried
-  `dev.sawitulm.palmannotate.trace`. Fixed — assets now keep their variant name. The
-  v0.3.44 assets predate the fix; treat `PalmAnnotate-debug-v0.3.44.apk` as a trace build.
+  `docs/FIELD_REPORT_20260727.md` §4.5.
+- **The release asset named `PalmAnnotate-debug-v<version>.apk` carries applicationId
+  `dev.sawitulm.palmannotate.trace`.** This is deliberate (`release.yml:52-53`): `trace` is the
+  side-by-side diagnostic app that replaces `debug` in releases, so it ships under the name
+  operators recognise. Don't "fix" the name — but do remember that the *variant* is `trace`
+  when reading logs, matching signatures, or issuing `pm uninstall`.
 - **A runner-generated debug keystore is not a stable update identity.** Before distributing a
   field Release, either configure a persistent signing keystore in repository secrets or replace
   the CI asset with a locally built APK whose signer matches the APK validated on the device.
