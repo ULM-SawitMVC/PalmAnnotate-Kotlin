@@ -56,6 +56,15 @@ android {
             isMinifyEnabled = false
             applicationIdSuffix = ".debug"
         }
+        create("field") {
+            initWith(getByName("release"))
+            isDebuggable = false
+            isMinifyEnabled = false
+            isShrinkResources = false
+            signingConfig = signingConfigs.getByName("debug")
+            applicationIdSuffix = ".field"
+            matchingFallbacks += listOf("release", "debug")
+        }
     }
 
     compileOptions {
@@ -140,8 +149,9 @@ dependencies {
     // ONNX Runtime
     implementation(libs.onnxruntime.android)
 
-    // Orbbec USB RGB-D SDK (vendored AAR — Android wrapper v2.0.6).
-    // abiFilters already restricts to arm64-v8a, so only the arm64 native libs ship.
+    // Orbbec USB RGB-D SDK (vendored Android wrapper v2.0.6).
+    // The AAR has one Android 13+ receiver-flag patch documented in app/libs/patches.
+    // Native libraries and public SDK APIs are unchanged.
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
 
     // Coil (image loading)

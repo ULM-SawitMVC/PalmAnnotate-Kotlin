@@ -448,6 +448,7 @@ class SessionRepository(
         writeAnnotationRevision(
             verifiedSession,
             safTreeUri = safTreeUri,
+            verifySaf = false,
             awaitSaf = false,
         )
         val artifactsTime = System.currentTimeMillis() - artifactsStart
@@ -549,6 +550,7 @@ class SessionRepository(
     private suspend fun writeAnnotationRevision(
         session: ActiveSession,
         safTreeUri: Uri?,
+        verifySaf: Boolean,
         awaitSaf: Boolean,
     ) {
         check(storage.deleteFile(storage.manifestFile(session.treeName))) {
@@ -611,7 +613,7 @@ class SessionRepository(
                     ) {
                         "SAF manifest write returned false"
                     }
-                    if (awaitSaf) {
+                    if (verifySaf) {
                         check(
                             verifySafPackageReadBack(
                                 session,
@@ -812,7 +814,11 @@ class SessionRepository(
 
     // ─── Output JSON ─────────────────────────────────────────────────────────────
 
-    suspend fun saveOutputJson(session: ActiveSession, safTreeUri: Uri? = null) =
+    suspend fun saveOutputJson(
+        session: ActiveSession,
+        safTreeUri: Uri? = null,
+        awaitSafVerification: Boolean = true,
+    ) =
         artifactCoordinator.withExclusiveAccess {
             withContext(Dispatchers.IO) {
             val tree = treeDao.getByKey(session.sessionId)
@@ -824,7 +830,8 @@ class SessionRepository(
             writeAnnotationRevision(
                 verifiedSession,
                 safTreeUri,
-                awaitSaf = safTreeUri != null,
+                verifySaf = safTreeUri != null,
+                awaitSaf = safTreeUri != null && awaitSafVerification,
             )
             // Mark the tree complete (the JS "Compute & Mark Complete" green check).
             // UPDATE, not upsert(REPLACE): REPLACE would cascade-delete the tree's

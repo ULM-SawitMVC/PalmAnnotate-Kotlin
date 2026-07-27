@@ -61,6 +61,7 @@ import dev.sawitulm.palmannotate.data.location.GpsProvider
 import dev.sawitulm.palmannotate.data.storage.AndroidStorageManager
 import dev.sawitulm.palmannotate.data.storage.DepthArtifactContract
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
+import dev.sawitulm.palmannotate.data.storage.InputCache
 import dev.sawitulm.palmannotate.data.storage.JpegOrientationNormalizer
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
 import dev.sawitulm.palmannotate.domain.model.*
@@ -91,6 +92,7 @@ class CaptureFlowViewModel @Inject constructor(
     private val gps: GpsProvider,
     private val exportFolder: ExportFolderRepository,
     private val orbbec: OrbbecManager,
+    private val inputCache: InputCache,
 ) : ViewModel() {
 
     var run by mutableStateOf<SessionEntity?>(null)
@@ -116,7 +118,10 @@ class CaptureFlowViewModel @Inject constructor(
         private set
     var captureError by mutableStateOf<String?>(null)
         private set
-    var captureSource by mutableStateOf(CaptureSource.PHONE_CAMERA)
+    var captureSource by mutableStateOf(
+        if (inputCache.lastCaptureUsesOrbbec) CaptureSource.ORBBEC
+        else CaptureSource.PHONE_CAMERA
+    )
         private set
     var showQaDialog by mutableStateOf(false)
         private set
@@ -175,6 +180,7 @@ class CaptureFlowViewModel @Inject constructor(
         if (src == captureSource) return
         if (captureSource == CaptureSource.ORBBEC) stopOrbbecPreview()
         captureSource = src
+        inputCache.lastCaptureUsesOrbbec = src == CaptureSource.ORBBEC
     }
 
     fun refreshOrbbec() {
@@ -297,7 +303,7 @@ class CaptureFlowViewModel @Inject constructor(
         // capture screen is gone (USB/power drain; a step toward the Pad 8 lock). Stop it on an
         // independent scope that outlives this ViewModel.
         kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
-            try { orbbec.stopPreview() } catch (_: Exception) {}
+            try { orbbec.close() } catch (_: Exception) {}
         }
         // Drop our callbacks from the SINGLETON OrbbecManager so it stops holding this
         // now-dead ViewModel — the app-lifetime USB hotplug receiver would otherwise keep
@@ -353,6 +359,10 @@ class CaptureFlowViewModel @Inject constructor(
     }
 
     fun load(runId: String) {
+        if (run?.sessionId == runId && capturedImages.size == sideCount) {
+            refreshGps()
+            return
+        }
         viewModelScope.launch {
             val r = repo.getRun(runId) ?: return@launch
             run = r

@@ -300,7 +300,9 @@ class CarouselViewModel @Inject constructor(
                 val safTreeUri = exportFolder.folderUri.first()
                 repo.saveSession(s, safTreeUri)
                 // Finalize only when actually leaving the annotation workflow.
-                repo.saveOutputJson(s, safTreeUri)
+                // The local package and completion flag remain synchronous. SAF mirror +
+                // read-back verification stay serialized on the repository's background queue.
+                repo.saveOutputJson(s, safTreeUri, awaitSafVerification = false)
             }
             withContext(Dispatchers.Main) { onDone() }
         }

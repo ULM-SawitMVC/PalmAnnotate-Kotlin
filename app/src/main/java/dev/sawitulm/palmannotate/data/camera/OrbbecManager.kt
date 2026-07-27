@@ -132,7 +132,7 @@ class OrbbecManager(private val appContext: Context) {
     private var obContext: OBContext? = null
     private var device: Device? = null
     private var pipeline: Pipeline? = null
-    private var selectedUid: String? = null
+    @Volatile private var selectedUid: String? = null
     private var streaming = false
     private var depthStreaming = false
     // H-01: whether ALIGN_D2C_SW_MODE was actually accepted by the SDK for the CURRENT stream.
@@ -152,7 +152,7 @@ class OrbbecManager(private val appContext: Context) {
     private val unstableSuppressed get() = degradeLevel >= 2
 
     @Volatile private var pumpRunning = false
-    private var streamPump: Thread? = null
+    private val streamPump = AtomicReference<Thread?>(null)
     private val pendingCapture = AtomicReference<CaptureWaiter?>(null)
     private var depthRangeInit = false
     private var depthRangeMinMm = 0f
@@ -167,7 +167,7 @@ class OrbbecManager(private val appContext: Context) {
         override fun onDeviceDetach(deviceList: DeviceList) {
             var detachedSelected = false
             try {
-                val uid = synchronized(stateLock) { selectedUid }
+                val uid = selectedUid
                 if (uid != null) for (i in 0 until deviceList.getDeviceCount()) if (uid == deviceList.getUid(i)) { detachedSelected = true; break }
             } catch (e: Exception) { Log.w(TAG, "onDeviceDetach failed", e); detachedSelected = true } finally { safeClose(deviceList, "detach deviceList") }
             if (detachedSelected) {
@@ -339,11 +339,16 @@ class OrbbecManager(private val appContext: Context) {
         joinPump(); synchronized(stateLock) { openSdkLocked() }; startPump()
     }
 
-    suspend fun stopPreview() { stopPump(); withContext(cameraDispatcher) { joinPump() } }
+    suspend fun stopPreview() = withContext(cameraDispatcher) {
+        stopPump()
+        joinPump()
+    }
 
-    suspend fun close() {
-        resetFlapLadder(); stopPump()
-        withContext(cameraDispatcher) { joinPump(); synchronized(stateLock) { closeSdkLocked() } }
+    suspend fun close() = withContext(cameraDispatcher) {
+        resetFlapLadder()
+        stopPump()
+        joinPump()
+        synchronized(stateLock) { closeSdkLocked() }
     }
 
     /** "Find camera": re-enumerate; drop a stale context when the bus is empty. */
@@ -352,7 +357,7 @@ class OrbbecManager(private val appContext: Context) {
         return withContext(cameraDispatcher) {
             val devices = orbbecDevices()
             if (devices.isEmpty()) {
-                synchronized(stateLock) { pumpRunning = false }
+                pumpRunning = false
                 pendingCapture.getAndSet(null)?.reject(IllegalStateException("Orbbec preview stopped"))
                 joinPump(); synchronized(stateLock) { closeSdkLocked() }
             } else warmUpSdk()
@@ -377,8 +382,9 @@ class OrbbecManager(private val appContext: Context) {
      * hardware-dependent and must be confirmed on the Pad 8.
      */
     suspend fun resetCameraState(): Boolean {
-        resetFlapLadder(); stopPump()
         return withContext(cameraDispatcher) {
+            resetFlapLadder()
+            stopPump()
             pendingCapture.getAndSet(null)?.reject(IllegalStateException("Orbbec camera reset"))
             joinPump()
             synchronized(stateLock) { closeSdkLocked() }
@@ -396,28 +402,31 @@ class OrbbecManager(private val appContext: Context) {
 
     // ── Live preview pump ──────────────────────────────────────────────────────
     private fun startPump() {
-        synchronized(stateLock) {
-            if (pumpRunning) return
-            pumpRunning = true; depthRangeInit = false
-            val t = Thread({ runPump() }, "PalmAnnotate-OrbbecPump").apply { isDaemon = true }
-            streamPump = t; t.start()
+        if (pumpRunning) return
+        pumpRunning = true
+        depthRangeInit = false
+        val t = Thread({ runPump() }, "PalmAnnotate-OrbbecPump").apply { isDaemon = true }
+        if (!streamPump.compareAndSet(null, t)) {
+            pumpRunning = false
+            return
         }
+        t.start()
     }
 
     private fun stopPump() {
-        synchronized(stateLock) { pumpRunning = false }
+        pumpRunning = false
         pendingCapture.getAndSet(null)?.reject(IllegalStateException("Orbbec preview stopped"))
-        synchronized(stateLock) { streamPump }?.let { try { it.interrupt() } catch (_: Exception) {} }
+        streamPump.get()?.let { try { it.interrupt() } catch (_: Exception) {} }
     }
 
     private fun joinPump() {
-        synchronized(stateLock) { pumpRunning = false }
-        val t = synchronized(stateLock) { streamPump }
+        pumpRunning = false
+        val t = streamPump.get()
         if (t != null && t.isAlive) {
             try { t.interrupt() } catch (_: Exception) {}
             try { t.join(FRAME_TIMEOUT_MS + 1_000L) } catch (e: InterruptedException) { Thread.currentThread().interrupt() }
         }
-        synchronized(stateLock) { if (streamPump === t) streamPump = null }
+        streamPump.compareAndSet(t, null)
     }
 
     private fun runPump() {
@@ -428,7 +437,10 @@ class OrbbecManager(private val appContext: Context) {
             var frameSet: FrameSet? = null; var colorFrame: ColorFrame? = null; var depthFrame: DepthFrame? = null
             try {
                 frameSet = active.waitForFrameSet(FRAME_TIMEOUT_MS) ?: continue
-                if (!markedStable && System.currentTimeMillis() - pumpStart >= STABLE_STREAM_MS) { markedStable = true; synchronized(flapLock) { recentDetaches.clear() } }
+                if (!markedStable && System.currentTimeMillis() - pumpStart >= STABLE_STREAM_MS) {
+                    markedStable = true
+                    resetFlapLadder()
+                }
                 colorFrame = frameSet.getColorFrame(); depthFrame = frameSet.getDepthFrame()
                 val waiter = pendingCapture.getAndSet(null)
                 if (waiter != null) {

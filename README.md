@@ -10,11 +10,15 @@ Rewrite dari PalmAnnotate (Capacitor WebView hybrid) ke **native Kotlin + Jetpac
 
 Tidak perlu build sendiri:
 
-- **[Releases](../../releases)** — APK versi rilis, link permanen. Ambil dari sini untuk dipasang.
-- **[Actions](../../actions/workflows/android-build.yml)** — APK dari setiap push ke `master`
-  (bagian *Artifacts*, retensi 30 hari). Berkasnya dibungkus ZIP oleh GitHub, jadi perlu di-unzip.
+- **[Releases](../../releases)**: APK versi rilis, link permanen. Untuk koleksi lapangan,
+  pilih `PalmAnnotate-field-*.apk`.
+- **[Actions](../../actions/workflows/android-build.yml)**: APK verifikasi dari setiap push ke
+  `master` (bagian *Artifacts*, retensi 30 hari). Jangan memakai artifact CI untuk memperbarui
+  instalasi lapangan karena debug keystore runner tidak dijamin tetap sama.
 
-Debug build, `arm64-v8a` saja, `applicationId` = `dev.sawitulm.palmannotate.debug`.
+Field build tidak debuggable, R8 tetap mati, `arm64-v8a` saja, dan memakai
+`applicationId` = `dev.sawitulm.palmannotate.field`. Paket ini terpasang berdampingan
+dengan build debug sehingga tidak menimpa data privat aplikasi lama.
 Perlu Android 7.0 (API 24) atau lebih baru.
 
 ## License
@@ -93,12 +97,12 @@ $env:JAVA_HOME = 'C:\tools\jdk17\jdk-17.0.19+10'
 $env:ANDROID_HOME = 'C:\tools\android-sdk'
 $env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
 
-# Build
-.\gradlew.bat :app:assembleDebug --no-daemon --max-workers=4
+# Build lapangan
+.\gradlew.bat :app:assembleField --no-daemon --max-workers=4
 
-# Install — nama file APK mengandung versi (PalmAnnotate-debug-v0.3.40.apk),
+# Install - nama file APK mengandung versi (PalmAnnotate-field-v0.3.40.apk),
 # jadi ambil yang terbaru daripada menuliskan namanya
-$apk = Get-ChildItem 'app/build/outputs/apk/debug/PalmAnnotate-debug-v*.apk' |
+$apk = Get-ChildItem 'app/build/outputs/apk/field/PalmAnnotate-field-v*.apk' |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 adb install -r $apk.FullName
 

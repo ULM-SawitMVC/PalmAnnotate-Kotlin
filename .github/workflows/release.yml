@@ -1,6 +1,6 @@
 name: Release
 
-# Build a debug APK and publish it as a GitHub Release.
+# Build the separate field APK and publish it as a GitHub Release.
 #
 # Two ways to trigger:
 #   1. Push a tag:      git tag v0.3.37 && git push origin v0.3.37
@@ -40,15 +40,15 @@ jobs:
       - name: Run unit tests
         run: ./gradlew :app:testDebugUnitTest --no-daemon
 
-      - name: Build debug APK
-        run: ./gradlew :app:assembleDebug --no-daemon
+      - name: Build field APK
+        run: ./gradlew :app:assembleField --no-daemon
 
       - name: Resolve version and tag
         id: version
         run: |
-          APK=$(find app/build/outputs/apk/debug -name '*.apk' | head -1)
-          VERSION=$(basename "$APK" .apk | sed 's/^PalmAnnotate-debug-v//')
-          echo "apk=$APK" >> "$GITHUB_OUTPUT"
+          FIELD_APK=$(find app/build/outputs/apk/field -name '*.apk' | head -1)
+          VERSION=$(basename "$FIELD_APK" .apk | sed 's/^PalmAnnotate-field-v//')
+          echo "field_apk=$FIELD_APK" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             TAG="${GITHUB_REF_NAME}"
@@ -67,24 +67,26 @@ jobs:
       - name: Write release notes
         run: |
           {
-            printf 'Debug build (`dev.sawitulm.palmannotate.debug`), arm64-v8a only.\n\n'
-            printf '> Built by CI. **Not a substitute for on-device verification** — the Orbbec\n'
+            printf 'Primary field build: `dev.sawitulm.palmannotate.field`, arm64-v8a only.\n'
+            printf 'The field package installs beside the existing debug app so it cannot overwrite its app-private dataset.\n\n'
+            printf '> Built by CI. **Not a substitute for on-device verification**. The Orbbec\n'
             printf '> live depth preview must still be checked on a physical device before any\n'
-            printf '> field dataset collection.\n'
+            printf '> field dataset collection. The CI debug signing key is not a durable update\n'
+            printf '> identity unless repository signing secrets are configured.\n'
           } > "$RUNNER_TEMP/notes.md"
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
-          APK: ${{ steps.version.outputs.apk }}
+          FIELD_APK: ${{ steps.version.outputs.field_apk }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists — replacing the APK asset."
-            gh release upload "$TAG" "$APK" --clobber
+            echo "Release $TAG already exists; replacing the field APK asset."
+            gh release upload "$TAG" "$FIELD_APK" --clobber
           else
-            gh release create "$TAG" "$APK" \
+            gh release create "$TAG" "$FIELD_APK" \
               --title "PalmAnnotate $VERSION" \
               --target "$GITHUB_SHA" \
               --notes-file "$RUNNER_TEMP/notes.md"

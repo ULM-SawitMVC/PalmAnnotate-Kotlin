@@ -25,4 +25,8 @@ class InputCache @Inject constructor(@ApplicationContext context: Context) {
     var lastAutoId: Boolean
         get() = prefs.getBoolean("last_auto_id", true)
         set(value) = prefs.edit().putBoolean("last_auto_id", value).apply()
+
+    var lastCaptureUsesOrbbec: Boolean
+        get() = prefs.getBoolean("last_capture_uses_orbbec", false)
+        set(value) = prefs.edit().putBoolean("last_capture_uses_orbbec", value).apply()
 }

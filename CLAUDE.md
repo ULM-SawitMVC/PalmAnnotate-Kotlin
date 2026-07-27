@@ -21,21 +21,25 @@ Native Kotlin + Jetpack Compose rewrite of PalmAnnotate (originally Capacitor We
 $env:JAVA_HOME = 'C:\tools\jdk17\jdk-17.0.19+10'
 $env:ANDROID_HOME = 'C:\tools\android-sdk'
 $env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
-.\gradlew.bat :app:assembleDebug --no-daemon --max-workers=4
+.\gradlew.bat :app:assembleField --no-daemon --max-workers=4
 ```
 
-Output: `app/build/outputs/apk/debug/PalmAnnotate-debug-v<version>.apk`
-— e.g. `PalmAnnotate-debug-v0.3.39.apk`. The version is part of the filename
+Output: `app/build/outputs/apk/field/PalmAnnotate-field-v<version>.apk`
+(for example `PalmAnnotate-field-v0.3.42.apk`). The version is part of the filename
 (see [Versioning](#versioning)), so don't hardcode it; resolve the newest APK instead.
+
+The field variant is not debuggable, keeps R8/resource shrinking disabled, and uses
+`dev.sawitulm.palmannotate.field` so installing it cannot overwrite the existing debug
+app's private dataset.
 
 ### Install & Launch
 
 ```powershell
-$apk = Get-ChildItem 'app/build/outputs/apk/debug/PalmAnnotate-debug-v*.apk' |
+$apk = Get-ChildItem 'app/build/outputs/apk/field/PalmAnnotate-field-v*.apk' |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 & 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 install -r $apk.FullName
-& 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 shell am force-stop dev.sawitulm.palmannotate.debug
-& 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 shell monkey -p dev.sawitulm.palmannotate.debug -c android.intent.category.LAUNCHER 1
+& 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 shell am force-stop dev.sawitulm.palmannotate.field
+& 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 shell monkey -p dev.sawitulm.palmannotate.field -c android.intent.category.LAUNCHER 1
 ```
 
 ### Run Tests
@@ -249,10 +253,14 @@ build you intend to carry into the field.
   derives `versionCode`/`versionName` from `git rev-list --count HEAD`. GitHub's default
   shallow clone (depth 1) makes that return `1` and ships a silently downgraded
   `v0.3.1` / `versionCode 1` APK.
-- **CI builds `debug`, not `release`.** There is no `signingConfig`, so a release APK
-  would be unsigned and uninstallable. Debug is also the variant the test devices run
-  (`dev.sawitulm.palmannotate.debug`). Adding release builds means storing a keystore
-  as a GitHub Secret first.
+- **CI builds both `field` and `debug`, not `release`.** Field is signed with the debug
+  signing config but is not debuggable; it has a separate application id so it cannot
+  overwrite the existing debug app's private dataset. R8 and resource shrinking remain off.
+- **A runner-generated debug keystore is not a stable update identity.** Before distributing a
+  field Release, either configure a persistent signing keystore in repository secrets or replace
+  the CI asset with a locally built APK whose signer matches the APK validated on the device.
+  Compare certificate SHA-256 digests with `apksigner verify --print-certs`; a mismatch forces
+  uninstall and would remove that package's app-private data.
 - **`release.yml` fails the run if a pushed tag disagrees with the built version.** That
   guard exists so a Release can never carry an APK whose internal version differs from
   its label. Don't relax it.

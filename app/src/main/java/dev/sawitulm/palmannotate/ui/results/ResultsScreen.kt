@@ -92,9 +92,9 @@ class ResultsViewModel @Inject constructor(
     }
 
     /**
-     * Finish this tree: persist the Output JSON (+ mark complete), then run [onNavigate].
-     * Finalization waits for SAF write + read-back verification when an export folder is selected,
-     * so navigation cannot imply success while the removable-storage package is incomplete.
+     * Finish this tree: persist the local Output JSON (+ mark complete), then run [onNavigate].
+     * SAF write + read-back verification remain serialized on the repository's background queue
+     * so removable-storage latency cannot block the next capture.
      */
     fun finishAndThen(onNavigate: () -> Unit) {
         val s = session ?: return
@@ -102,7 +102,7 @@ class ResultsViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val safTreeUri = exportFolder.folderUri.first()
-                repo.saveOutputJson(s, safTreeUri)
+                repo.saveOutputJson(s, safTreeUri, awaitSafVerification = false)
                 exportStatus = "Output JSON saved"
             } catch (e: Exception) {
                 // A failed finish must NOT crash nor silently advance: surface it and stay

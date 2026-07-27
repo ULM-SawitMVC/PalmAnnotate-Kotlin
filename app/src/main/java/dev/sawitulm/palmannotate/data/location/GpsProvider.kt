@@ -24,7 +24,15 @@ class GpsProvider(private val context: Context) {
         val latitude: Double,
         val longitude: Double,
         val accuracy: Float,
+        val timestampMillis: Long,
     )
+
+    companion object {
+        private const val MAX_LAST_KNOWN_AGE_MS = 60_000L
+
+        internal fun isFresh(timestampMillis: Long, nowMillis: Long): Boolean =
+            nowMillis - timestampMillis in 0..MAX_LAST_KNOWN_AGE_MS
+    }
 
     /**
      * Check if location permission is granted.
@@ -76,7 +84,7 @@ class GpsProvider(private val context: Context) {
         }
 
         return bestLocation?.let {
-            GpsLocation(it.latitude, it.longitude, it.accuracy)
+            GpsLocation(it.latitude, it.longitude, it.accuracy, it.time)
         }
     }
 
@@ -115,7 +123,14 @@ class GpsProvider(private val context: Context) {
                             lm.removeUpdates(this)
                         } catch (_: Exception) {}
                         if (cont.isActive) {
-                            cont.resume(GpsLocation(location.latitude, location.longitude, location.accuracy))
+                            cont.resume(
+                                GpsLocation(
+                                    location.latitude,
+                                    location.longitude,
+                                    location.accuracy,
+                                    location.time,
+                                )
+                            )
                         }
                     }
 
@@ -160,11 +175,10 @@ class GpsProvider(private val context: Context) {
      * Convenience wrapper for the capture flow.
      */
     suspend fun getBestLocation(): GpsLocation? {
-        // Try last known first (fast)
         val lastKnown = getLastKnownLocation()
-        if (lastKnown != null) return lastKnown
-
-        // Request fresh
-        return getCurrentLocation()
+        if (lastKnown != null && isFresh(lastKnown.timestampMillis, System.currentTimeMillis())) {
+            return lastKnown
+        }
+        return getCurrentLocation() ?: lastKnown
     }
 }
