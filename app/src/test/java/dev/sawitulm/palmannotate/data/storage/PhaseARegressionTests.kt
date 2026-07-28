@@ -179,6 +179,20 @@ class PhaseARegressionTest {
     }
 
     @Test
+    fun `a rejected package is reported only after the importable ones are committed`() {
+        val source = repoFile(
+            "app/src/main/java/dev/sawitulm/palmannotate/data/storage/FolderResumeImporter.kt",
+        ).readText()
+        val resume = source.substringAfter("suspend fun resumeFromFolder(safTreeUri: Uri): Int")
+            .substringBefore("// ─── internals")
+        val ingestIndex = resume.indexOf("val ok = ingestTree(")
+        val finalReportIndex = resume.lastIndexOf("Rejected \$rejected")
+
+        assertTrue(ingestIndex > 0)
+        assertTrue(finalReportIndex > ingestIndex)
+    }
+
+    @Test
     fun `valid persisted side upgrades stale preview cursor`() {
         assertTrue(CaptureDraftCursorPolicy.restoreStep("PREVIEW", hasValidSide = true) == "REVIEW")
         assertTrue(CaptureDraftCursorPolicy.restoreStep("PREVIEW", hasValidSide = false) == "PREVIEW")

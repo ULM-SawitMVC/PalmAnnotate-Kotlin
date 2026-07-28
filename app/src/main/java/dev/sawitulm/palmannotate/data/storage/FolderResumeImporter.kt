@@ -150,9 +150,14 @@ class FolderResumeImporter @Inject constructor(
             if (parsed != null) scanned.add(parsed)
         }
         check(scanFailures == 0) { "Failed to scan $scanFailures tree package(s)" }
+        // A rejected package must stay visible instead of looking like "nothing new to resume",
+        // but it must not block the packages that ARE importable — that would turn one bad folder
+        // entry into a total recovery outage. The report is raised after ingest, below.
         val rejected = jsonNames.size - scanned.size
-        check(rejected == 0) { "Rejected $rejected incomplete or invalid tree package(s)" }
-        if (scanned.isEmpty()) return@withContext 0
+        if (scanned.isEmpty()) {
+            check(rejected == 0) { "Rejected $rejected incomplete or invalid tree package(s)" }
+            return@withContext 0
+        }
 
         val blockedByDeletion = repo.pendingDeletionTreeNames(safTreeUri)
             .intersect(scanned.mapTo(mutableSetOf()) { it.treeName })
@@ -171,7 +176,10 @@ class FolderResumeImporter @Inject constructor(
         // is that the collision is visible instead of looking like "nothing new to resume".
         reportIdentityCollisions(scanned)
         val plans = planRuns(scanned, existingTreeNames)
-        if (plans.isEmpty()) return@withContext 0
+        if (plans.isEmpty()) {
+            check(rejected == 0) { "Rejected $rejected incomplete or invalid tree package(s)" }
+            return@withContext 0
+        }
 
         var imported = 0
         var failed = 0
@@ -204,6 +212,9 @@ class FolderResumeImporter @Inject constructor(
             }
         }
         check(failed == 0) { "Failed to resume $failed valid tree package(s)" }
+        // Everything importable is now committed to Room. Only now is the rejected count raised,
+        // so the folder is not marked fully resumed while a package still needs attention.
+        check(rejected == 0) { "Rejected $rejected incomplete or invalid tree package(s)" }
         imported
     }
 
