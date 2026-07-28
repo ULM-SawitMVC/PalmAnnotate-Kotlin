@@ -14,8 +14,10 @@ jobs:
   integrity:
     uses: ./.github/workflows/phase-a-integrity.yml
 
+  # Deliberately NOT `needs: integrity`. The integrity gate runs an emulator, which is the
+  # least reliable part of CI; letting it block APK production would mean an emulator flake
+  # stops the operator getting a build. Releases stay fail-closed (release.yml gates on it).
   build:
-    needs: integrity
     runs-on: ubuntu-latest
 
     steps:

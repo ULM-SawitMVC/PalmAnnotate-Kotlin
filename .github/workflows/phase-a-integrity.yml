@@ -25,13 +25,14 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      # AVD system images are large; retain them between runs when the runner cache is available.
+      # Caches only the created AVD, not the system image — the image lives under
+      # $ANDROID_HOME and is re-downloaded on each ephemeral runner.
       - name: Cache test AVD
         uses: actions/cache@v4
         with:
           path: |
             ~/.android/avd
-            ~/.android/adbjs
+            ~/.android/adb*
           key: avd-api-34-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
 
       - name: Run Phase-A instrumentation integrity tests
@@ -41,7 +42,9 @@ jobs:
           api-level: 34
           target: default
           arch: x86_64
-          profile: Pixel_2
+          # avdmanager device ids are lowercase; "Pixel_2" fails with
+          # "No device found matching --device".
+          profile: pixel_2
           avd-name: phase-a-api34
           force-avd-creation: false
           cores: 2
