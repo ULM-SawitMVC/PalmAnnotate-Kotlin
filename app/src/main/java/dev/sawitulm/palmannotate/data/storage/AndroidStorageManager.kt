@@ -7,6 +7,8 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.util.Locale
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * Manages the app-external storage structure for PalmAnnotate.
@@ -40,6 +42,10 @@ class AndroidStorageManager(private val context: Context) {
     val exportsDir get() = File(rootDir, "exports").also { it.mkdirs() }
     val snapshotsDir get() = File(rootDir, "snapshots").also { it.mkdirs() }
     private val captureStagingRoot get() = File(rootDir, ".capture-staging").also { it.mkdirs() }
+    private val captureDraftRoot get() = File(rootDir, ".capture-drafts").also { it.mkdirs() }
+    private val revisionStagingRoot get() = File(rootDir, ".revision-staging").also { it.mkdirs() }
+    private val revisionJournalRoot get() = File(rootDir, ".revision-journal").also { it.mkdirs() }
+    private val revisionBackupRoot get() = File(rootDir, ".revision-backup").also { it.mkdirs() }
 
     // sessions.json index dropped on native (resume is folder-scan based)
 
@@ -92,6 +98,202 @@ class AndroidStorageManager(private val context: Context) {
 
     fun stagedDepthJsonFile(stagingDir: File, treeName: String, sideIndex: Int): File =
         File(stagingDir, "depth/${treeName}_${sideIndex + 1}.json")
+
+    /** Stable, app-owned capture draft directory scoped to one run. */
+    fun captureDraftDir(runId: String): File {
+        val root = captureDraftRoot.canonicalFile
+        val target = File(root, runId).canonicalFile
+        if (target.parentFile != root) throw IOException("Invalid capture draft identity")
+        if (!target.exists() && !target.mkdirs()) throw IOException("Cannot create capture draft directory")
+        return target
+    }
+
+    fun captureDraftImageFile(runId: String, sideIndex: Int): File =
+        File(captureDraftDir(runId), "side_${sideIndex + 1}.jpg")
+
+    fun captureDraftDepthRawFile(runId: String, sideIndex: Int): File =
+        File(captureDraftDir(runId), "side_${sideIndex + 1}.raw")
+
+    fun captureDraftDepthJsonFile(runId: String, sideIndex: Int): File =
+        File(captureDraftDir(runId), "side_${sideIndex + 1}.json")
+
+    fun deleteCaptureDraft(runId: String): Boolean {
+        val root = captureDraftRoot.canonicalFile
+        val target = File(root, runId).canonicalFile
+        if (target.parentFile != root) return false
+        return !target.exists() || target.deleteRecursively()
+    }
+
+    /** Revision-specific staging and journal paths for local publication. */
+    fun revisionStagingDir(treeName: String, revision: Long): File {
+        ArtifactIdentityPolicy.treeNameError(treeName)?.let { throw IOException("Invalid tree identity: $it") }
+        val root = File(revisionStagingRoot, treeName).canonicalFile
+        val target = File(root, "r$revision").canonicalFile
+        if (target.parentFile != root) throw IOException("Invalid revision identity")
+        if (!target.exists() && !target.mkdirs()) throw IOException("Cannot create revision staging directory")
+        return target
+    }
+
+    fun revisionJournalFile(treeName: String, revision: Long): File =
+        File(File(revisionJournalRoot, treeName), "r$revision.json")
+
+    fun revisionBackupDir(treeName: String, revision: Long): File =
+        File(File(revisionBackupRoot, treeName), "r$revision")
+
+    data class PendingRevision(
+        val treeName: String,
+        val revision: Long,
+        val entries: List<Pair<File, File>>, // staged -> canonical target
+        val journal: File,
+    )
+
+    fun pendingRevisions(): List<PendingRevision> {
+        val result = ArrayList<PendingRevision>()
+        revisionJournalRoot.listFiles()?.filter { it.isDirectory }?.forEach { treeDir ->
+            treeDir.listFiles()?.filter { it.isFile && it.extension == "json" }?.forEach { journal ->
+                runCatching { readPendingRevision(journal) }.onSuccess { result.add(it) }
+                    .onFailure { Log.w(TAG, "Invalid revision journal ${journal.path}", it) }
+            }
+        }
+        return result
+    }
+
+    private fun readPendingRevision(journal: File): PendingRevision {
+        val json = JSONObject(journal.readText())
+        val treeName = json.getString("treeName")
+        val revision = json.getLong("revision")
+        val entriesJson = json.getJSONArray("entries")
+        val entries = (0 until entriesJson.length()).map { index ->
+            val entry = entriesJson.getJSONObject(index)
+            File(entry.getString("staged")) to File(entry.getString("target"))
+        }
+        return PendingRevision(treeName, revision, entries, journal)
+    }
+
+    private fun writeSyncedFile(file: File, bytes: ByteArray) {
+        file.parentFile?.let { if (!it.exists() && !it.mkdirs()) throw IOException("Cannot create ${it.path}") }
+        FileOutputStream(file, false).use { out ->
+            out.write(bytes); out.flush(); out.fd.sync()
+        }
+        if (file.length() != bytes.size.toLong()) throw IOException("Short write for ${file.name}")
+    }
+
+    private fun copySynced(source: File, target: File) {
+        writeSyncedFile(target, source.readBytes())
+    }
+
+    private fun replaceFromStage(source: File, target: File) {
+        // Empty YOLO/annot-log text is a valid committed projection (for a side with no
+        // annotations). Missing is a path/type error; byte length is not a presence check.
+        if (!source.isFile) throw IOException("Missing staged artifact ${source.path}")
+        val temp = File(target.parentFile, "${target.name}.revision.tmp")
+        deleteFile(temp)
+        copySynced(source, temp)
+        if (target.exists() && !target.delete()) throw IOException("Cannot replace ${target.path}")
+        if (!temp.renameTo(target)) throw IOException("Cannot publish ${target.path}")
+    }
+
+    /** Persist journal and previous-file backups before Room changes its revision token. */
+    @Throws(IOException::class)
+    fun prepareRevisionJournal(treeName: String, revision: Long, entries: List<Pair<File, File>>) {
+        require(entries.isNotEmpty()) { "Revision has no artifacts" }
+        val journal = revisionJournalFile(treeName, revision)
+        if (journal.exists()) return
+        val backup = revisionBackupDir(treeName, revision)
+        val jsonEntries = JSONArray()
+        entries.forEachIndexed { index, (staged, target) ->
+            if (!staged.canonicalPath.startsWith(revisionStagingRoot.canonicalPath + File.separator)) {
+                throw IOException("Revision staging escaped app storage")
+            }
+            jsonEntries.put(JSONObject().apply {
+                put("staged", staged.canonicalPath); put("target", target.canonicalPath)
+                put("backup", File(backup, "$index-${target.name}").canonicalPath); put("hadPrevious", target.isFile)
+            })
+        }
+        // Backups are made before the journal is exposed, so a journal never claims a backup that
+        // was only partially copied. Orphan backups are harmless and are removed on next startup.
+        entries.forEachIndexed { index, (_, target) ->
+            if (target.isFile) copySynced(target, File(backup, "$index-${target.name}"))
+        }
+        writeText(journal, JSONObject().apply {
+            put("treeName", treeName); put("revision", revision); put("state", "PUBLISHING")
+            put("entries", jsonEntries)
+        }.toString())
+    }
+
+    /**
+     * Publish a complete local annotation revision. The manifest is the final replacement. A
+     * journal plus backups let startup restore the previous package or finish the new one after
+     * process death; this is deliberately not presented as Room/filesystem atomicity.
+     */
+    @Throws(IOException::class)
+    fun publishRevision(treeName: String, revision: Long, entries: List<Pair<File, File>>): Boolean {
+        ArtifactIdentityPolicy.treeNameError(treeName)?.let { throw IOException("Invalid tree identity: $it") }
+        require(entries.isNotEmpty()) { "Revision has no artifacts" }
+        val journal = revisionJournalFile(treeName, revision)
+        val backup = revisionBackupDir(treeName, revision)
+        val manifestTarget = manifestFile(treeName).canonicalFile
+        try {
+            prepareRevisionJournal(treeName, revision, entries)
+            val pending = readPendingRevision(journal)
+            pending.entries.filter { it.second.canonicalFile != manifestTarget }
+                .forEach { replaceFromStage(it.first, it.second) }
+            pending.entries.firstOrNull { it.second.canonicalFile == manifestTarget }?.let {
+                replaceFromStage(it.first, it.second)
+            } ?: throw IOException("Revision manifest is not staged")
+            writeText(journal, JSONObject(journal.readText()).apply { put("state", "COMMITTED") }.toString())
+            backup.deleteRecursively()
+            journal.delete()
+            revisionStagingDir(treeName, revision).deleteRecursively()
+            return true
+        } catch (error: Exception) {
+            // Restore the last canonical package immediately, but retain journal/stage so a process
+            // restart can retry publication against the already-committed Room revision.
+            runCatching { restoreRevisionFiles(readPendingRevision(journal)) }
+            if (error is IOException) throw error
+            throw IOException("Revision publication failed", error)
+        }
+    }
+
+    private fun restoreRevisionFiles(pending: PendingRevision) {
+        val entries = JSONObject(pending.journal.readText()).getJSONArray("entries")
+        for (i in 0 until entries.length()) {
+            val entry = entries.getJSONObject(i)
+            val target = File(entry.getString("target"))
+            val backup = File(entry.getString("backup"))
+            if (entry.optBoolean("hadPrevious")) {
+                check(backup.isFile) { "Missing revision backup for ${target.path}" }
+                replaceFromStage(backup, target)
+            } else {
+                deleteFile(target)
+            }
+        }
+    }
+
+    fun rollbackRevision(pending: PendingRevision) {
+        restoreRevisionFiles(pending)
+        pending.journal.delete()
+        revisionBackupDir(pending.treeName, pending.revision).deleteRecursively()
+        revisionStagingDir(pending.treeName, pending.revision).deleteRecursively()
+    }
+
+    /**
+     * Remove all unpublished revision state for a tree before deleting its Room row. This is
+     * deliberately separate from [deleteTree]: a pending journal can otherwise resurrect an
+     * intentionally deleted tree during the next startup recovery.
+     */
+    fun discardPendingRevisions(treeName: String): Boolean {
+        ArtifactIdentityPolicy.treeNameError(treeName)?.let { return false }
+        val journalDir = File(revisionJournalRoot, treeName)
+        val backupDir = File(revisionBackupRoot, treeName)
+        val stagingDir = File(revisionStagingRoot, treeName)
+        return (!journalDir.exists() || journalDir.deleteRecursively()) &&
+            (!backupDir.exists() || backupDir.deleteRecursively()) &&
+            (!stagingDir.exists() || stagingDir.deleteRecursively())
+    }
+
+    /** Remove a draft directory only after its Room tree commit has succeeded. */
+    fun discardUncommittedDraft(runId: String): Boolean = deleteCaptureDraft(runId)
 
     /**
      * Validate a staged capture as one package, then publish its files to the canonical working

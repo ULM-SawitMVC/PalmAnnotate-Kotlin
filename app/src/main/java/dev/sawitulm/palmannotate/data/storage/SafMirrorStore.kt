@@ -2,6 +2,7 @@ package dev.sawitulm.palmannotate.data.storage
 
 import android.content.Context
 import android.net.Uri
+import android.provider.DocumentsContract
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
 import java.util.concurrent.ConcurrentHashMap
@@ -43,11 +44,65 @@ class SafMirrorStore(private val context: Context) {
 
     /** Resolved directory DocumentFile per "treeUri|relDir" key. */
     private val dirCache = ConcurrentHashMap<String, DocumentFile>()
-    /** Per-directory child map (name -> DocumentFile), keyed by the same "treeUri|relDir". */
-    private val childCache = ConcurrentHashMap<String, MutableMap<String, DocumentFile>>()
+    /** Per-directory child map (name -> provider-classified child), keyed by the same "treeUri|relDir". */
+    private val childCache = ConcurrentHashMap<String, Map<String, ChildEntry>>()
+    /** Serializes provider calls and keeps cache values immutable to callers. */
+    private val cacheLock = Any()
 
     private fun dirKey(treeUri: Uri, dirSegments: List<String>) =
         "$treeUri|${dirSegments.joinToString("/")}"
+
+    private data class ChildEntry(
+        val document: DocumentFile,
+        val mimeType: String,
+    ) {
+        val isDirectory: Boolean get() = mimeType == DocumentsContract.Document.MIME_TYPE_DIR
+    }
+
+    private sealed interface ChildListing {
+        data class Success(val children: Map<String, ChildEntry>) : ChildListing
+        data class Error(val cause: Throwable) : ChildListing
+    }
+
+    /** Query DocumentsProvider directly. MIME type is the provider's authoritative document type. */
+    private fun listChildrenFromProvider(treeUri: Uri, dir: DocumentFile): ChildListing {
+        return try {
+            val documentId = runCatching { DocumentsContract.getDocumentId(dir.uri) }
+                .getOrElse { DocumentsContract.getTreeDocumentId(treeUri) }
+            val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, documentId)
+            val projection = arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                DocumentsContract.Document.COLUMN_MIME_TYPE,
+            )
+            val cursor = context.contentResolver.query(childrenUri, projection, null, null, null)
+                ?: return ChildListing.Error(IllegalStateException("SAF child query returned null"))
+            val children = HashMap<String, ChildEntry>()
+            cursor.use {
+                val idColumn = it.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                val nameColumn = it.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                val mimeColumn = it.getColumnIndexOrThrow(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                while (it.moveToNext()) {
+                    val childId = it.getString(idColumn)
+                    val name = it.getString(nameColumn)
+                    val mimeType = it.getString(mimeColumn)
+                    if (childId.isNullOrBlank() || name.isNullOrBlank()) {
+                        return ChildListing.Error(IllegalStateException("SAF child row is malformed"))
+                    }
+                    if (SafDocumentTypePolicy.classifyMimeType(mimeType) == SafDocumentType.UNKNOWN) {
+                        return ChildListing.Error(IllegalStateException("SAF child row has unknown document type"))
+                    }
+                    val childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childId)
+                    val child = DocumentFile.fromSingleUri(context, childUri)
+                        ?: return ChildListing.Error(IllegalStateException("SAF child document unavailable"))
+                    children[name] = ChildEntry(child, mimeType)
+                }
+            }
+            ChildListing.Success(children.toMap())
+        } catch (error: Throwable) {
+            ChildListing.Error(error)
+        }
+    }
 
     /**
      * Resolve (and optionally create) the directory at [dirSegments] under [treeUri].
@@ -55,47 +110,158 @@ class SafMirrorStore(private val context: Context) {
      */
     private fun resolveDir(treeUri: Uri, dirSegments: List<String>, create: Boolean): DocumentFile? {
         val key = dirKey(treeUri, dirSegments)
-        dirCache[key]?.let { if (it.isDirectory) return it else dirCache.remove(key) }
+        dirCache[key]?.let { return it }
 
+        // A tree URI denotes a directory by SAF contract. Child document types are classified
+        // exclusively from COLUMN_MIME_TYPE below; never call DocumentFile.isDirectory here.
         var node = DocumentFile.fromTreeUri(context, treeUri) ?: return null
         val acc = mutableListOf<String>()
         for (seg in dirSegments) {
             acc.add(seg)
             val subKey = dirKey(treeUri, acc)
-            val cached = dirCache[subKey]?.takeIf { it.isDirectory }
-            node = cached
-                ?: node.findFile(seg)?.takeIf { it.isDirectory }
-                ?: (if (create) node.createDirectory(seg) else null)
-                ?: return null
+            val cached = dirCache[subKey]
+            if (cached != null) {
+                node = cached
+                continue
+            }
+            val listed = when (val result = listChildrenFromProvider(treeUri, node)) {
+                is ChildListing.Success -> result.children[seg]
+                is ChildListing.Error -> throw result.cause
+            }
+            if (listed != null) {
+                // A name collision with a non-directory is not an absent directory. Do not call
+                // createDirectory and allow the provider to manufacture a suffixed duplicate.
+                if (!listed.isDirectory) {
+                    throw IllegalStateException("SAF path segment is not a directory: $seg")
+                }
+                node = listed.document
+            } else {
+                val created = if (create) node.createDirectory(seg) else null
+                node = created ?: return null
+            }
             dirCache[subKey] = node
         }
         return node
     }
 
     /** Child name -> DocumentFile map for [dir], listed once and cached.
-     *  [forceRefresh] rebuilds the entry from a fresh `listFiles()` — used by the
-     *  import/resume read path where external truth must win over the cache. */
+     *  [forceRefresh] rebuilds the entry from a fresh provider query — used by correctness-sensitive
+     *  probes where external truth must win over the cache. */
     private fun childrenOf(
         treeUri: Uri,
         dirSegments: List<String>,
         dir: DocumentFile,
         forceRefresh: Boolean = false,
-    ): MutableMap<String, DocumentFile> {
+    ): Map<String, ChildEntry> {
         val key = dirKey(treeUri, dirSegments)
         if (!forceRefresh) childCache[key]?.let { return it }
-        val map = HashMap<String, DocumentFile>()
-        for (f in dir.listFiles()) f.name?.let { map[it] = f }
+        val map = when (val result = listChildrenFromProvider(treeUri, dir)) {
+            is ChildListing.Success -> result.children
+            is ChildListing.Error -> throw result.cause
+        }
+        // Never replace a known-good cache with an error/empty fallback from a failed provider.
         childCache[key] = map
         return map
+    }
+
+    private fun putChild(
+        treeUri: Uri,
+        dirSegments: List<String>,
+        name: String,
+        document: DocumentFile,
+        mimeType: String,
+    ) {
+        val key = dirKey(treeUri, dirSegments)
+        childCache[key] = childCache[key].orEmpty() + (name to ChildEntry(document, mimeType))
+    }
+
+    private fun removeChild(treeUri: Uri, dirSegments: List<String>, name: String) {
+        val key = dirKey(treeUri, dirSegments)
+        childCache[key]?.let { childCache[key] = it - name }
+    }
+
+    private sealed interface ProbeDir {
+        data class Found(val document: DocumentFile) : ProbeDir
+        data object Missing : ProbeDir
+        data class Error(val cause: Throwable) : ProbeDir
+    }
+
+    /** Fresh provider traversal used only for correctness-sensitive probes and deletion. */
+    private fun resolveDirForProbe(treeUri: Uri, dirSegments: List<String>): ProbeDir {
+        val root = try {
+            DocumentFile.fromTreeUri(context, treeUri)
+                ?: return ProbeDir.Error(IllegalStateException("SAF tree is unavailable"))
+        } catch (error: Throwable) {
+            return ProbeDir.Error(error)
+        }
+        // A tree URI denotes a directory by SAF contract. Child types are classified by the
+        // provider MIME column in listChildrenFromProvider.
+        var node = root
+        val acc = mutableListOf<String>()
+        for (segment in dirSegments) {
+            acc += segment
+            val child = when (val listing = listChildrenFromProvider(treeUri, node)) {
+                is ChildListing.Success -> listing.children[segment]
+                is ChildListing.Error -> return ProbeDir.Error(listing.cause)
+            } ?: return ProbeDir.Missing
+            if (!child.isDirectory) {
+                return ProbeDir.Error(IllegalStateException("SAF path segment is not a directory: $segment"))
+            }
+            node = child.document
+            dirCache[dirKey(treeUri, acc)] = child.document
+        }
+        return ProbeDir.Found(node)
+    }
+
+    private fun pathStateLocked(
+        treeUri: Uri,
+        relPath: String,
+        forceRefresh: Boolean,
+    ): SafPathState {
+        val segments = relPath.split('/').filter { it.isNotBlank() }
+        if (segments.isEmpty()) return SafPathState.Inaccessible(IllegalArgumentException("Empty SAF path"))
+        val dirSegments = segments.dropLast(1)
+        val dir = if (forceRefresh) {
+            when (val result = resolveDirForProbe(treeUri, dirSegments)) {
+                is ProbeDir.Found -> result.document
+                ProbeDir.Missing -> return SafPathState.Absent
+                is ProbeDir.Error -> return SafPathState.Inaccessible(result.cause)
+            }
+        } else {
+            val root = try {
+                DocumentFile.fromTreeUri(context, treeUri)
+                    ?: return SafPathState.Inaccessible(IllegalStateException("SAF tree is unavailable"))
+            } catch (error: Throwable) {
+                return SafPathState.Inaccessible(error)
+            }
+            try {
+                resolveDir(treeUri, dirSegments, create = false)
+                    ?: return SafPathState.Absent
+            } catch (error: Throwable) {
+                return SafPathState.Inaccessible(error)
+            }
+        }
+        val children = try {
+            childrenOf(treeUri, dirSegments, dir, forceRefresh = forceRefresh)
+        } catch (error: Throwable) {
+            return SafPathState.Inaccessible(error)
+        }
+        val target = children[segments.last()] ?: return SafPathState.Absent
+        if (target.isDirectory) {
+            return SafPathState.Inaccessible(IllegalStateException("SAF path is a directory, not a file"))
+        }
+        // The direct child query succeeded and returned this name, which proves presence. A
+        // second DocumentFile.exists() call would reintroduce its Boolean error ambiguity.
+        return SafPathState.Present
     }
 
     /**
      * Verify that the given tree URI is still accessible and writable.
      */
-    fun isFolderAccessible(treeUri: Uri): Boolean {
-        return try {
+    fun isFolderAccessible(treeUri: Uri): Boolean = synchronized(cacheLock) {
+        try {
             val doc = DocumentFile.fromTreeUri(context, treeUri)
-            doc != null && doc.isDirectory && doc.canWrite() &&
+            doc != null && doc.canWrite() &&
                 context.contentResolver.persistedUriPermissions.any {
                     it.uri == treeUri && it.isWritePermission
                 }
@@ -132,33 +298,37 @@ class SafMirrorStore(private val context: Context) {
      * Uses the directory + child caches and overwrites an existing file in place
      * (truncate) rather than delete+create, which is what made repeat saves slow.
      */
-    fun writeBytes(treeUri: Uri, relPath: String, data: ByteArray, mimeType: String = "application/octet-stream"): Boolean {
-        return try {
-            val segments = relPath.split('/').filter { it.isNotBlank() }
-            if (segments.isEmpty()) return false
-            val fileName = segments.last()
-            val dirSegments = segments.dropLast(1)
+    fun writeBytes(treeUri: Uri, relPath: String, data: ByteArray, mimeType: String = "application/octet-stream"): Boolean =
+        synchronized(cacheLock) {
+            try {
+                val segments = relPath.split('/').filter { it.isNotBlank() }
+                if (segments.isEmpty()) return@synchronized false
+                val fileName = segments.last()
+                val dirSegments = segments.dropLast(1)
 
-            val dir = resolveDir(treeUri, dirSegments, create = true) ?: return false
-            val children = childrenOf(treeUri, dirSegments, dir)
+                val dir = resolveDir(treeUri, dirSegments, create = true) ?: return@synchronized false
+                val children = childrenOf(treeUri, dirSegments, dir)
 
-            val existing = children[fileName]?.takeIf { it.exists() }
-            val targetUri = if (existing != null) {
-                existing.uri
-            } else {
-                val created = dir.createFile(mimeType, fileName) ?: return false
-                children[fileName] = created
-                created.uri
+                // A successful child listing proves the cached name; calling DocumentFile.exists()
+                // here would turn a provider error into false and create a duplicate.
+                val existing = children[fileName]
+                val targetUri = if (existing != null) {
+                    if (existing.isDirectory) return@synchronized false
+                    existing.document.uri
+                } else {
+                    val created = dir.createFile(mimeType, fileName) ?: return@synchronized false
+                    putChild(treeUri, dirSegments, fileName, created, mimeType)
+                    created.uri
+                }
+                // "wt" = write+truncate, so overwriting a smaller payload doesn't leave a tail.
+                context.contentResolver.openOutputStream(targetUri, "wt")?.use { it.write(data) }
+                    ?: return@synchronized false
+                true
+            } catch (e: Exception) {
+                Log.w(TAG, "writeBytes failed for $relPath", e)
+                false
             }
-            // "wt" = write+truncate, so overwriting a smaller payload doesn't leave a tail.
-            context.contentResolver.openOutputStream(targetUri, "wt")?.use { it.write(data) }
-                ?: return false
-            true
-        } catch (e: Exception) {
-            Log.w(TAG, "writeBytes failed for $relPath", e)
-            false
         }
-    }
 
     /**
      * Create (or replace) a file at <treeUri>/<relPath> and return its document [Uri] for
@@ -170,17 +340,20 @@ class SafMirrorStore(private val context: Context) {
      * caches and deletes any existing file at the path first, so the returned uri starts empty.
      * The returned content uri is shareable (grant read permission) without FileProvider.
      */
-    fun createFileForStreaming(treeUri: Uri, relPath: String, mime: String): Uri? {
-        return try {
+    fun createFileForStreaming(treeUri: Uri, relPath: String, mime: String): Uri? = synchronized(cacheLock) {
+        try {
             val segments = relPath.split('/').filter { it.isNotBlank() }
-            if (segments.isEmpty()) return null
+            if (segments.isEmpty()) return@synchronized null
             val fileName = segments.last()
             val dirSegments = segments.dropLast(1)
-            val dir = resolveDir(treeUri, dirSegments, create = true) ?: return null
+            val dir = resolveDir(treeUri, dirSegments, create = true) ?: return@synchronized null
             val children = childrenOf(treeUri, dirSegments, dir)
-            children[fileName]?.takeIf { it.exists() }?.let { it.delete(); children.remove(fileName) }
-            val created = dir.createFile(mime, fileName) ?: return null
-            children[fileName] = created
+            children[fileName]?.let {
+                if (it.isDirectory || !it.document.delete()) return@synchronized null
+                removeChild(treeUri, dirSegments, fileName)
+            }
+            val created = dir.createFile(mime, fileName) ?: return@synchronized null
+            putChild(treeUri, dirSegments, fileName, created, mime)
             created.uri
         } catch (e: Exception) {
             Log.w(TAG, "createFileForStreaming failed for $relPath", e)
@@ -188,79 +361,103 @@ class SafMirrorStore(private val context: Context) {
         }
     }
 
-    /**
-     * Read text from <treeUri>/<relPath>. Returns null if missing/unreadable.
-     */
-    fun readText(treeUri: Uri, relPath: String): String? {
-        val bytes = readBytes(treeUri, relPath) ?: return null
-        return bytes.toString(Charsets.UTF_8)
-    }
-
-    /**
-     * List the file names directly inside <treeUri>/<dirRelPath> matching an
-     * optional suffix (case-insensitive, e.g. ".json"). Returns base names only.
-     */
-    fun listFiles(treeUri: Uri, dirRelPath: String, suffix: String? = null): List<String> {
-        return try {
-            val dirSegments = dirRelPath.split('/').filter { it.isNotBlank() }
-            val dir = resolveDir(treeUri, dirSegments, create = false) ?: return emptyList()
-            childrenOf(treeUri, dirSegments, dir, forceRefresh = true).values
-                .filter { it.isFile }
-                .mapNotNull { it.name }
-                .filter { suffix == null || it.endsWith(suffix, ignoreCase = true) }
-        } catch (e: Exception) {
-            Log.w(TAG, "listFiles failed for $dirRelPath", e)
-            emptyList()
+    /** Typed read for resume-sensitive callers. Null streams and provider failures are inaccessible. */
+    fun readTextResult(treeUri: Uri, relPath: String): SafReadResult =
+        when (val result = readBytesResult(treeUri, relPath)) {
+            is SafReadResult.Success -> SafReadResult.Success(result.bytes)
+            SafReadResult.Absent -> SafReadResult.Absent
+            is SafReadResult.Inaccessible -> result
         }
-    }
 
-    /**
-     * Cheap presence check: true if <treeUri>/<relPath> exists as a file.
-     * O(1) after the directory has been listed once.
-     */
-    fun exists(treeUri: Uri, relPath: String): Boolean {
-        return try {
-            val segments = relPath.split('/').filter { it.isNotBlank() }
-            if (segments.isEmpty()) return false
-            val dirSegments = segments.dropLast(1)
-            val dir = resolveDir(treeUri, dirSegments, create = false) ?: return false
-            childrenOf(treeUri, dirSegments, dir)[segments.last()]?.let { it.exists() && it.isFile } == true
-        } catch (e: Exception) {
-            false
+    /** Best-effort convenience wrapper for mirror/reconciliation paths. */
+    fun readText(treeUri: Uri, relPath: String): String? =
+        (readTextResult(treeUri, relPath) as? SafReadResult.Success)
+            ?.bytes?.toString(Charsets.UTF_8)
+
+    /** Typed listing for resume-sensitive callers. */
+    fun listFilesResult(treeUri: Uri, dirRelPath: String, suffix: String? = null): SafListingResult =
+        synchronized(cacheLock) {
+            try {
+                if (DocumentFile.fromTreeUri(context, treeUri) == null) {
+                    return@synchronized SafListingResult.Inaccessible(
+                        IllegalStateException("SAF tree is unavailable")
+                    )
+                }
+                val dirSegments = dirRelPath.split('/').filter { it.isNotBlank() }
+                val dir = resolveDir(treeUri, dirSegments, create = false)
+                    ?: return@synchronized SafListingResult.Absent
+                val names = childrenOf(treeUri, dirSegments, dir, forceRefresh = true).values
+                    .filter { !it.isDirectory }
+                    .map { it.document.name ?: throw IllegalStateException("SAF child has no name") }
+                    .filter { suffix == null || it.endsWith(suffix, ignoreCase = true) }
+                SafListingResult.Success(names)
+            } catch (e: Exception) {
+                Log.w(TAG, "listFiles failed for $dirRelPath", e)
+                SafListingResult.Inaccessible(e)
+            }
         }
-    }
+
+    /** Best-effort convenience wrapper; callers that need correctness must use listFilesResult. */
+    fun listFiles(treeUri: Uri, dirRelPath: String, suffix: String? = null): List<String> =
+        (listFilesResult(treeUri, dirRelPath, suffix) as? SafListingResult.Success)?.names.orEmpty()
 
     /**
-     * Read raw bytes from <treeUri>/<relPath>. Returns null if missing/unreadable.
+     * Return a typed presence/access result. [forceRefresh] is for collision and delete probes;
+     * ordinary mirror writes keep the cached O(1) path and do not relist every label directory.
      */
-    fun readBytes(treeUri: Uri, relPath: String): ByteArray? {
-        return try {
+    fun exists(treeUri: Uri, relPath: String, forceRefresh: Boolean = false): SafPathState =
+        synchronized(cacheLock) {
+            pathStateLocked(treeUri, relPath, forceRefresh)
+        }
+
+    /** Typed read for resume-sensitive callers. */
+    fun readBytesResult(treeUri: Uri, relPath: String): SafReadResult = synchronized(cacheLock) {
+        try {
+            if (DocumentFile.fromTreeUri(context, treeUri) == null) {
+                return@synchronized SafReadResult.Inaccessible(
+                    IllegalStateException("SAF tree is unavailable")
+                )
+            }
             val segments = relPath.split('/').filter { it.isNotBlank() }
-            if (segments.isEmpty()) return null
+            if (segments.isEmpty()) {
+                return@synchronized SafReadResult.Inaccessible(IllegalArgumentException("Empty SAF path"))
+            }
             val dirSegments = segments.dropLast(1)
-            val dir = resolveDir(treeUri, dirSegments, create = false) ?: return null
-            val target = childrenOf(treeUri, dirSegments, dir)[segments.last()]?.takeIf { it.isFile } ?: return null
-            context.contentResolver.openInputStream(target.uri)?.use { it.readBytes() }
+            val dir = resolveDir(treeUri, dirSegments, create = false)
+                ?: return@synchronized SafReadResult.Absent
+            val target = childrenOf(treeUri, dirSegments, dir, forceRefresh = true)[segments.last()]
+                ?: return@synchronized SafReadResult.Absent
+            if (target.isDirectory) {
+                return@synchronized SafReadResult.Inaccessible(
+                    IllegalStateException("SAF path is a directory, not a file")
+                )
+            }
+            val bytes = context.contentResolver.openInputStream(target.document.uri)?.use { it.readBytes() }
+                ?: return@synchronized SafReadResult.Inaccessible(
+                    IllegalStateException("SAF input stream returned null")
+                )
+            SafReadResult.Success(bytes)
         } catch (e: Exception) {
             Log.w(TAG, "readBytes failed for $relPath", e)
-            null
+            SafReadResult.Inaccessible(e)
         }
     }
 
-    /**
-     * Delete <treeUri>/<relPath> if it exists.
-     */
-    fun deletePath(treeUri: Uri, relPath: String): Boolean {
+    /** Best-effort convenience wrapper; null intentionally conflates absent/error here. */
+    fun readBytes(treeUri: Uri, relPath: String): ByteArray? =
+        (readBytesResult(treeUri, relPath) as? SafReadResult.Success)?.bytes
+
+    private fun deletePathLocked(treeUri: Uri, relPath: String): Boolean {
         return try {
             val segments = relPath.split('/').filter { it.isNotBlank() }
             if (segments.isEmpty()) return false
             val dirSegments = segments.dropLast(1)
             val dir = resolveDir(treeUri, dirSegments, create = false) ?: return false
             val name = segments.last()
-            val children = childrenOf(treeUri, dirSegments, dir)
-            val target = children[name] ?: dir.findFile(name) ?: return false
-            val ok = target.delete()
-            if (ok) children.remove(name)
+            val target = childrenOf(treeUri, dirSegments, dir)[name] ?: return false
+            if (target.isDirectory) return false
+            val ok = target.document.delete()
+            if (ok) removeChild(treeUri, dirSegments, name)
             ok
         } catch (e: Exception) {
             Log.w(TAG, "deletePath failed for $relPath", e)
@@ -268,19 +465,33 @@ class SafMirrorStore(private val context: Context) {
         }
     }
 
-    /**
-     * Delete all SAF-mirrored files for a tree.
-     */
-    fun deleteDatasetTree(treeUri: Uri, treeName: String, sideCount: Int) {
-        for (i in 0 until sideCount) {
-            deletePath(treeUri, "dataset/images/field/${treeName}_${i + 1}.jpg")
-            deletePath(treeUri, "dataset/depth/field/${treeName}_${i + 1}.raw")
-            deletePath(treeUri, "dataset/depth/field/${treeName}_${i + 1}.json")
-            deletePath(treeUri, "dataset/annotlog/field/${treeName}_${i + 1}.json")
-            deletePath(treeUri, "Output TXT/field/${treeName}_${i + 1}.txt")
-        }
-        deletePath(treeUri, "dataset/metadata/${treeName}.json")
-        deletePath(treeUri, "dataset/manifests/${treeName}.json")
-        deletePath(treeUri, "Output JSON/${treeName}.json")
+    /** Delete <treeUri>/<relPath> if it exists, using the ordinary cached mirror path. */
+    fun deletePath(treeUri: Uri, relPath: String): Boolean = synchronized(cacheLock) {
+        deletePathLocked(treeUri, relPath)
     }
+
+    /**
+     * Delete all SAF-mirrored files for a tree. Every path is freshly inspected and every delete is
+     * freshly verified. Provider errors are failures, never evidence that a path was absent.
+     */
+    fun deleteDatasetTree(treeUri: Uri, treeName: String, sideCount: Int): SafDeleteResult =
+        synchronized(cacheLock) {
+            val paths = buildList {
+                for (i in 0 until sideCount) {
+                    add("dataset/images/field/${treeName}_${i + 1}.jpg")
+                    add("dataset/depth/field/${treeName}_${i + 1}.raw")
+                    add("dataset/depth/field/${treeName}_${i + 1}.json")
+                    add("dataset/annotlog/field/${treeName}_${i + 1}.json")
+                    add("Output TXT/field/${treeName}_${i + 1}.txt")
+                }
+                add("dataset/metadata/${treeName}.json")
+                add("dataset/manifests/${treeName}.json")
+                add("Output JSON/${treeName}.json")
+            }
+            SafDeleteVerifier.verify(
+                paths = paths,
+                inspect = { path -> pathStateLocked(treeUri, path, forceRefresh = true) },
+                delete = { path -> deletePathLocked(treeUri, path) },
+            )
+        }
 }

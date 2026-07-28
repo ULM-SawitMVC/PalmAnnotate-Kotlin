@@ -20,6 +20,7 @@ val commitCount = run {
     }
     stdout.toString().trim().toIntOrNull() ?: 1
 }
+val phaseAci = providers.gradleProperty("phaseAci").map(String::toBoolean).orElse(false).get()
 
 android {
     namespace = "dev.sawitulm.palmannotate"
@@ -35,7 +36,10 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            // Production and field builds are arm64-only for the Orbbec SDK. Phase-A CI opts into
+            // x86_64 because the hosted emulator cannot execute arm64-only APKs; its tests never
+            // touch the native camera path.
+            abiFilters += if (phaseAci) listOf("x86_64") else listOf("arm64-v8a")
         }
     }
 
@@ -96,9 +100,9 @@ android {
 
     androidResources {
         // The Orbbec AAR ships its extension .so files under assets/ (not jniLibs),
-        // so abiFilters does NOT strip them. The app is arm64-v8a only, so the
-        // bundled 32-bit copies (~17 MB) are dead weight — skip that asset subtree.
+        // so abiFilters does NOT strip them. Keep only the assets for the selected ABI.
         ignoreAssetsPatterns += "armeabi-v7a"
+        if (phaseAci) ignoreAssetsPatterns += "arm64-v8a"
     }
 
     // Output APK as PalmAnnotate-<buildtype>-v<version>.apk
@@ -184,6 +188,7 @@ dependencies {
     // asserted without a real implementation on the test classpath.
     testImplementation("org.json:json:20240303")
     androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.room.testing)
     androidTestImplementation(libs.espresso.core)
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.compose.ui.test.junit4)

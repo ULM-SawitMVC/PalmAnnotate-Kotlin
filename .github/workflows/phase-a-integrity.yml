@@ -1,0 +1,65 @@
+name: Phase-A integrity gate
+
+on:
+  workflow_call:
+
+jobs:
+  instrumentation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle (with cache)
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      # AVD system images are large; retain them between runs when the runner cache is available.
+      - name: Cache test AVD
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.android/avd
+            ~/.android/adbjs
+          key: avd-api-34-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+
+      - name: Run Phase-A instrumentation integrity tests
+        uses: reactivecircus/android-emulator-runner@v2
+        timeout-minutes: 20
+        with:
+          api-level: 34
+          target: default
+          arch: x86_64
+          profile: Pixel_2
+          avd-name: phase-a-api34
+          force-avd-creation: false
+          cores: 2
+          ram-size: 4096M
+          disk-size: 6G
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          # The Phase-A test APK targets x86_64. Production debug/field/trace variants remain
+          # arm64-v8a because the vendored Orbbec SDK ships no x86_64 native libraries.
+          script: ./gradlew -PphaseAci=true :app:connectedDebugAndroidTest --no-daemon --stacktrace
+
+      - name: Upload instrumentation reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase-a-instrumentation-reports
+          path: |
+            app/build/reports/androidTests/connected/**
+            app/build/outputs/androidTest-results/connected/**
+          if-no-files-found: warn
+          retention-days: 7

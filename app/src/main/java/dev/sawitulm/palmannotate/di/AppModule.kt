@@ -70,6 +70,8 @@ object AppModule {
         saf,
         db,
         artifactCoordinator,
+        db.mirrorStatusDao(),
+        db.captureDraftDao(),
     )
 
     @Provides @Singleton

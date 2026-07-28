@@ -54,6 +54,7 @@ data class TreeEntity(
     val isComplete: Boolean = false,
     val variety: String = "",
     val block: String = "",
+    val revision: Long = 0L,
     val createdAt: Long,
     val updatedAt: Long,
 )
@@ -66,7 +67,10 @@ data class TreeEntity(
         childColumns = ["treeKey"],
         onDelete = ForeignKey.CASCADE,
     )],
-    indices = [Index("treeKey")],
+    indices = [
+        Index("treeKey"),
+        Index(value = ["treeKey", "sideIndex"], unique = true),
+    ],
 )
 data class SideEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -90,7 +94,10 @@ data class SideEntity(
         childColumns = ["sideId"],
         onDelete = ForeignKey.CASCADE,
     )],
-    indices = [Index("sideId")],
+    indices = [
+        Index("sideId"),
+        Index(value = ["sideId", "bboxId"], unique = true),
+    ],
 )
 data class BboxEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -110,7 +117,14 @@ data class BboxEntity(
         childColumns = ["treeKey"],
         onDelete = ForeignKey.CASCADE,
     )],
-    indices = [Index("treeKey")],
+    indices = [
+        Index("treeKey"),
+        Index(value = ["treeKey", "linkId"], unique = true),
+        Index(
+            value = ["treeKey", "sideA", "bboxIdA", "sideB", "bboxIdB"],
+            unique = true,
+        ),
+    ],
 )
 data class ConfirmedLinkEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -118,6 +132,102 @@ data class ConfirmedLinkEntity(
     val linkId: String,
     val sideA: Int, val bboxIdA: String,
     val sideB: Int, val bboxIdB: String,
+)
+
+@Entity(
+    tableName = "capture_drafts",
+    foreignKeys = [ForeignKey(
+        entity = SessionEntity::class,
+        parentColumns = ["sessionId"],
+        childColumns = ["runId"],
+        onDelete = ForeignKey.CASCADE,
+    )],
+    indices = [Index("runId")],
+)
+data class CaptureDraftEntity(
+    @PrimaryKey val runId: String,
+    val expectedTreeName: String = "",
+    val expectedTreeId: Int = 0,
+    val sideCount: Int,
+    val currentSide: Int = 0,
+    val phase: String = "SIDES",
+    val step: String = "PREVIEW",
+    val status: String = "ACTIVE",
+    val createdAt: Long,
+    val updatedAt: Long,
+)
+
+@Entity(
+    tableName = "capture_draft_sides",
+    primaryKeys = ["runId", "sideIndex"],
+    foreignKeys = [ForeignKey(
+        entity = CaptureDraftEntity::class,
+        parentColumns = ["runId"],
+        childColumns = ["runId"],
+        onDelete = ForeignKey.CASCADE,
+    )],
+    indices = [Index("runId")],
+)
+data class CaptureDraftSideEntity(
+    val runId: String,
+    val sideIndex: Int,
+    val imagePath: String,
+    val imageSha256: String,
+    val imageWidth: Int,
+    val imageHeight: Int,
+    val depthRawPath: String? = null,
+    val depthJsonPath: String? = null,
+    val depthRawSha256: String? = null,
+    val depthJsonSha256: String? = null,
+    val captureOrigin: String,
+    val depthRequired: Boolean,
+    val updatedAt: Long,
+)
+
+@Entity(
+    tableName = "mirror_status",
+    foreignKeys = [ForeignKey(
+        entity = TreeEntity::class,
+        parentColumns = ["treeKey"],
+        childColumns = ["treeKey"],
+        onDelete = ForeignKey.CASCADE,
+    )],
+    indices = [
+        Index("treeKey"),
+        Index(value = ["status", "updatedAt"]),
+    ],
+)
+data class MirrorStatusEntity(
+    @PrimaryKey val treeKey: String,
+    val treeName: String,
+    val remoteUri: String? = null,
+    val requestedRevision: Long,
+    val requestedHash: String,
+    val status: String = "NOT_REQUESTED",
+    val lastAttemptAt: Long? = null,
+    val errorCode: String? = null,
+    val errorMessage: String? = null,
+    val verifiedRevision: Long? = null,
+    val verifiedHash: String? = null,
+    val updatedAt: Long,
+)
+
+/** Durable remote-delete intent. It intentionally has no FK to [TreeEntity]: the tree row is
+ * deleted immediately, while this tombstone survives until SAF deletion is verified. */
+@Entity(
+    tableName = "mirror_deletions",
+    indices = [Index(value = ["status", "updatedAt"])],
+)
+data class MirrorDeletionEntity(
+    @PrimaryKey val treeKey: String,
+    val treeName: String,
+    val remoteUri: String,
+    val sideCount: Int,
+    val status: String = "DELETE_PENDING",
+    val lastAttemptAt: Long? = null,
+    val errorCode: String? = null,
+    val errorMessage: String? = null,
+    val updatedAt: Long,
 )
 
 // ─── DAOs ───────────────────────────────────────────────────────────────────
@@ -202,6 +312,9 @@ interface SideDao {
     @Query("SELECT * FROM sides WHERE treeKey = :treeKey ORDER BY sideIndex")
     suspend fun getByTree(treeKey: String): List<SideEntity>
 
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insert(side: SideEntity): Long
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(side: SideEntity): Long
 
@@ -214,7 +327,7 @@ interface BboxDao {
     @Query("SELECT * FROM bboxes WHERE sideId = :sideId ORDER BY id")
     suspend fun getBySide(sideId: Long): List<BboxEntity>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertAll(bboxes: List<BboxEntity>)
 
     @Query("DELETE FROM bboxes WHERE sideId = :sideId")
@@ -229,9 +342,171 @@ interface ConfirmedLinkDao {
     @Query("SELECT * FROM confirmed_links WHERE treeKey = :treeKey")
     suspend fun getByTree(treeKey: String): List<ConfirmedLinkEntity>
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertAll(links: List<ConfirmedLinkEntity>)
 
     @Query("DELETE FROM confirmed_links WHERE treeKey = :treeKey")
     suspend fun deleteByTree(treeKey: String)
+}
+
+@Dao
+interface CaptureDraftDao {
+    @Query("SELECT * FROM capture_drafts WHERE runId = :runId")
+    suspend fun get(runId: String): CaptureDraftEntity?
+
+    /** Insert a new parent without REPLACE: SQLite REPLACE would delete the parent first and
+     * cascade-delete every durable side draft. Existing parents are updated in place by the
+     * repository's compare-then-insert helper. */
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insert(draft: CaptureDraftEntity)
+
+    @Update
+    suspend fun update(draft: CaptureDraftEntity): Int
+
+    @Query("DELETE FROM capture_drafts WHERE runId = :runId")
+    suspend fun delete(runId: String)
+
+    @Query("SELECT * FROM capture_draft_sides WHERE runId = :runId ORDER BY sideIndex")
+    suspend fun getSides(runId: String): List<CaptureDraftSideEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertSide(side: CaptureDraftSideEntity)
+
+    @Query("DELETE FROM capture_draft_sides WHERE runId = :runId AND sideIndex = :sideIndex")
+    suspend fun deleteSide(runId: String, sideIndex: Int)
+}
+
+@Dao
+interface MirrorStatusDao {
+    @Query("SELECT * FROM mirror_status WHERE treeKey = :treeKey")
+    fun observeByTree(treeKey: String): Flow<MirrorStatusEntity?>
+
+    @Query("SELECT * FROM mirror_status ORDER BY updatedAt DESC")
+    fun observeAll(): Flow<List<MirrorStatusEntity>>
+
+    @Query("SELECT * FROM mirror_status WHERE status IN ('PENDING', 'FAILED') ORDER BY updatedAt")
+    suspend fun getPendingOrFailed(): List<MirrorStatusEntity>
+
+    @Query("SELECT * FROM mirror_status WHERE treeKey = :treeKey")
+    suspend fun getByTree(treeKey: String): MirrorStatusEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(status: MirrorStatusEntity)
+
+    /** Conditional worker updates. A stale SAF job must never overwrite a newer revision row. */
+    @Query("""
+        UPDATE mirror_status SET status = 'PENDING', lastAttemptAt = :attemptAt,
+            errorCode = NULL, errorMessage = NULL, updatedAt = :updatedAt
+        WHERE treeKey = :treeKey
+          AND requestedRevision = :requestedRevision
+          AND requestedHash = :requestedHash
+          AND ((remoteUri = :remoteUri) OR (remoteUri IS NULL AND :remoteUri IS NULL))
+    """)
+    suspend fun markAttempting(
+        treeKey: String,
+        requestedRevision: Long,
+        requestedHash: String,
+        remoteUri: String?,
+        attemptAt: Long,
+        updatedAt: Long,
+    ): Int
+
+    @Query("""
+        UPDATE mirror_status SET status = 'VERIFIED', lastAttemptAt = :attemptAt,
+            errorCode = NULL, errorMessage = NULL, verifiedRevision = :verifiedRevision,
+            verifiedHash = :verifiedHash, updatedAt = :updatedAt
+        WHERE treeKey = :treeKey
+          AND requestedRevision = :requestedRevision
+          AND requestedHash = :requestedHash
+          AND ((remoteUri = :remoteUri) OR (remoteUri IS NULL AND :remoteUri IS NULL))
+    """)
+    suspend fun markVerified(
+        treeKey: String,
+        requestedRevision: Long,
+        requestedHash: String,
+        remoteUri: String?,
+        verifiedRevision: Long,
+        verifiedHash: String,
+        attemptAt: Long,
+        updatedAt: Long,
+    ): Int
+
+    @Query("""
+        UPDATE mirror_status SET status = 'FAILED', lastAttemptAt = :attemptAt,
+            errorCode = :errorCode, errorMessage = :errorMessage, updatedAt = :updatedAt
+        WHERE treeKey = :treeKey
+          AND requestedRevision = :requestedRevision
+          AND requestedHash = :requestedHash
+          AND ((remoteUri = :remoteUri) OR (remoteUri IS NULL AND :remoteUri IS NULL))
+    """)
+    suspend fun markFailed(
+        treeKey: String,
+        requestedRevision: Long,
+        requestedHash: String,
+        remoteUri: String?,
+        errorCode: String?,
+        errorMessage: String?,
+        attemptAt: Long,
+        updatedAt: Long,
+    ): Int
+
+    @Query("DELETE FROM mirror_status WHERE treeKey = :treeKey")
+    suspend fun deleteByTree(treeKey: String)
+}
+
+@Dao
+interface MirrorDeletionDao {
+    @Query("SELECT * FROM mirror_deletions WHERE status IN ('DELETE_PENDING', 'DELETE_FAILED') ORDER BY updatedAt")
+    suspend fun getPendingOrFailed(): List<MirrorDeletionEntity>
+
+    @Query("SELECT * FROM mirror_deletions WHERE treeKey = :treeKey")
+    suspend fun getByTree(treeKey: String): MirrorDeletionEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(tombstone: MirrorDeletionEntity)
+
+    @Query("""
+        UPDATE mirror_deletions SET status = 'DELETE_PENDING', lastAttemptAt = :attemptAt,
+            errorCode = NULL, errorMessage = NULL, updatedAt = :updatedAt
+        WHERE treeKey = :treeKey AND status IN ('DELETE_PENDING', 'DELETE_FAILED')
+          AND remoteUri = :remoteUri
+    """)
+    suspend fun markAttempting(
+        treeKey: String,
+        remoteUri: String,
+        attemptAt: Long,
+        updatedAt: Long,
+    ): Int
+
+    @Query("""
+        UPDATE mirror_deletions SET status = 'DELETE_VERIFIED', lastAttemptAt = :attemptAt,
+            errorCode = NULL, errorMessage = NULL, updatedAt = :updatedAt
+        WHERE treeKey = :treeKey AND status = 'DELETE_PENDING' AND remoteUri = :remoteUri
+    """)
+    suspend fun markVerified(
+        treeKey: String,
+        remoteUri: String,
+        attemptAt: Long,
+        updatedAt: Long,
+    ): Int
+
+    @Query("""
+        UPDATE mirror_deletions SET status = 'DELETE_FAILED', lastAttemptAt = :attemptAt,
+            errorCode = :errorCode, errorMessage = :errorMessage, updatedAt = :updatedAt
+        WHERE treeKey = :treeKey AND status = 'DELETE_PENDING' AND remoteUri = :remoteUri
+    """)
+    suspend fun markFailed(
+        treeKey: String,
+        remoteUri: String,
+        errorCode: String?,
+        errorMessage: String?,
+        attemptAt: Long,
+        updatedAt: Long,
+    ): Int
+
+    @Query("""
+        UPDATE mirror_deletions SET status = 'DELETE_SUPERSEDED', updatedAt = :updatedAt
+        WHERE treeKey = :treeKey AND remoteUri = :remoteUri
+    """)
+    suspend fun markSuperseded(treeKey: String, remoteUri: String, updatedAt: Long): Int
 }

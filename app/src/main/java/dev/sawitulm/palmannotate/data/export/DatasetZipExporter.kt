@@ -14,11 +14,11 @@ import dev.sawitulm.palmannotate.data.storage.CaptureIntegrityPolicy
 import dev.sawitulm.palmannotate.data.storage.DepthArtifactContract
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
 import dev.sawitulm.palmannotate.data.storage.SafMirrorStore
+import dev.sawitulm.palmannotate.data.storage.SaveResult
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
-import dev.sawitulm.palmannotate.data.storage.TreePackageManifest
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
-import org.json.JSONArray
-import org.json.JSONObject
+import kotlinx.coroutines.withContext
 import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileInputStream
@@ -83,30 +83,41 @@ class DatasetZipExporter @Inject constructor(
     /** One file to place in the zip: [source] on disk → [zipPath] inside the archive. */
     private data class FileEntry(val source: File, val zipPath: String)
 
-    /** Destination abstraction so SAF and FileProvider-fallback share the same zip loop. */
+    /** Destination abstraction used only after the local snapshot is complete. */
     private class Destination(val shareUri: Uri, val out: OutputStream, val cleanup: () -> Unit)
 
-    /** Export a single run/session. Runs on the IO dispatcher. */
+    private sealed class PreparedExport {
+        data class Ready(val zipFile: File, val fileName: String) : PreparedExport()
+        data class Finished(val outcome: Outcome) : PreparedExport()
+    }
+
+    /** Export a single run/session. Local snapshotting is exclusive; SAF publication is not. */
     suspend fun exportRun(
         sessionId: String,
         onProgress: (Progress) -> Unit,
         isCancelled: () -> Boolean,
-    ): Outcome = artifactCoordinator.withExclusiveAccess {
-        val trees = treeDao.getBySession(sessionId)
-        val base = trees.firstOrNull()
-            ?.let { sanitize("${it.variety}_${it.block}") }
-            ?.takeIf { it.isNotBlank() }
-            ?: "session"
-        exportLocked(trees, "${base}_${timestamp()}", onProgress, isCancelled)
+    ): Outcome {
+        val prepared = artifactCoordinator.withExclusiveAccess {
+            val trees = treeDao.getBySession(sessionId)
+            val base = trees.firstOrNull()
+                ?.let { sanitize("${it.variety}_${it.block}") }
+                ?.takeIf { it.isNotBlank() }
+                ?: "session"
+            exportLocked(trees, "${base}_${timestamp()}", onProgress, isCancelled)
+        }
+        return publishPrepared(prepared, isCancelled)
     }
 
-    /** Export every tree across all sessions into one zip. Runs on the IO dispatcher. */
+    /** Export every tree across all sessions into one zip. Local snapshotting is exclusive. */
     suspend fun exportAll(
         onProgress: (Progress) -> Unit,
         isCancelled: () -> Boolean,
-    ): Outcome = artifactCoordinator.withExclusiveAccess {
-        val trees = treeDao.getAllOnce()
-        exportLocked(trees, "PalmAnnotate_all_${timestamp()}", onProgress, isCancelled)
+    ): Outcome {
+        val prepared = artifactCoordinator.withExclusiveAccess {
+            val trees = treeDao.getAllOnce()
+            exportLocked(trees, "PalmAnnotate_all_${timestamp()}", onProgress, isCancelled)
+        }
+        return publishPrepared(prepared, isCancelled)
     }
 
     // ─── Core ────────────────────────────────────────────────────────────────────
@@ -116,12 +127,13 @@ class DatasetZipExporter @Inject constructor(
         zipBaseName: String,
         onProgress: (Progress) -> Unit,
         isCancelled: () -> Boolean,
-    ): Outcome {
+    ): PreparedExport {
+        repo.recoverLocalArtifactsWhileExclusive()
         // Rebuild every mutable annotation artifact from Room, bind it to the current RGB hashes,
         // and reject the whole export if any committed tree is incomplete or cross-generation.
         for (t in trees) {
             materializeAndValidateTree(t)?.let { error ->
-                return Outcome.Failed("${t.treeName}: $error")
+                return PreparedExport.Finished(Outcome.Failed("${t.treeName}: $error"))
             }
         }
 
@@ -129,45 +141,113 @@ class DatasetZipExporter @Inject constructor(
         data class Item(val entry: FileEntry, val treeName: String)
         val items = ArrayList<Item>()
         for (t in trees) {
-            val committedSideIndices = repo.loadActiveSession(t.treeKey)
+            val committedSideIndices = repo.loadActiveSessionWhileExclusive(t.treeKey)
                 ?.sides
                 ?.mapTo(mutableSetOf()) { it.sideIndex }
-                ?: return Outcome.Failed("${t.treeName}: committed side set disappeared")
+                ?: return PreparedExport.Finished(Outcome.Failed("${t.treeName}: committed side set disappeared"))
             for (e in entriesForTree(t.treeName, t.sideCount, committedSideIndices)) {
                 items.add(Item(e, t.treeName))
             }
         }
-        if (items.isEmpty()) return Outcome.Empty
+        if (items.isEmpty()) return PreparedExport.Finished(Outcome.Empty)
 
         val fileName = "$zipBaseName.zip"
-        val safUri = exportFolder.folderUri.first()
-        val dest = openDestination(safUri, fileName) ?: return Outcome.Failed("Cannot create export file")
+        val snapshotFile = try {
+            File.createTempFile("PalmAnnotate-export-", ".zip", storage.exportsDir)
+        } catch (e: Exception) {
+            Log.w(TAG, "local export snapshot could not be created", e)
+            return PreparedExport.Finished(Outcome.Failed(e.message ?: "Export failed"))
+        }
 
         val total = items.size
         var done = 0
         var cancelled = false
         try {
-            ZipOutputStream(BufferedOutputStream(dest.out)).use { zip ->
-                zip.setLevel(Deflater.NO_COMPRESSION)
-                for (item in items) {
-                    if (isCancelled()) { cancelled = true; break }
-                    zip.putNextEntry(ZipEntry(item.entry.zipPath))
-                    FileInputStream(item.entry.source).use { it.copyTo(zip, BUFFER) }
-                    zip.closeEntry()
-                    done++
-                    onProgress(Progress(done, total, item.treeName))
+            withContext(Dispatchers.IO) {
+                ZipOutputStream(BufferedOutputStream(FileOutputStream(snapshotFile))).use { zip ->
+                    zip.setLevel(Deflater.NO_COMPRESSION)
+                    for (item in items) {
+                        if (isCancelled()) { cancelled = true; break }
+                        zip.putNextEntry(ZipEntry(item.entry.zipPath))
+                        FileInputStream(item.entry.source).use { it.copyTo(zip, BUFFER) }
+                        zip.closeEntry()
+                        done++
+                        onProgress(Progress(done, total, item.treeName))
+                    }
                 }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "zip failed", e)
-            dest.cleanup()
-            return Outcome.Failed(e.message ?: "Export failed")
+            Log.w(TAG, "zip snapshot failed", e)
+            snapshotFile.delete()
+            return PreparedExport.Finished(Outcome.Failed(e.message ?: "Export failed"))
         }
         if (cancelled) {
-            dest.cleanup()
-            return Outcome.Cancelled
+            snapshotFile.delete()
+            return PreparedExport.Finished(Outcome.Cancelled)
         }
-        return Outcome.Success(dest.shareUri, fileName)
+        return PreparedExport.Ready(snapshotFile, fileName)
+    }
+
+    /** Publish a coherent local snapshot after releasing ArtifactCoordinator. */
+    private suspend fun publishPrepared(
+        prepared: PreparedExport,
+        isCancelled: () -> Boolean,
+    ): Outcome = when (prepared) {
+        is PreparedExport.Finished -> prepared.outcome
+        is PreparedExport.Ready -> publishSnapshot(prepared, isCancelled)
+    }
+
+    private suspend fun publishSnapshot(
+        prepared: PreparedExport.Ready,
+        isCancelled: () -> Boolean,
+    ): Outcome = withContext(Dispatchers.IO) {
+        val dest = try {
+            val safUri = exportFolder.folderUri.first()
+            openDestination(safUri, prepared.fileName)
+        } catch (e: Exception) {
+            Log.w(TAG, "export destination unavailable", e)
+            prepared.zipFile.delete()
+            return@withContext Outcome.Failed(e.message ?: "Cannot create export file")
+        }
+        if (dest == null) {
+            prepared.zipFile.delete()
+            return@withContext Outcome.Failed("Cannot create export file")
+        }
+
+        var cancelled = false
+        var copied = false
+        try {
+            FileInputStream(prepared.zipFile).use { input ->
+                dest.out.use { output ->
+                    val buffer = ByteArray(BUFFER)
+                    while (true) {
+                        if (isCancelled()) {
+                            cancelled = true
+                            break
+                        }
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                    }
+                    if (!cancelled) {
+                        output.flush()
+                        copied = true
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "export snapshot publication failed", e)
+            dest.cleanup()
+            prepared.zipFile.delete()
+            return@withContext Outcome.Failed(e.message ?: "Export failed")
+        }
+
+        prepared.zipFile.delete()
+        if (cancelled || !copied) {
+            dest.cleanup()
+            return@withContext Outcome.Cancelled
+        }
+        Outcome.Success(dest.shareUri, prepared.fileName)
     }
 
     /**
@@ -180,7 +260,7 @@ class DatasetZipExporter @Inject constructor(
             ArtifactIdentityPolicy.treeNameError(tree.treeName)?.let {
                 return "unsafe tree identity: $it"
             }
-            val session = repo.loadActiveSession(tree.treeKey)
+            val session = repo.loadActiveSessionWhileExclusive(tree.treeKey)
                 ?: return "committed tree could not be loaded"
             val sideIndices = session.sides.map { it.sideIndex }
             if (sideIndices.isEmpty() ||
@@ -230,23 +310,16 @@ class DatasetZipExporter @Inject constructor(
             }
             val verifiedSession = session.copy(sides = verifiedSides)
 
-            // Both annotation formats come from exactly the same Room snapshot.
-            check(storage.deleteFile(storage.manifestFile(tree.treeName))) {
-                "could not invalidate the previous package manifest"
+            // Rebuild projections through the same journaled revision publisher used by annotation
+            // saves. ZIP creation must never invalidate a valid manifest before replacement.
+            // exportRun/exportAll already hold ArtifactCoordinator. Calling the public saveSession
+            // here would try to acquire the same non-reentrant Mutex and deadlock before the ZIP
+            // stream starts.
+            when (val result = repo.saveSessionWhileExclusive(verifiedSession)) {
+                is SaveResult.Success -> null
+                is SaveResult.Conflict -> "tree changed during ZIP preparation (current revision r${result.actualRevision})"
+                is SaveResult.Failure -> result.message
             }
-            for (side in verifiedSides) {
-                storage.writeText(
-                    storage.labelFile(tree.treeName, side.sideIndex),
-                    ExportManager.generateYoloTxt(side),
-                )
-            }
-            storage.writeText(
-                storage.outputJsonFile(tree.treeName),
-                ExportManager.generateOutputJson(verifiedSession).toString(2),
-            )
-            materializeMetadata(tree, verifiedSides)
-            TreePackageManifest.materialize(storage, tree.treeName, verifiedSides)
-            null
         } catch (e: Exception) {
             Log.w(TAG, "package materialization failed for ${tree.treeName}", e)
             e.message ?: "package materialization failed"
@@ -294,35 +367,6 @@ class DatasetZipExporter @Inject constructor(
         FileKind.OUTPUT_JSON -> storage.outputJsonFile(treeName)
         FileKind.METADATA -> storage.metadataFile(treeName)
         FileKind.MANIFEST -> storage.manifestFile(treeName)
-    }
-
-    private fun materializeMetadata(
-        tree: TreeEntity,
-        sides: List<dev.sawitulm.palmannotate.domain.model.TreeSide>,
-    ) {
-        val file = storage.metadataFile(tree.treeName)
-        val metadata = storage.readText(file)
-            ?.let { runCatching { JSONObject(it) }.getOrNull() }
-            ?: JSONObject()
-        metadata.put("artifactSchemaVersion", 1)
-        metadata.put("name", tree.treeName)
-        metadata.put("variety", tree.variety)
-        metadata.put("blok", tree.block)
-        metadata.put("treeId", tree.treeId)
-        metadata.put("artifacts", JSONObject().apply {
-            put("sides", JSONArray().apply {
-                for (side in sides) {
-                    put(JSONObject().apply {
-                        put("sideIndex", side.sideIndex)
-                        put("filename", "${tree.treeName}_${side.sideIndex + 1}.jpg")
-                        put("rgbSha256", side.rgbSha256)
-                        put("captureOrigin", side.captureOrigin.name)
-                        put("depthRequired", side.depthRequired)
-                    })
-                }
-            })
-        })
-        storage.writeText(file, metadata.toString(2))
     }
 
     /**

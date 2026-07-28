@@ -120,10 +120,10 @@ class FolderResumeImporter @Inject constructor(
      * interrupted import can be retried on the next launch.
      */
     suspend fun resumeFromFolder(safTreeUri: Uri): Int = withContext(Dispatchers.IO) {
-        val jsonNames = saf.listFiles(safTreeUri, OUTPUT_JSON_DIR, ".json")
+        val jsonNames = listFilesForResume(safTreeUri, OUTPUT_JSON_DIR, ".json")
         if (jsonNames.isEmpty()) return@withContext 0
 
-        val imageNames = saf.listFiles(safTreeUri, IMAGES_DIR, ".jpg").toHashSet()
+        val imageNames = listFilesForResume(safTreeUri, IMAGES_DIR, ".jpg").toHashSet()
 
         val scanned = ArrayList<ScannedTree>()
         var scanFailures = 0
@@ -162,9 +162,18 @@ class FolderResumeImporter @Inject constructor(
 
     // ─── internals ───────────────────────────────────────────────────────────
 
+    private fun listFilesForResume(treeUri: Uri, dirPath: String, suffix: String): List<String> =
+        SafResumeOutcomePolicy.requireListing(saf.listFilesResult(treeUri, dirPath, suffix), dirPath)
+
+    private fun readBytesForResume(treeUri: Uri, path: String): ByteArray? =
+        SafResumeOutcomePolicy.optionalBytes(saf.readBytesResult(treeUri, path), path)
+
+    private fun readTextForResume(treeUri: Uri, path: String): String? =
+        readBytesForResume(treeUri, path)?.toString(Charsets.UTF_8)
+
     /** Parse one Output JSON (+ metadata sidecar) into a ScannedTree, or null if unusable. */
     private fun scanOne(safTreeUri: Uri, jsonName: String, imageNames: Set<String>): ScannedTree? {
-        val text = saf.readText(safTreeUri, "$OUTPUT_JSON_DIR/$jsonName") ?: return null
+        val text = readTextForResume(safTreeUri,"$OUTPUT_JSON_DIR/$jsonName") ?: return null
         val json = runCatching { JSONObject(text) }.getOrNull() ?: return null
         val parsed = runCatching { OutputSchema.toSessionData(json) }.getOrNull() ?: return null
         if (parsed.sides.isEmpty()) return null
@@ -176,7 +185,7 @@ class FolderResumeImporter @Inject constructor(
             Log.w(TAG, "resume skipped ${parsed.treeName}: $it")
             return null
         }
-        val manifestText = saf.readText(safTreeUri, "$MANIFEST_DIR/${parsed.treeName}.json")
+        val manifestText = readTextForResume(safTreeUri,"$MANIFEST_DIR/${parsed.treeName}.json")
         val requiresManifest = parsed.sides.all {
             it.rgbSha256 != null && it.captureOrigin != CaptureOrigin.UNKNOWN
         }
@@ -266,7 +275,7 @@ class FolderResumeImporter @Inject constructor(
                 ?.optString("sha256")
                 ?.takeIf { it.isNotBlank() }
                 ?: return@runCatching false
-            val metadataText = saf.readText(safTreeUri, "$METADATA_DIR/$treeName.json")
+            val metadataText = readTextForResume(safTreeUri,"$METADATA_DIR/$treeName.json")
                 ?: return@runCatching false
             if (!metadataExpected.equals(
                     DepthArtifactContract.sha256Hex(metadataText.toByteArray(Charsets.UTF_8)),
@@ -303,7 +312,7 @@ class FolderResumeImporter @Inject constructor(
                 ) {
                     return@runCatching false
                 }
-                val rgbBytes = saf.readBytes(safTreeUri, "$IMAGES_DIR/$rgbFile")
+                val rgbBytes = readBytesForResume(safTreeUri,"$IMAGES_DIR/$rgbFile")
                     ?: return@runCatching false
                 if (!rgbExpected.equals(
                         DepthArtifactContract.sha256Hex(rgbBytes),
@@ -322,7 +331,7 @@ class FolderResumeImporter @Inject constructor(
                 ) {
                     return@runCatching false
                 }
-                val labelBytes = saf.readBytes(safTreeUri, "$OUTPUT_TXT_DIR/$labelFile")
+                val labelBytes = readBytesForResume(safTreeUri,"$OUTPUT_TXT_DIR/$labelFile")
                     ?: return@runCatching false
                 if (!labelExpected.equals(
                         DepthArtifactContract.sha256Hex(labelBytes),
@@ -346,11 +355,11 @@ class FolderResumeImporter @Inject constructor(
                     ) {
                         return@runCatching false
                     }
-                    val raw = saf.readBytes(
+                    val raw = readBytesForResume(
                         safTreeUri,
                         "$DEPTH_DIR/${depth.optString("rawFile")}",
                     ) ?: return@runCatching false
-                    val depthJson = saf.readBytes(
+                    val depthJson = readBytesForResume(
                         safTreeUri,
                         "$DEPTH_DIR/${depth.optString("jsonFile")}",
                     ) ?: return@runCatching false
@@ -392,12 +401,15 @@ class FolderResumeImporter @Inject constructor(
                 return@runCatching false
             }
             true
-        }.getOrDefault(false)
+        }.getOrElse {
+            if (it is SafResumeException) throw it
+            false
+        }
     }
 
     /** Read block from the metadata sidecar ("blok"), else parse it from the tree name. */
     private fun resolveBlock(safTreeUri: Uri, treeName: String): String {
-        val metaText = saf.readText(safTreeUri, "$METADATA_DIR/${treeName}.json")
+        val metaText = readTextForResume(safTreeUri,"$METADATA_DIR/${treeName}.json")
         if (metaText != null) {
             runCatching {
                 val blok = JSONObject(metaText).optString("blok").ifBlank {
@@ -528,7 +540,7 @@ class FolderResumeImporter @Inject constructor(
         val fileName = "${treeName}_${sideIndex + 1}.jpg"
         if (fileName !in imageNames) return null
         val stagedImage = storage.stagedImageFile(stagingDir, treeName, sideIndex)
-        val bytes = saf.readBytes(safTreeUri, "$IMAGES_DIR/$fileName") ?: return null
+        val bytes = readBytesForResume(safTreeUri,"$IMAGES_DIR/$fileName") ?: return null
         val actualSha256 = DepthArtifactContract.sha256Hex(bytes)
         if (expectedRgbSha256 != null &&
             !expectedRgbSha256.equals(actualSha256, ignoreCase = true)
@@ -567,8 +579,8 @@ class FolderResumeImporter @Inject constructor(
         sideIndex: Int,
     ): RestoredDepth {
         val stem = "${treeName}_${sideIndex + 1}"
-        val raw = saf.readBytes(safTreeUri, "$DEPTH_DIR/$stem.raw")
-        val metadata = saf.readText(safTreeUri, "$DEPTH_DIR/$stem.json")
+        val raw = readBytesForResume(safTreeUri,"$DEPTH_DIR/$stem.raw")
+        val metadata = readTextForResume(safTreeUri,"$DEPTH_DIR/$stem.json")
         if (raw == null && metadata == null) return RestoredDepth()
         if (raw == null || metadata == null) {
             Log.w(TAG, "resume skipped incomplete depth pair for $stem")

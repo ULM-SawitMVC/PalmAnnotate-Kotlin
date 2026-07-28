@@ -59,7 +59,11 @@ import dev.sawitulm.palmannotate.data.camera.OrbbecManager
 import dev.sawitulm.palmannotate.data.db.SessionEntity
 import dev.sawitulm.palmannotate.data.location.GpsProvider
 import dev.sawitulm.palmannotate.data.storage.AndroidStorageManager
+import dev.sawitulm.palmannotate.data.storage.CaptureDraftCursorPolicy
+import dev.sawitulm.palmannotate.data.storage.CaptureDraftSideSnapshot
+import dev.sawitulm.palmannotate.data.storage.CaptureDraftSnapshot
 import dev.sawitulm.palmannotate.data.storage.DepthArtifactContract
+import dev.sawitulm.palmannotate.data.storage.DraftWriteAwaiter
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
 import dev.sawitulm.palmannotate.data.storage.InputCache
 import dev.sawitulm.palmannotate.data.storage.JpegOrientationNormalizer
@@ -67,7 +71,9 @@ import dev.sawitulm.palmannotate.data.storage.SessionRepository
 import dev.sawitulm.palmannotate.domain.model.*
 import dev.sawitulm.palmannotate.domain.quality.QualityCheck
 import dev.sawitulm.palmannotate.ui.common.QualityGateModal
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -127,6 +133,67 @@ class CaptureFlowViewModel @Inject constructor(
         private set
     var qaReport by mutableStateOf<QualityCheck.CaptureReport?>(null)
         private set
+    var draftStatus by mutableStateOf<String?>(null)
+        private set
+    var pendingDraftWrites by mutableIntStateOf(0)
+        private set
+    var isDraftValidating by mutableStateOf(false)
+        private set
+    private val pendingDraftJobs = mutableSetOf<Job>()
+    private val draftPersistErrors = mutableStateMapOf<Int, String>()
+    private var draftCursorTail: Job? = null
+
+    private fun launchTrackedDraftWrite(block: suspend () -> Unit): Job {
+        lateinit var job: Job
+        job = viewModelScope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+            try {
+                block()
+            } finally {
+                withContext(Dispatchers.Main.immediate) {
+                    pendingDraftJobs.remove(job)
+                    pendingDraftWrites = pendingDraftJobs.size
+                }
+            }
+        }
+        pendingDraftJobs += job
+        pendingDraftWrites = pendingDraftJobs.size
+        job.start()
+        return job
+    }
+
+    private suspend fun awaitPendingDraftWrites() {
+        DraftWriteAwaiter.awaitAll { pendingDraftJobs.toList() }
+    }
+
+    private suspend fun reloadDraftValidation(runId: String): CaptureDraftSnapshot? {
+        val snapshot = repo.loadCaptureDraft(runId)
+        draftStatus = snapshot?.status?.takeIf { it != "ACTIVE" }
+        return snapshot
+    }
+
+    /** Cursor writes are chained in UI-call order so a late IO completion cannot restore stale nav. */
+    private fun enqueueDraftCursorWrite(
+        runId: String,
+        side: Int,
+        draftPhase: String,
+        step: String,
+        expectedTreeName: String = "",
+        expectedTreeId: Int = 0,
+    ) {
+        val previous = draftCursorTail
+        val job = launchTrackedDraftWrite {
+            previous?.join()
+            repo.updateCaptureDraftCursor(
+                runId,
+                side,
+                draftPhase,
+                step,
+                expectedTreeName,
+                expectedTreeId,
+            )
+        }
+        draftCursorTail = job
+    }
 
     // ── Orbbec live preview state ─────────────────────────────────────────────
     var orbbecAvailable by mutableStateOf(false)
@@ -259,38 +326,97 @@ class CaptureFlowViewModel @Inject constructor(
         // Bind RGB + depth to the side showing when the shutter was pressed. Reading currentSide
         // after the blocking camera call could attach a valid pair to a different side.
         val capturedSideIndex = currentSide
-        viewModelScope.launch(Dispatchers.IO) {
+        val runId = run?.sessionId ?: return
+        val generation = repo.beginCaptureDraftSideWrite(runId, capturedSideIndex)
+        draftPersistErrors.remove(capturedSideIndex)
+        launchTrackedDraftWrite {
             try {
                 val frame = orbbec.capture()
                 val depth = frame.depth
                 if (depth == null) {
-                    Log.w(
-                        "CaptureFlow",
-                        "Orbbec capture rejected for side $capturedSideIndex: Y16 depth missing",
-                    )
+                    Log.w("CaptureFlow", "Orbbec capture rejected for side $capturedSideIndex: Y16 depth missing")
                     withContext(Dispatchers.Main) {
-                        captureError = appContext.getString(R.string.capture_orbbec_depth_required)
+                        if (repo.isCaptureDraftSideWriteCurrent(runId, capturedSideIndex, generation)) {
+                            captureError = appContext.getString(R.string.capture_orbbec_depth_required)
+                        }
                     }
-                    return@launch
+                    return@launchTrackedDraftWrite
                 }
                 val colorBytes = Base64.decode(frame.base64, Base64.NO_WRAP)
-                val ts = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
-                val file = File(context.cacheDir, "orbbec_$ts.jpg")
-                file.writeBytes(colorBytes)
-                withContext(Dispatchers.Main) {
+                val rawBytes = Base64.decode(depth.base64, Base64.NO_WRAP)
+                val meta = JSONObject().apply {
+                    put("schemaVersion", 2); put("width", depth.width); put("height", depth.height)
+                    put("format", depth.format); put("valueScale", depth.valueScale)
+                    put("encoding", depth.encoding); put("unit", depth.unit)
+                    put("decodeFormula", "depth_mm = uint16_le * valueScale"); put("invalidValue", 0)
+                    put("alignedTo", depth.alignedTo); put("rgbWidth", frame.width); put("rgbHeight", frame.height)
+                    put("rawSha256", DepthArtifactContract.sha256Hex(rawBytes))
+                    put("rgbSha256", DepthArtifactContract.sha256Hex(colorBytes))
+                    put("displayFloorMm", depth.displayFloorMm); put("displayCeilingMm", depth.displayCeilingMm)
+                    depth.calibrationRawB64?.let { put("calibrationRawB64", it) }
+                    depth.calibrationDump?.let { put("calibrationDump", it) }
+                }.toString()
+                val accepted = repo.persistCaptureDraftSide(
+                    runId = runId,
+                    sideIndex = capturedSideIndex,
+                    generation = generation,
+                    imageBytes = colorBytes,
+                    imageWidth = frame.width,
+                    imageHeight = frame.height,
+                    captureOrigin = CaptureOrigin.ORBBEC,
+                    depthRequired = true,
+                    depthRawBytes = rawBytes,
+                    depthJsonText = meta,
+                )
+                val refreshedDraft = if (accepted) repo.loadCaptureDraft(runId) else null
+                val reviewCursorPhase: String? = withContext(Dispatchers.Main) {
+                    // The draft image path is shared across retakes. Re-check the generation on
+                    // Main immediately before every UI publication so an accepted-but-now-stale
+                    // callback cannot pair a newer RGB URI with this frame's depth/source.
+                    if (!accepted || !repo.isCaptureDraftSideWriteCurrent(runId, capturedSideIndex, generation)) {
+                        return@withContext null
+                    }
                     if (capturedSideIndex in capturedImages.indices) {
+                        draftStatus = refreshedDraft?.status?.takeIf { it != "ACTIVE" }
                         capturedDepths[capturedSideIndex] = depth
-                        capturedImages[capturedSideIndex] = Uri.fromFile(file)
+                        capturedImages[capturedSideIndex] = storage.versionedImageUri(
+                            storage.captureDraftImageFile(runId, capturedSideIndex),
+                            DepthArtifactContract.sha256Hex(colorBytes),
+                        )
                         capturedSources[capturedSideIndex] = CaptureSource.ORBBEC
                         captureError = null
-                        if (currentSide == capturedSideIndex) currentStep = SideStep.REVIEW
+                        if (currentSide == capturedSideIndex) {
+                            currentStep = SideStep.REVIEW
+                            phase.name
+                        } else {
+                            null
+                        }
+                    } else {
+                        null
+                    }
+                }
+                reviewCursorPhase?.let { cursorPhase ->
+                    withContext(Dispatchers.Main) {
+                        enqueueDraftCursorWrite(
+                            runId,
+                            capturedSideIndex,
+                            cursorPhase,
+                            SideStep.REVIEW.name,
+                        )
                     }
                 }
             } catch (e: Exception) {
                 Log.e("CaptureFlow", "Orbbec capture failed", e)
                 withContext(Dispatchers.Main) {
-                    orbbecStateMsg = appContext.getString(R.string.orbbec_capture_failed, e.message ?: "")
-                    captureError = orbbecStateMsg
+                    if (!repo.isCaptureDraftSideWriteCurrent(runId, capturedSideIndex, generation)) {
+                        return@withContext
+                    }
+                    val message = appContext.getString(R.string.orbbec_capture_failed, e.message ?: "")
+                    orbbecStateMsg = message
+                    draftPersistErrors[capturedSideIndex] = message
+                    captureError = message
+                    // Keep the captured URI/source visible. The operator can inspect or retake it;
+                    // save remains gated until the failed draft write is explicitly resolved.
                 }
             }
         }
@@ -317,39 +443,81 @@ class CaptureFlowViewModel @Inject constructor(
 
     fun dismissQa() { showQaDialog = false }
     fun dismissCaptureError() { captureError = null }
+    fun discardDraft() {
+        run?.sessionId?.let { runId ->
+            viewModelScope.launch {
+                runCatching { repo.discardCaptureDraft(runId) }
+                    .onSuccess {
+                        capturedImages.indices.forEach { capturedImages[it] = null }
+                        capturedDepths.indices.forEach { capturedDepths[it] = null }
+                        capturedSources.indices.forEach { capturedSources[it] = null }
+                        currentSide = 0
+                        currentStep = SideStep.PREVIEW
+                        phase = CapturePhase.SIDES
+                        retakingFromReview = false
+                        draftStatus = null
+                        saveError = null
+                        draftPersistErrors.clear()
+                    }
+                    .onFailure { error ->
+                        saveError = error.message ?: "Capture draft could not be discarded"
+                    }
+            }
+        }
+    }
 
     fun requestSave(runId: String, context: Context, onDone: (String) -> Unit) {
         val r = run ?: return
-        val capturedCount = capturedImages.count { it != null }
-        val depthSides = capturedDepths.count { it != null }
-        val orbbecSides = capturedSources.count { it == CaptureSource.ORBBEC }
-        val missingOrbbecDepth = capturedImages.indices.firstOrNull { index ->
-            capturedImages[index] != null &&
-                capturedSources.getOrNull(index) == CaptureSource.ORBBEC &&
-                capturedDepths.getOrNull(index) == null
-        }
-        if (missingOrbbecDepth != null) {
-            saveError = appContext.getString(
-                R.string.capture_orbbec_pair_missing_side,
-                missingOrbbecDepth + 1,
-            )
-            return
-        }
-        val hasGps = latitude != null && longitude != null
-        val report = QualityCheck.analyzeCaptureShots(
-            capturedSides = capturedCount,
-            expectedSides = sideCount,
-            depthSides = depthSides,
-            requiredDepthSides = orbbecSides,
-            hasGps = hasGps,
-            hasVariety = r.variety.isNotBlank(),
-            hasBlock = r.block.isNotBlank(),
-        )
-        if (report.status == QualityCheck.Level.ERROR || report.status == QualityCheck.Level.WARN) {
-            qaReport = report
-            showQaDialog = true
-        } else {
-            save(runId, context, onDone)
+        if (isSaving || isDraftValidating) return
+        isDraftValidating = true
+        viewModelScope.launch {
+            try {
+                awaitPendingDraftWrites()
+                val draft = reloadDraftValidation(runId)
+                if (draft == null || draft.status == "INVALID") {
+                    saveError = "Capture draft is invalid; discard it explicitly before saving"
+                    return@launch
+                }
+                draftPersistErrors.values.firstOrNull()?.let { failure ->
+                    saveError = failure
+                    return@launch
+                }
+                val capturedCount = capturedImages.count { it != null }
+                val depthSides = capturedDepths.count { it != null }
+                val orbbecSides = capturedSources.count { it == CaptureSource.ORBBEC }
+                val missingOrbbecDepth = capturedImages.indices.firstOrNull { index ->
+                    capturedImages[index] != null &&
+                        capturedSources.getOrNull(index) == CaptureSource.ORBBEC &&
+                        capturedDepths.getOrNull(index) == null
+                }
+                if (missingOrbbecDepth != null) {
+                    saveError = appContext.getString(
+                        R.string.capture_orbbec_pair_missing_side,
+                        missingOrbbecDepth + 1,
+                    )
+                    return@launch
+                }
+                val hasGps = latitude != null && longitude != null
+                val report = QualityCheck.analyzeCaptureShots(
+                    capturedSides = capturedCount,
+                    expectedSides = sideCount,
+                    depthSides = depthSides,
+                    requiredDepthSides = orbbecSides,
+                    hasGps = hasGps,
+                    hasVariety = r.variety.isNotBlank(),
+                    hasBlock = r.block.isNotBlank(),
+                )
+                if (report.status == QualityCheck.Level.ERROR || report.status == QualityCheck.Level.WARN) {
+                    qaReport = report
+                    showQaDialog = true
+                } else {
+                    save(runId, context, onDone)
+                }
+            } catch (error: Exception) {
+                saveError = error.message ?: "Capture draft validation failed"
+            } finally {
+                isDraftValidating = false
+            }
         }
     }
 
@@ -368,19 +536,64 @@ class CaptureFlowViewModel @Inject constructor(
             run = r
             sideCount = r.sideCount
             manualId = r.nextId.toString()
-            capturedImages.clear()
-            capturedDepths.clear()
-            capturedSources.clear()
-            repeat(sideCount) {
-                capturedImages.add(null)
-                capturedDepths.add(null)
-                capturedSources.add(null)
+            capturedImages.clear(); capturedDepths.clear(); capturedSources.clear()
+            repeat(sideCount) { capturedImages.add(null); capturedDepths.add(null); capturedSources.add(null) }
+            currentSide = 0; currentStep = SideStep.PREVIEW; phase = CapturePhase.SIDES
+            val expectedVariety = safe(r.variety)
+            val expectedBlock = safeBlock(r.block)
+            val expectedName = if (expectedBlock.isNotEmpty()) "${expectedVariety}_${expectedBlock}_${"%04d".format(r.nextId)}" else "${expectedVariety}_${"%04d".format(r.nextId)}"
+            val draft = repo.ensureCaptureDraft(runId, sideCount, expectedName, r.nextId)
+            if (!r.autoId && draft.expectedTreeId > 0) manualId = draft.expectedTreeId.toString()
+            draftStatus = draft.status.takeIf { it != "ACTIVE" }
+            val restoredDepths = withContext(Dispatchers.IO) {
+                draft.sides.associate { side -> side.sideIndex to loadDraftDepth(side) }
             }
-            currentSide = 0
-            currentStep = SideStep.PREVIEW
-            phase = CapturePhase.SIDES
+            draft.sides.forEach { side ->
+                if (side.sideIndex !in capturedImages.indices) return@forEach
+                capturedImages[side.sideIndex] = storage.versionedImageUri(
+                    File(side.imagePath),
+                    side.imageSha256,
+                )
+                capturedSources[side.sideIndex] = when (CaptureOrigin.fromPersisted(side.captureOrigin)) {
+                    CaptureOrigin.ORBBEC -> CaptureSource.ORBBEC
+                    else -> CaptureSource.PHONE_CAMERA
+                }
+                capturedDepths[side.sideIndex] = restoredDepths[side.sideIndex]
+            }
+            currentSide = draft.currentSide.coerceIn(0, sideCount - 1)
+            phase = runCatching { CapturePhase.valueOf(draft.phase) }.getOrDefault(CapturePhase.SIDES)
+            currentStep = runCatching {
+                SideStep.valueOf(
+                    CaptureDraftCursorPolicy.restoreStep(
+                        draft.step,
+                        capturedImages[currentSide] != null,
+                    )
+                )
+            }.getOrDefault(
+                if (capturedImages[currentSide] != null) SideStep.REVIEW else SideStep.PREVIEW,
+            )
             refreshGps()
         }
+    }
+
+    private fun loadDraftDepth(side: CaptureDraftSideSnapshot): OrbbecManager.OrbbecDepthData? {
+        val rawPath = side.depthRawPath ?: return null
+        val jsonPath = side.depthJsonPath ?: return null
+        return runCatching {
+            val raw = File(rawPath).readBytes()
+            val json = JSONObject(File(jsonPath).readText())
+            OrbbecManager.OrbbecDepthData(
+                base64 = Base64.encodeToString(raw, Base64.NO_WRAP),
+                width = json.optInt("width"), height = json.optInt("height"),
+                format = json.optString("format", "Y16"), valueScale = json.optDouble("valueScale", 1.0).toFloat(),
+                encoding = json.optString("encoding", "uint16le"), unit = json.optString("unit", "mm"),
+                alignedTo = json.optString("alignedTo", "color"),
+                displayFloorMm = json.optDouble("displayFloorMm", 250.0).toFloat(),
+                displayCeilingMm = json.optDouble("displayCeilingMm", 7000.0).toFloat(),
+                calibrationRawB64 = json.optString("calibrationRawB64").takeIf { it.isNotBlank() },
+                calibrationDump = json.optString("calibrationDump").takeIf { it.isNotBlank() },
+            )
+        }.getOrNull()
     }
 
     /**
@@ -410,12 +623,60 @@ class CaptureFlowViewModel @Inject constructor(
     }
 
     fun onImageCaptured(uri: Uri) {
-        if (currentSide < capturedImages.size) {
-            capturedImages[currentSide] = uri
-            capturedDepths[currentSide] = null
-            capturedSources[currentSide] = CaptureSource.PHONE_CAMERA
-            captureError = null
-            currentStep = SideStep.REVIEW
+        val sideIndex = currentSide
+        val runId = run?.sessionId ?: return
+        if (sideIndex !in capturedImages.indices) return
+        val generation = repo.beginCaptureDraftSideWrite(runId, sideIndex)
+        draftPersistErrors.remove(sideIndex)
+        capturedImages[sideIndex] = uri
+        capturedDepths[sideIndex] = null
+        capturedSources[sideIndex] = CaptureSource.PHONE_CAMERA
+        captureError = null
+        currentStep = SideStep.REVIEW
+        launchTrackedDraftWrite {
+            try {
+                val sourceBytes = readBytes(appContext, uri)
+                val bytes = JpegOrientationNormalizer.normalize(sourceBytes)
+                val dims = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, dims)
+                check(dims.outWidth > 0 && dims.outHeight > 0) { "Captured file has zero dimensions" }
+                val accepted = repo.persistCaptureDraftSide(
+                    runId, sideIndex, generation, bytes, dims.outWidth, dims.outHeight,
+                    CaptureOrigin.PHONE_CAMERA, depthRequired = false,
+                )
+                val refreshedDraft = if (accepted) repo.loadCaptureDraft(runId) else null
+                val reviewCursor = withContext(Dispatchers.Main) {
+                    if (!accepted || !repo.isCaptureDraftSideWriteCurrent(runId, sideIndex, generation)) {
+                        return@withContext null
+                    }
+                    draftStatus = refreshedDraft?.status?.takeIf { it != "ACTIVE" }
+                    capturedImages[sideIndex] = storage.versionedImageUri(
+                        storage.captureDraftImageFile(runId, sideIndex),
+                        DepthArtifactContract.sha256Hex(bytes),
+                    )
+                    if (currentSide == sideIndex) phase.name else null
+                }
+                reviewCursor?.let { cursorPhase ->
+                    withContext(Dispatchers.Main) {
+                        enqueueDraftCursorWrite(
+                            runId,
+                            sideIndex,
+                            cursorPhase,
+                            SideStep.REVIEW.name,
+                        )
+                    }
+                }
+            } catch (error: Exception) {
+                withContext(Dispatchers.Main) {
+                    if (!repo.isCaptureDraftSideWriteCurrent(runId, sideIndex, generation)) {
+                        return@withContext
+                    }
+                    val message = appContext.getString(R.string.capture_failed, error.message ?: "")
+                    draftPersistErrors[sideIndex] = message
+                    captureError = message
+                    // Keep the operator's captured image visible for inspection or retake.
+                }
+            }
         }
     }
 
@@ -423,27 +684,34 @@ class CaptureFlowViewModel @Inject constructor(
         if (index in 0 until sideCount) {
             currentSide = index
             currentStep = if (capturedImages[index] != null) SideStep.REVIEW else SideStep.PREVIEW
+            persistDraftCursor()
         }
     }
 
     fun retakeCurrent() {
         if (currentSide < capturedImages.size) {
+            val runId = run?.sessionId
             capturedImages[currentSide] = null
             capturedDepths.getOrNull(currentSide)?.let { capturedDepths[currentSide] = null }
             if (currentSide < capturedSources.size) capturedSources[currentSide] = null
+            if (runId != null) {
+                val generation = repo.invalidateCaptureDraftSide(runId, currentSide)
+                viewModelScope.launch { repo.removeCaptureDraftSide(runId, currentSide, generation) }
+            }
         }
         currentStep = SideStep.PREVIEW
+        persistDraftCursor()
     }
 
     fun continueFromReview(): Boolean {
-        return if (currentSide < sideCount - 1) {
-            currentSide++
-            currentStep = SideStep.PREVIEW
-            false
+        val result = if (currentSide < sideCount - 1) {
+            currentSide++; currentStep = SideStep.PREVIEW; false
         } else {
             if (allCaptured) phase = CapturePhase.REVIEW_ALL
             true
         }
+        persistDraftCursor()
+        return result
     }
 
     fun retakeSide(index: Int) {
@@ -451,18 +719,28 @@ class CaptureFlowViewModel @Inject constructor(
             capturedImages[index] = null
             if (index < capturedDepths.size) capturedDepths[index] = null
             if (index < capturedSources.size) capturedSources[index] = null
-            currentSide = index
-            currentStep = SideStep.PREVIEW
-            phase = CapturePhase.SIDES
+            run?.sessionId?.let { runId ->
+                val generation = repo.invalidateCaptureDraftSide(runId, index)
+                viewModelScope.launch { repo.removeCaptureDraftSide(runId, index, generation) }
+            }
+            currentSide = index; currentStep = SideStep.PREVIEW; phase = CapturePhase.SIDES
             retakingFromReview = true
+            persistDraftCursor()
         }
     }
 
     fun returnToReviewAll() {
         retakingFromReview = false
-        if (allCaptured) {
-            phase = CapturePhase.REVIEW_ALL
-            currentStep = SideStep.REVIEW
+        if (allCaptured) { phase = CapturePhase.REVIEW_ALL; currentStep = SideStep.REVIEW }
+        persistDraftCursor()
+    }
+
+    private fun persistDraftCursor(expectedTreeName: String = "", expectedTreeId: Int = 0) {
+        run?.sessionId?.let { runId ->
+            val side = currentSide
+            val draftPhase = phase.name
+            val step = currentStep.name
+            enqueueDraftCursorWrite(runId, side, draftPhase, step, expectedTreeName, expectedTreeId)
         }
     }
 
@@ -481,10 +759,21 @@ class CaptureFlowViewModel @Inject constructor(
         viewModelScope.launch {
             var stagingDir: File? = null
             try {
+                awaitPendingDraftWrites()
+                val validatedDraft = reloadDraftValidation(runId)
+                if (validatedDraft == null || validatedDraft.status == "INVALID") {
+                    saveError = "Capture draft is invalid; discard it explicitly before saving"
+                    return@launch
+                }
+                draftPersistErrors.values.firstOrNull()?.let { failure ->
+                    saveError = failure
+                    return@launch
+                }
                 val treeId = if (r.autoId) r.nextId else (manualId.toIntOrNull() ?: r.nextId).coerceAtLeast(1)
                 val v = safe(r.variety)
                 val b = safeBlock(r.block)
                 val treeName = if (b.isNotEmpty()) "${v}_${b}_${"%04d".format(treeId)}" else "${v}_${"%04d".format(treeId)}"
+                repo.updateCaptureDraftCursor(runId, currentSide, phase.name, currentStep.name, treeName, treeId)
 
                 // Never overwrite a committed tree in-place. The operator must explicitly delete
                 // the old tree first; until then its RGB/depth/annotations remain one intact unit.
@@ -772,6 +1061,16 @@ fun CaptureFlowScreen(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        viewModel.draftStatus?.let { status ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "Capture draft $status — review or discard before saving",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                                TextButton(onClick = viewModel::discardDraft) { Text("Discard") }
+                            }
+                        }
                     }
                 }
                 if (!run.autoId) {
@@ -801,6 +1100,8 @@ fun CaptureFlowScreen(
                         sideCount = viewModel.sideCount,
                         capturedImages = viewModel.capturedImages,
                         isSaving = viewModel.isSaving,
+                        isDraftPersisting = viewModel.pendingDraftWrites > 0,
+                        isDraftValidating = viewModel.isDraftValidating,
                         onRetake = { viewModel.retakeSide(it) },
                         onSave = { viewModel.requestSave(sessionId, context, onTreeSaved) },
                         modifier = Modifier
@@ -1055,6 +1356,8 @@ private fun ReviewAllPager(
     sideCount: Int,
     capturedImages: List<Uri?>,
     isSaving: Boolean,
+    isDraftPersisting: Boolean,
+    isDraftValidating: Boolean,
     onRetake: (Int) -> Unit,
     onSave: () -> Unit,
     modifier: Modifier = Modifier,
@@ -1119,7 +1422,7 @@ private fun ReviewAllPager(
                     ) {
                         OutlinedButton(
                             onClick = { onRetake(page) },
-                            enabled = !isSaving,
+                            enabled = !isSaving && !isDraftPersisting && !isDraftValidating,
                             modifier = Modifier.height(48.dp),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
                         ) {
@@ -1176,7 +1479,7 @@ private fun ReviewAllPager(
 
         Button(
             onClick = onSave,
-            enabled = !isSaving,
+            enabled = !isSaving && !isDraftPersisting && !isDraftValidating,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 12.dp)

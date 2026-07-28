@@ -39,6 +39,7 @@ import dev.sawitulm.palmannotate.R
 import dev.sawitulm.palmannotate.ui.common.LocalToasts
 import dev.sawitulm.palmannotate.ui.theme.PalmColors
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
+import dev.sawitulm.palmannotate.data.storage.SaveResult
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
 import dev.sawitulm.palmannotate.domain.dedup.SuggestionEngine
 import dev.sawitulm.palmannotate.domain.model.*
@@ -311,7 +312,11 @@ class DedupViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val safTreeUri = exportFolder.folderUri.first()
-                repo.saveSession(s, safTreeUri)
+                when (val result = repo.saveSession(s, safTreeUri)) {
+                    is SaveResult.Success -> session = session?.copy(revision = result.revision)
+                    is SaveResult.Conflict -> throw IllegalStateException("Conflict: current tree revision is r${result.actualRevision}; reopen before retrying")
+                    is SaveResult.Failure -> throw IllegalStateException(result.message, result.cause)
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "dedup save failed", e)
                 errorMessage = e.localizedMessage ?: "Save failed"
@@ -329,7 +334,11 @@ class DedupViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val safTreeUri = exportFolder.folderUri.first()
-                repo.saveSession(s, safTreeUri)
+                when (val result = repo.saveSession(s, safTreeUri)) {
+                    is SaveResult.Success -> session = session?.copy(revision = result.revision)
+                    is SaveResult.Conflict -> throw IllegalStateException("Conflict: current tree revision is r${result.actualRevision}; reopen before retrying")
+                    is SaveResult.Failure -> throw IllegalStateException(result.message, result.cause)
+                }
             } catch (e: Exception) {
                 // Don't navigate forward on a failed save — surface the error so the
                 // operator can retry rather than losing dedup work to a silent crash.
@@ -348,7 +357,11 @@ class DedupViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val safTreeUri = exportFolder.folderUri.first()
-                repo.saveSession(resolved, safTreeUri)
+                when (val result = repo.saveSession(resolved, safTreeUri)) {
+                    is SaveResult.Success -> session = session?.copy(revision = result.revision)
+                    is SaveResult.Conflict -> throw IllegalStateException("Conflict: current tree revision is r${result.actualRevision}; reopen before retrying")
+                    is SaveResult.Failure -> throw IllegalStateException(result.message, result.cause)
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "dedup resolveAllMismatchesAndSave failed", e)
                 errorMessage = e.localizedMessage ?: "Save failed"

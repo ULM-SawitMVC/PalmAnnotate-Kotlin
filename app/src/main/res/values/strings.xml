@@ -38,6 +38,7 @@
     <string name="home_empty_body">Tap “New Session” to start documenting trees.</string>
     <string name="home_folder_new">New folder set</string>
     <string name="home_folder_resumed">Resumed %1$d tree(s) from folder</string>
+    <string name="home_folder_resume_failed">Could not resume folder: %1$s</string>
     <string name="home_folder_resuming">Restoring existing trees from the export folder…</string>
     <string name="home_run_resumed">Continuing existing run for block %1$s</string>
     <string name="home_group_summary">%1$d session(s) · %2$d trees</string>

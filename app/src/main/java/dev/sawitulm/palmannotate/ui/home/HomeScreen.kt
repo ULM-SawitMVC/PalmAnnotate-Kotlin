@@ -122,6 +122,12 @@ class HomeViewModel @Inject constructor(
     private val folderResumeMutex = Mutex()
     private val _isResumingFolder = MutableStateFlow(true)
     val isResumingFolder: StateFlow<Boolean> = _isResumingFolder
+    private val _folderResumeError = MutableStateFlow<String?>(null)
+    val folderResumeError: StateFlow<String?> = _folderResumeError
+
+    fun consumeFolderResumeError() {
+        _folderResumeError.value = null
+    }
     private val initialFolderResume = viewModelScope.async {
         try {
             val uri = exportFolder.folderUri.first()
@@ -136,6 +142,7 @@ class HomeViewModel @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e("HomeVM", "initial folder resume failed", e)
+            _folderResumeError.value = e.message ?: "Folder resume failed"
             0
         } finally {
             _isResumingFolder.value = false
@@ -205,7 +212,7 @@ class HomeViewModel @Inject constructor(
                 onResult(imported)
             } catch (e: Exception) {
                 Log.e("HomeVM", "folder resume failed", e)
-                onResult(0)
+                _folderResumeError.value = e.message ?: "Folder resume failed"
             } finally {
                 _isResumingFolder.value = false
             }
@@ -279,6 +286,7 @@ fun HomeScreen(
     val folderName by viewModel.folderName.collectAsState()
     val isExportFolderSet by viewModel.isExportFolderSet.collectAsState()
     val isResumingFolder by viewModel.isResumingFolder.collectAsState()
+    val folderResumeError by viewModel.folderResumeError.collectAsState()
     val exportState by viewModel.exportState.collectAsState()
 
     val folderPicker = rememberLauncherForActivityResult(
@@ -303,6 +311,13 @@ fun HomeScreen(
     // Raised when the user starts a new capture with no export folder configured — the dataset
     // would live only in app-private storage (wiped by Clear App Data).
     var showNoFolderConfirm by remember { mutableStateOf(false) }
+
+    LaunchedEffect(folderResumeError) {
+        folderResumeError?.let { message ->
+            toasts.error(context.getString(R.string.home_folder_resume_failed, message))
+            viewModel.consumeFolderResumeError()
+        }
+    }
 
     // Terminal export states → launch share sheet / toast, then reset to Idle.
     LaunchedEffect(exportState) {

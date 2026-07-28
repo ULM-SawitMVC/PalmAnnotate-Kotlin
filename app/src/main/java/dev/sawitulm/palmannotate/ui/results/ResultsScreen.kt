@@ -32,6 +32,7 @@ import dev.sawitulm.palmannotate.ui.common.LocalToasts
 import dev.sawitulm.palmannotate.data.export.ExportManager
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
 import dev.sawitulm.palmannotate.data.storage.SafMirrorStore
+import dev.sawitulm.palmannotate.data.storage.SaveResult
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
 import dev.sawitulm.palmannotate.domain.model.*
 import dev.sawitulm.palmannotate.domain.quality.QualityCheck
@@ -69,6 +70,8 @@ class ResultsViewModel @Inject constructor(
         private set
     var exportStatus by mutableStateOf<String?>(null)
         private set
+    var mirrorStatus by mutableStateOf<dev.sawitulm.palmannotate.data.db.MirrorStatusEntity?>(null)
+        private set
     var showQualityGate by mutableStateOf(false)
         private set
     var qualityIssues by mutableStateOf<List<QualityCheck.Issue>>(emptyList())
@@ -82,6 +85,7 @@ class ResultsViewModel @Inject constructor(
             val s = repo.loadActiveSession(treeKey)
             session = s
             runId = repo.getTreeRunId(treeKey)
+            mirrorStatus = repo.getMirrorStatus(treeKey)
             if (s != null) {
                 // compute() walks union-find over every box — keep it off the main thread so
                 // opening Results never janks (the screen showed a spinner meanwhile anyway).
@@ -102,11 +106,12 @@ class ResultsViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val safTreeUri = exportFolder.folderUri.first()
-                repo.saveOutputJson(s, safTreeUri, awaitSafVerification = false)
-                exportStatus = "Output JSON saved"
+                when (val result = repo.saveOutputJson(s, safTreeUri, awaitSafVerification = false)) {
+                    is SaveResult.Success -> { session = s.copy(revision = result.revision); exportStatus = "Output JSON saved" }
+                    is SaveResult.Conflict -> { exportStatus = "This tree changed elsewhere (expected r${result.expectedRevision}, current r${result.actualRevision}); reopen before retrying"; return@launch }
+                    is SaveResult.Failure -> { exportStatus = result.message; return@launch }
+                }
             } catch (e: Exception) {
-                // A failed finish must NOT crash nor silently advance: surface it and stay
-                // so the operator can retry rather than leave the tree unmarked/unsaved.
                 Log.e(TAG, "finishAndThen failed", e)
                 exportStatus = e.localizedMessage ?: "Could not save Output JSON"
                 return@launch
@@ -136,8 +141,11 @@ class ResultsViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val safTreeUri = exportFolder.folderUri.first()
-                repo.saveOutputJson(s, safTreeUri)
-                exportStatus = "Output JSON saved"
+                when (val result = repo.saveOutputJson(s, safTreeUri)) {
+                    is SaveResult.Success -> { session = s.copy(revision = result.revision); exportStatus = "Output JSON saved" }
+                    is SaveResult.Conflict -> exportStatus = "Conflict: current tree revision is r${result.actualRevision}; reopen before retrying"
+                    is SaveResult.Failure -> exportStatus = result.message
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "saveOutputJson failed", e)
                 exportStatus = e.localizedMessage ?: "Save failed"
@@ -190,20 +198,24 @@ class ResultsViewModel @Inject constructor(
         )
     }
 
+    private suspend fun saveRevisionOrThrow(s: ActiveSession, safUri: Uri) {
+        when (val result = repo.saveOutputJson(s, safUri)) {
+            is SaveResult.Success -> session = s.copy(revision = result.revision)
+            is SaveResult.Conflict -> throw IllegalStateException("Conflict: current tree revision is r${result.actualRevision}; reopen before retrying")
+            is SaveResult.Failure -> throw IllegalStateException(result.message, result.cause)
+        }
+    }
+
     fun exportOutputJson() = exportGated("Output JSON") { safUri ->
         val s = session ?: return@exportGated
         if (results == null) return@exportGated
-        // Output JSON, every YOLO TXT, and the manifest are one annotation revision.
-        // Never write one format directly: a partial update could leave a same-name stale peer.
-        repo.saveOutputJson(s, safUri)
+        saveRevisionOrThrow(s, safUri)
     }
 
     fun exportYolo() = exportGated("YOLO") { safUri ->
         val s = session ?: return@exportGated
         if (results == null) return@exportGated
-        // This intentionally commits Output JSON as well: TXT and JSON must describe the same
-        // Room snapshot, including the valid empty-string TXT for a side with zero boxes.
-        repo.saveOutputJson(s, safUri)
+        saveRevisionOrThrow(s, safUri)
     }
 
     fun exportCsv() = exportGated("CSV") { safUri ->

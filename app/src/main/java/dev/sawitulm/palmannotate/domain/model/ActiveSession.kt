@@ -17,6 +17,8 @@ data class ActiveSession(
     val suggestedLinks: List<CrossSideLink>,
     val confirmedLinks: List<CrossSideLink>,
     val metadata: TreeMetadata?,
+    /** Optimistic-concurrency token copied from the committed Room tree row. */
+    val revision: Long = 0L,
     val dirty: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),

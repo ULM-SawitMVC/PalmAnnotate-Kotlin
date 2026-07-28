@@ -23,6 +23,7 @@ import android.util.Log
 import dev.sawitulm.palmannotate.data.db.SessionEntity
 import dev.sawitulm.palmannotate.data.db.TreeEntity
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
+import dev.sawitulm.palmannotate.data.storage.MirrorStates
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.first
@@ -52,6 +53,12 @@ class SessionDetailViewModel @Inject constructor(
     val trees: StateFlow<List<TreeEntity>> = runIdFlow
         .flatMapLatest { id -> if (id == null) flowOf(emptyList()) else repo.observeTrees(id) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    val mirrorStatuses = repo.observeMirrorStatuses()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun retryMirror(treeKey: String) {
+        viewModelScope.launch { repo.retryMirror(treeKey) }
+    }
 
     fun load(runId: String) {
         runIdFlow.value = runId
@@ -92,6 +99,8 @@ fun SessionDetailScreen(
     LaunchedEffect(sessionId) { viewModel.load(sessionId) }
     val run = viewModel.run
     val trees by viewModel.trees.collectAsState()
+    val mirrorStatuses by viewModel.mirrorStatuses.collectAsState()
+    val mirrorByTree = remember(mirrorStatuses) { mirrorStatuses.associateBy { it.treeKey } }
 
     Scaffold(
         topBar = {
@@ -140,6 +149,8 @@ fun SessionDetailScreen(
                             onAnnotate = { onOpenTree(tree.treeKey) },
                             onCarousel = { onOpenCarousel(tree.treeKey) },
                             onDelete = { viewModel.deleteTree(tree.treeKey) },
+                            mirrorStatus = mirrorByTree[tree.treeKey],
+                            onRetryMirror = { viewModel.retryMirror(tree.treeKey) },
                         )
                     }
                 }
@@ -194,7 +205,14 @@ private fun Stat(label: String, value: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun TreeRow(tree: TreeEntity, onAnnotate: () -> Unit, onCarousel: () -> Unit, onDelete: () -> Unit) {
+private fun TreeRow(
+    tree: TreeEntity,
+    onAnnotate: () -> Unit,
+    onCarousel: () -> Unit,
+    onDelete: () -> Unit,
+    mirrorStatus: dev.sawitulm.palmannotate.data.db.MirrorStatusEntity?,
+    onRetryMirror: () -> Unit,
+) {
     var confirm by remember { mutableStateOf(false) }
     ElevatedCard(Modifier.fillMaxWidth()) {
         Row(Modifier.padding(12.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -214,6 +232,23 @@ private fun TreeRow(tree: TreeEntity, onAnnotate: () -> Unit, onCarousel: () -> 
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                mirrorStatus?.let { status ->
+                    val label = when (status.status) {
+                        MirrorStates.VERIFIED -> "Remote verified (r${status.verifiedRevision ?: status.requestedRevision})"
+                        MirrorStates.PENDING -> "Remote mirror pending (r${status.requestedRevision})"
+                        MirrorStates.FAILED -> "Remote mirror failed: ${status.errorMessage ?: "retry required"}"
+                        else -> "Remote mirror not requested"
+                    }
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (status.status == MirrorStates.FAILED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+            }
+            if (mirrorStatus?.status == MirrorStates.FAILED) {
+                TextButton(onClick = onRetryMirror) { Text("Retry") }
             }
             if (tree.isComplete) Icon(Icons.Default.CheckCircle, stringResource(R.string.cd_complete), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(4.dp))
