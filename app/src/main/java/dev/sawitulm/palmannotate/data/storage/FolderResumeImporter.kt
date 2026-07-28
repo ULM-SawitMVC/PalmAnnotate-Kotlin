@@ -95,8 +95,10 @@ class FolderResumeImporter @Inject constructor(
         // existing caller and test compiling, and describe a legacy package honestly: no
         // identity, no operator, no GPS claim.
         val identity: CaptureSetIdentity = CaptureSetIdentity.UNKNOWN,
+        val contentDigest: String = "",
         val operatorName: String = "",
         val captureDate: String = "",
+        val capturedAtMillis: Long? = null,
         val gps: GpsProvenance = GpsProvenance.UNKNOWN,
     )
 
@@ -148,7 +150,17 @@ class FolderResumeImporter @Inject constructor(
             if (parsed != null) scanned.add(parsed)
         }
         check(scanFailures == 0) { "Failed to scan $scanFailures tree package(s)" }
+        val rejected = jsonNames.size - scanned.size
+        check(rejected == 0) { "Rejected $rejected incomplete or invalid tree package(s)" }
         if (scanned.isEmpty()) return@withContext 0
+
+        val blockedByDeletion = repo.pendingDeletionTreeNames(safTreeUri)
+            .intersect(scanned.mapTo(mutableSetOf()) { it.treeName })
+        if (blockedByDeletion.isNotEmpty()) {
+            throw SafResumeException(
+                "Resume blocked: remote deletion is still pending for ${blockedByDeletion.sorted().joinToString()}",
+            )
+        }
 
         // Dedupe against runs/trees already in Room.
         val existingTreeNames = repo.allTreeNames().toHashSet()
@@ -172,18 +184,20 @@ class FolderResumeImporter @Inject constructor(
             // blank so the resumed folder's existing filenames continue unchanged; without an
             // identity here the run would stay anonymous forever and every later capture in it
             // would ship with a blank capture set, which is the collision WS-12 exists to close.
-            val runId = existingGroupRuns[plan.groupKey]
-                ?: repo.createRun(
-                    plan.variety,
-                    plan.block,
-                    plan.sideCount,
-                    autoId = true,
-                    identity = CaptureSetIdentity(
-                        captureSetId = UUID.randomUUID().toString(),
-                        deviceToken = runCatching { inputCache.deviceToken }.getOrDefault(""),
-                        nameToken = "",
-                    ),
-                )
+            val continuingIdentity = CaptureSetIdentity(
+                captureSetId = UUID.randomUUID().toString(),
+                deviceToken = runCatching { inputCache.deviceToken }.getOrDefault(""),
+                nameToken = "",
+            )
+            val runId = existingGroupRuns[plan.groupKey]?.also {
+                repo.adoptRunProvenance(it, continuingIdentity)
+            } ?: repo.createRun(
+                plan.variety,
+                plan.block,
+                plan.sideCount,
+                autoId = true,
+                identity = continuingIdentity,
+            )
             for (tree in plan.trees) {
                 val ok = ingestTree(safTreeUri, runId, tree, imageNames)
                 if (ok) imported++ else failed++
@@ -272,8 +286,12 @@ class FolderResumeImporter @Inject constructor(
             variety = variety, block = block, groupKey = repo.groupKeyFor(variety, block),
             sides = sides, confirmedLinks = links,
             identity = PackageProvenanceCodec.readIdentity(metaJson),
+            contentDigest = manifestText?.let {
+                runCatching { JSONObject(it).optString("annotationRevision") }.getOrDefault("")
+            }.orEmpty(),
             operatorName = PackageProvenanceCodec.readOperator(metaJson),
             captureDate = PackageProvenanceCodec.readCaptureDate(metaJson),
+            capturedAtMillis = PackageProvenanceCodec.readCapturedAtMillis(metaJson),
             gps = PackageProvenanceCodec.readGps(metaJson),
         )
     }
@@ -289,17 +307,14 @@ class FolderResumeImporter @Inject constructor(
         if (existing.isEmpty()) return
         val remote = scanned.mapNotNull { tree ->
             val local = existing[tree.treeName] ?: return@mapNotNull null
-            // Both sides pre-date WS-12: there is nothing new to say, and warning on all 42
-            // trees of a legacy folder would bury the collisions that do matter.
+            // Legacy packages have no identity and older imports may not retain a local manifest
+            // digest. Keep idempotent resume possible, but never overwrite the existing Room row.
             if (!local.hasIdentity && tree.identity.captureSetId.isBlank()) return@mapNotNull null
             local to CaptureSetMergePolicy.Entry(
                 treeName = tree.treeName,
                 captureSetId = tree.identity.captureSetId,
                 deviceToken = tree.identity.deviceToken,
-                // No cheap content digest is available for a remote package here, so identity
-                // alone decides. Same identity + same name is treated as the same tree, which is
-                // the normal "resume the folder this device wrote" case.
-                contentDigest = tree.identity.captureSetId,
+                contentDigest = tree.contentDigest,
             )
         }
         if (remote.isEmpty()) return
@@ -307,9 +322,8 @@ class FolderResumeImporter @Inject constructor(
             listOf(remote.map { it.first }, remote.map { it.second }),
         )
         if (verdict is CaptureSetMergePolicy.Verdict.Conflict) {
-            for (collision in verdict.collisions) {
-                Log.w(TAG, "resume identity collision — ${collision.describe()}")
-            }
+            val details = verdict.collisions.joinToString("; ") { it.describe() }
+            throw SafResumeException("Resume identity collision — $details")
         }
     }
 
@@ -575,6 +589,7 @@ class FolderResumeImporter @Inject constructor(
             block = tree.block,
             treeId = tree.treeId.toString(),
             date = tree.captureDate,
+            capturedAtMillis = tree.capturedAtMillis,
             gps = tree.gps,
             operatorName = tree.operatorName,
             identity = tree.identity,

@@ -332,6 +332,47 @@ class SafMirrorStore(private val context: Context) {
     }
 
     /**
+     * Atomically claim a previously absent display name. DocumentsProvider serializes create and
+     * suffixes the loser (for example `name (1).json`); the suffix check turns that race into false
+     * instead of allowing two devices to believe they own the same tree path.
+     */
+    fun createTextExclusively(treeUri: Uri, relPath: String, text: String): Boolean =
+        synchronized(cacheLock) {
+            try {
+                val segments = relPath.split('/').filter { it.isNotBlank() }
+                if (segments.isEmpty()) return@synchronized false
+                val fileName = segments.last()
+                val dirSegments = segments.dropLast(1)
+                val dir = resolveDir(treeUri, dirSegments, create = true) ?: return@synchronized false
+                val children = childrenOf(treeUri, dirSegments, dir, forceRefresh = true)
+                if (children.containsKey(fileName)) return@synchronized false
+
+                val created = dir.createFile("application/json", fileName) ?: return@synchronized false
+                if (created.name != fileName) {
+                    created.delete()
+                    childrenOf(treeUri, dirSegments, dir, forceRefresh = true)
+                    return@synchronized false
+                }
+                val written = runCatching {
+                    context.contentResolver.openOutputStream(created.uri, "wt")?.use {
+                        it.write(text.toByteArray(Charsets.UTF_8))
+                        true
+                    } ?: false
+                }.getOrDefault(false)
+                if (!written) {
+                    created.delete()
+                    childrenOf(treeUri, dirSegments, dir, forceRefresh = true)
+                    return@synchronized false
+                }
+                putChild(treeUri, dirSegments, fileName, created, "application/json")
+                true
+            } catch (error: Exception) {
+                Log.w(TAG, "createTextExclusively failed for $relPath", error)
+                false
+            }
+        }
+
+    /**
      * Write binary data to <treeUri>/<relPath>.
      *
      * Uses the directory + child caches and overwrites an existing file in place
@@ -339,30 +380,50 @@ class SafMirrorStore(private val context: Context) {
      */
     fun writeBytes(treeUri: Uri, relPath: String, data: ByteArray, mimeType: String = "application/octet-stream"): Boolean =
         synchronized(cacheLock) {
-            try {
-                val segments = relPath.split('/').filter { it.isNotBlank() }
-                if (segments.isEmpty()) return@synchronized false
-                val fileName = segments.last()
-                val dirSegments = segments.dropLast(1)
+            val segments = relPath.split('/').filter { it.isNotBlank() }
+            if (segments.isEmpty()) return@synchronized false
+            val fileName = segments.last()
+            val dirSegments = segments.dropLast(1)
 
-                val dir = resolveDir(treeUri, dirSegments, create = true) ?: return@synchronized false
-                val children = childrenOf(treeUri, dirSegments, dir)
-
-                // A successful child listing proves the cached name; calling DocumentFile.exists()
-                // here would turn a provider error into false and create a duplicate.
-                val existing = children[fileName]
-                val targetUri = if (existing != null) {
-                    if (existing.isDirectory) return@synchronized false
-                    existing.document.uri
-                } else {
-                    val created = dir.createFile(mimeType, fileName) ?: return@synchronized false
-                    putChild(treeUri, dirSegments, fileName, created, mimeType)
-                    created.uri
-                }
+            fun writeTo(targetUri: Uri): Boolean = try {
                 // "wt" = write+truncate, so overwriting a smaller payload doesn't leave a tail.
-                context.contentResolver.openOutputStream(targetUri, "wt")?.use { it.write(data) }
-                    ?: return@synchronized false
-                true
+                context.contentResolver.openOutputStream(targetUri, "wt")?.use {
+                    it.write(data)
+                    true
+                } ?: false
+            } catch (error: Exception) {
+                Log.w(TAG, "SAF target became stale for $relPath", error)
+                false
+            }
+
+            fun resolveTarget(dir: DocumentFile, forceRefresh: Boolean): Uri? {
+                val children = childrenOf(treeUri, dirSegments, dir, forceRefresh = forceRefresh)
+                val existing = children[fileName]
+                if (existing != null) {
+                    if (existing.isDirectory) return null
+                    return existing.document.uri
+                }
+                val created = dir.createFile(mimeType, fileName) ?: return null
+                putChild(treeUri, dirSegments, fileName, created, mimeType)
+                return created.uri
+            }
+
+            try {
+                val dir = resolveDir(treeUri, dirSegments, create = true) ?: return@synchronized false
+                val cachedChildren = childrenOf(treeUri, dirSegments, dir)
+                val cached = cachedChildren[fileName]
+
+                // An absent cached name must be confirmed by a fresh provider listing before create;
+                // otherwise an externally-created file becomes a provider-suffixed duplicate.
+                if (cached == null) {
+                    return@synchronized resolveTarget(dir, forceRefresh = true)?.let(::writeTo) == true
+                }
+                if (cached.isDirectory) return@synchronized false
+                if (writeTo(cached.document.uri)) return@synchronized true
+
+                // External replacement/deletion invalidates the cached document ID. Relist once and
+                // retry the current provider identity; never loop on the stale handle.
+                resolveTarget(dir, forceRefresh = true)?.let(::writeTo) == true
             } catch (e: Exception) {
                 Log.w(TAG, "writeBytes failed for $relPath", e)
                 false
@@ -386,7 +447,9 @@ class SafMirrorStore(private val context: Context) {
             val fileName = segments.last()
             val dirSegments = segments.dropLast(1)
             val dir = resolveDir(treeUri, dirSegments, create = true) ?: return@synchronized null
-            val children = childrenOf(treeUri, dirSegments, dir)
+            // Streaming destinations are rare and destructive; always re-list before deleting so
+            // an externally replaced document is never addressed through a stale cached URI.
+            val children = childrenOf(treeUri, dirSegments, dir, forceRefresh = true)
             children[fileName]?.let {
                 if (it.isDirectory || !it.document.delete()) return@synchronized null
                 removeChild(treeUri, dirSegments, fileName)
@@ -625,6 +688,7 @@ class SafMirrorStore(private val context: Context) {
                 }
                 add("dataset/metadata/${treeName}.json")
                 add("dataset/manifests/${treeName}.json")
+                add("dataset/reservations/${treeName}.json")
                 add("Output JSON/${treeName}.json")
             }
             SafDeleteVerifier.verify(

@@ -76,22 +76,22 @@ class GpsProvider(private val context: Context) {
 
         val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return null
 
-        // Try GPS provider first, then network
         val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
-        var bestLocation: Location? = null
-
-        for (provider in providers) {
+        val now = System.currentTimeMillis()
+        val candidates = providers.mapNotNull { provider ->
             try {
-                val loc = lm.getLastKnownLocation(provider) ?: continue
-                if (bestLocation == null || loc.accuracy < bestLocation.accuracy) {
-                    bestLocation = loc
-                }
+                lm.getLastKnownLocation(provider)
             } catch (_: SecurityException) {
-                // Permission might have been revoked
+                null // Permission might have been revoked.
             } catch (_: IllegalArgumentException) {
-                // Provider not available
+                null // Provider not available.
             }
         }
+        // A fresh fix is always more useful than a stale but slightly more accurate one.
+        val bestLocation = candidates.minWithOrNull(
+            compareBy<Location> { !isFresh(it.time, now) }
+                .thenBy { it.accuracy.takeIf(Float::isFinite) ?: Float.MAX_VALUE },
+        )
 
         return bestLocation?.let {
             GpsLocation(it.latitude, it.longitude, it.accuracy, it.time, it.provider ?: "")
@@ -106,77 +106,56 @@ class GpsProvider(private val context: Context) {
      */
     suspend fun getCurrentLocation(timeoutMs: Long = 15_000): GpsLocation? {
         if (!hasPermission()) return null
+        val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return null
+        val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)
+            .filter { provider -> runCatching { lm.isProviderEnabled(provider) }.getOrDefault(false) }
+        if (providers.isEmpty()) return null
 
-        return withTimeoutOrNull(timeoutMs) {
-            suspendCancellableCoroutine { cont ->
-                val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
-                if (lm == null) {
-                    cont.resume(null)
-                    return@suspendCancellableCoroutine
-                }
+        val perProviderTimeout = (timeoutMs / providers.size).coerceAtLeast(1_000L)
+        for (provider in providers) {
+            requestCurrentLocation(lm, provider, perProviderTimeout)?.let { return it }
+        }
+        return null
+    }
 
-                // Try to get a single update from GPS or Network provider
-                val provider = when {
-                    lm.isProviderEnabled(LocationManager.GPS_PROVIDER) -> LocationManager.GPS_PROVIDER
-                    lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER) -> LocationManager.NETWORK_PROVIDER
-                    else -> null
-                }
-
-                if (provider == null) {
-                    cont.resume(null)
-                    return@suspendCancellableCoroutine
-                }
-
-                val listener = object : android.location.LocationListener {
-                    override fun onLocationChanged(location: Location) {
-                        try {
-                            lm.removeUpdates(this)
-                        } catch (_: Exception) {}
-                        if (cont.isActive) {
-                            cont.resume(
-                                GpsLocation(
-                                    location.latitude,
-                                    location.longitude,
-                                    location.accuracy,
-                                    location.time,
-                                    location.provider ?: provider,
-                                )
+    private suspend fun requestCurrentLocation(
+        lm: LocationManager,
+        provider: String,
+        timeoutMs: Long,
+    ): GpsLocation? = withTimeoutOrNull(timeoutMs) {
+        suspendCancellableCoroutine { cont ->
+            val listener = object : android.location.LocationListener {
+                override fun onLocationChanged(location: Location) {
+                    runCatching { lm.removeUpdates(this) }
+                    if (cont.isActive) {
+                        cont.resume(
+                            GpsLocation(
+                                location.latitude,
+                                location.longitude,
+                                location.accuracy,
+                                location.time,
+                                location.provider ?: provider,
                             )
-                        }
-                    }
-
-                    @Deprecated("Deprecated in API")
-                    override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
-                    override fun onProviderEnabled(provider: String) {}
-                    override fun onProviderDisabled(provider: String) {
-                        try {
-                            lm.removeUpdates(this)
-                        } catch (_: Exception) {}
-                        if (cont.isActive) {
-                            cont.resume(null)
-                        }
+                        )
                     }
                 }
 
-                cont.invokeOnCancellation {
-                    try {
-                        lm.removeUpdates(listener)
-                    } catch (_: Exception) {}
+                @Deprecated("Deprecated in API")
+                override fun onStatusChanged(provider: String?, status: Int, extras: android.os.Bundle?) {}
+                override fun onProviderEnabled(provider: String) {}
+                override fun onProviderDisabled(provider: String) {
+                    runCatching { lm.removeUpdates(this) }
+                    if (cont.isActive) cont.resume(null)
                 }
+            }
 
-                try {
-                    lm.requestLocationUpdates(
-                        provider,
-                        0L,    // minTime
-                        0f,    // minDistance
-                        listener,
-                        Looper.getMainLooper(),
-                    )
-                } catch (e: SecurityException) {
-                    cont.resume(null)
-                } catch (e: IllegalArgumentException) {
-                    cont.resume(null)
-                }
+            cont.invokeOnCancellation { runCatching { lm.removeUpdates(listener) } }
+            try {
+                lm.requestLocationUpdates(provider, 0L, 0f, listener, Looper.getMainLooper())
+            } catch (_: SecurityException) {
+                cont.resume(null)
+            } catch (_: IllegalArgumentException) {
+                cont.resume(null)
             }
         }
     }

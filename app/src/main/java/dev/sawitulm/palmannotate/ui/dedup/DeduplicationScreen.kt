@@ -48,8 +48,13 @@ import dev.sawitulm.palmannotate.ui.common.AnnotationCanvas
 import dev.sawitulm.palmannotate.ui.common.CanvasTool
 import dev.sawitulm.palmannotate.ui.common.linkGroupColor
 import dev.sawitulm.palmannotate.ui.common.MismatchResolveModal
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 
 private const val TAG = "DedupPerf"
@@ -80,12 +85,60 @@ class DedupViewModel @Inject constructor(
         private set
     var isLoading by mutableStateOf(true)
         private set
+    var isSaving by mutableStateOf(false)
+        private set
     var errorMessage by mutableStateOf<String?>(null)
         private set
     var selectedSideB by mutableStateOf<String?>(null) // bboxId on right canvas (sideA)
     var selectedSideA by mutableStateOf<String?>(null) // bboxId on left canvas (sideB)
     var pendingBboxId by mutableStateOf<String?>(null)
     var pendingSide by mutableIntStateOf(-1)
+
+    private val saveMutex = Mutex()
+    private var autoSaveJob: Job? = null
+    private var editGeneration = 0L
+
+    private suspend fun persistLatest(): SaveResult = saveMutex.withLock {
+        while (true) {
+            val snapshot = session ?: return@withLock SaveResult.Failure("Tree is not loaded")
+            val generation = editGeneration
+            val result = try {
+                repo.saveSession(snapshot, exportFolder.folderUri.first())
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                SaveResult.Failure(error.message ?: "Save failed", error)
+            }
+            if (result !is SaveResult.Success) return@withLock result
+            session = session?.copy(revision = result.revision)
+            if (editGeneration == generation) return@withLock result
+        }
+        @Suppress("UNREACHABLE_CODE")
+        SaveResult.Failure("Save loop terminated unexpectedly")
+    }
+
+    private fun markDirtyAndAutoSave() {
+        editGeneration++
+        if (autoSaveJob?.isActive == true) return
+        autoSaveJob = viewModelScope.launch {
+            while (true) {
+                val targetGeneration = editGeneration
+                delay(300)
+                when (val result = persistLatest()) {
+                    is SaveResult.Success -> Unit
+                    is SaveResult.Conflict -> {
+                        errorMessage = "Conflict: current tree revision is r${result.actualRevision}; reopen before retrying"
+                        return@launch
+                    }
+                    is SaveResult.Failure -> {
+                        errorMessage = result.message
+                        return@launch
+                    }
+                }
+                if (editGeneration == targetGeneration) return@launch
+            }
+        }
+    }
 
     val adjacentPairs: List<Pair<Int, Int>>
         get() = session?.adjacentPairs ?: emptyList()
@@ -216,6 +269,7 @@ class DedupViewModel @Inject constructor(
         val s = session ?: return
         val (side, id) = selectedTarget() ?: return
         session = SessionUseCases.setBboxClass(s, side, id, cls, propagate = true)
+        markDirtyAndAutoSave()
     }
 
     fun runSuggestions() {
@@ -247,6 +301,7 @@ class DedupViewModel @Inject constructor(
 
             if (a != b) {
                 s.addManualLink(a, aId, b, bId).let { session = it }
+                markDirtyAndAutoSave()
                 suggestions = suggestions.filterNot {
                     (it.sideA == a && it.bboxIdA == aId && it.sideB == b && it.bboxIdB == bId) ||
                     (it.sideA == b && it.bboxIdA == bId && it.sideB == a && it.bboxIdB == aId)
@@ -290,11 +345,13 @@ class DedupViewModel @Inject constructor(
     fun removeLink(linkId: String) {
         val s = session ?: return
         session = s.copy(confirmedLinks = s.confirmedLinks.filter { it.linkId != linkId })
+        markDirtyAndAutoSave()
     }
 
     fun confirmSuggestion(sug: SuggestedPair) {
         val s = session ?: return
         SessionUseCases.addManualLink(s, sug.sideA, sug.bboxIdA, sug.sideB, sug.bboxIdB).let { session = it }
+        markDirtyAndAutoSave()
         suggestions = suggestions - sug
     }
 
@@ -308,18 +365,14 @@ class DedupViewModel @Inject constructor(
     }
 
     fun save() {
-        val s = session ?: return
+        if (session == null) return
         viewModelScope.launch {
-            try {
-                val safTreeUri = exportFolder.folderUri.first()
-                when (val result = repo.saveSession(s, safTreeUri)) {
-                    is SaveResult.Success -> session = session?.copy(revision = result.revision)
-                    is SaveResult.Conflict -> throw IllegalStateException("Conflict: current tree revision is r${result.actualRevision}; reopen before retrying")
-                    is SaveResult.Failure -> throw IllegalStateException(result.message, result.cause)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "dedup save failed", e)
-                errorMessage = e.localizedMessage ?: "Save failed"
+            autoSaveJob?.join()
+            when (val result = persistLatest()) {
+                is SaveResult.Success -> Unit
+                is SaveResult.Conflict ->
+                    errorMessage = "Conflict: current tree revision is r${result.actualRevision}; reopen before retrying"
+                is SaveResult.Failure -> errorMessage = result.message
             }
         }
     }
@@ -330,44 +383,58 @@ class DedupViewModel @Inject constructor(
     }
 
     fun saveAndContinue(onDone: () -> Unit) {
-        val s = session ?: return
+        val s = session ?: run {
+            onDone()
+            return
+        }
+        if (isSaving) return
+        isSaving = true
         viewModelScope.launch {
             try {
-                val safTreeUri = exportFolder.folderUri.first()
-                when (val result = repo.saveSession(s, safTreeUri)) {
-                    is SaveResult.Success -> session = session?.copy(revision = result.revision)
+                autoSaveJob?.join()
+                when (val result = persistLatest()) {
+                    is SaveResult.Success -> Unit
                     is SaveResult.Conflict -> throw IllegalStateException("Conflict: current tree revision is r${result.actualRevision}; reopen before retrying")
                     is SaveResult.Failure -> throw IllegalStateException(result.message, result.cause)
                 }
+                onDone()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
                 // Don't navigate forward on a failed save — surface the error so the
                 // operator can retry rather than losing dedup work to a silent crash.
                 Log.e(TAG, "dedup saveAndContinue failed", e)
                 errorMessage = e.localizedMessage ?: "Save failed"
-                return@launch
+            } finally {
+                isSaving = false
             }
-            onDone()
         }
     }
 
     fun resolveAllMismatchesAndSave(choices: Map<String, Int>? = null, onDone: () -> Unit) {
         val s = session ?: return
+        if (isSaving) return
+        isSaving = true
         val resolved = SessionUseCases.resolveAllMismatches(s, choices)
         session = resolved
+        editGeneration++
         viewModelScope.launch {
             try {
-                val safTreeUri = exportFolder.folderUri.first()
-                when (val result = repo.saveSession(resolved, safTreeUri)) {
-                    is SaveResult.Success -> session = session?.copy(revision = result.revision)
+                autoSaveJob?.join()
+                when (val result = persistLatest()) {
+                    is SaveResult.Success -> Unit
                     is SaveResult.Conflict -> throw IllegalStateException("Conflict: current tree revision is r${result.actualRevision}; reopen before retrying")
                     is SaveResult.Failure -> throw IllegalStateException(result.message, result.cause)
                 }
+                onDone()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
                 Log.e(TAG, "dedup resolveAllMismatchesAndSave failed", e)
                 errorMessage = e.localizedMessage ?: "Save failed"
-                return@launch
+            } finally {
+                isSaving = false
             }
-            onDone()
         }
     }
 }
@@ -426,7 +493,7 @@ fun DeduplicationScreen(
     val toasts = LocalToasts.current
     val savedMsg = stringResource(R.string.dedup_saved)
     fun saveThenExit() = viewModel.saveAndContinue { toasts.success(savedMsg); onBack() }
-    BackHandler { saveThenExit() }
+    BackHandler(enabled = session != null) { saveThenExit() }
 
     var showMismatch by remember { mutableStateOf(false) }
     val mismatches = remember(session) { viewModel.currentMismatches() }
@@ -436,7 +503,10 @@ fun DeduplicationScreen(
             TopAppBar(
                 title = { Text(session?.treeName ?: stringResource(R.string.dedup_title)) },
                 navigationIcon = {
-                    IconButton(onClick = { saveThenExit() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_back)) }
+                    IconButton(
+                        onClick = { saveThenExit() },
+                        enabled = !viewModel.isSaving,
+                    ) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_back)) }
                 },
                 actions = {
                     IconButton(onClick = { viewModel.toggleDirection() }) {
@@ -448,10 +518,13 @@ fun DeduplicationScreen(
                     IconButton(onClick = { viewModel.runSuggestions() }) {
                         Icon(Icons.Default.AutoAwesome, stringResource(R.string.cd_suggest))
                     }
-                    IconButton(onClick = {
-                        if (mismatches.isNotEmpty()) showMismatch = true
-                        else viewModel.resolveAllMismatchesAndSave { onCompute() }
-                    }) {
+                    IconButton(
+                        onClick = {
+                            if (mismatches.isNotEmpty()) showMismatch = true
+                            else viewModel.resolveAllMismatchesAndSave { onCompute() }
+                        },
+                        enabled = !viewModel.isSaving,
+                    ) {
                         Icon(Icons.Default.CheckCircle, stringResource(R.string.cd_compute))
                     }
                 },
@@ -690,7 +763,9 @@ private fun DedupHalfCanvas(
             selectedBboxId = selectedId,
             imageWidth = side.imageWidth.coerceAtLeast(1),
             imageHeight = side.imageHeight.coerceAtLeast(1),
-            tool = CanvasTool.SELECT,
+            // Dedup only selects boxes; geometry editing belongs to Carousel. VIEW preserves
+            // tap-to-select without stealing horizontal drags from the surrounding pager.
+            tool = CanvasTool.VIEW,
             showBoxes = true,
             linkedBoxes = linkedBoxes,
             onBboxTap = { id -> if (id != null) onTap(id) },

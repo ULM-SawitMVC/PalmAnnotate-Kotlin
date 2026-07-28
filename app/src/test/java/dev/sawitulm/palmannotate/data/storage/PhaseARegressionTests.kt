@@ -112,6 +112,73 @@ class PhaseARegressionTest {
     }
 
     @Test
+    fun `carousel finalization performs one checked complete commit`() {
+        val source = repoFile(
+            "app/src/main/java/dev/sawitulm/palmannotate/ui/carousel/CarouselScreen.kt",
+        ).readText()
+        val saveAndExit = source.substringAfter("fun saveAndExit(onDone: () -> Unit)")
+            .substringBefore("/** Save before opening another editor/viewer")
+
+        assertFalse(saveAndExit.contains("repo.saveSession("))
+        assertTrue(saveAndExit.contains("persistLatest(markComplete = true)"))
+        assertTrue(saveAndExit.contains("is SaveResult.Success"))
+    }
+
+    @Test
+    fun `predictive back is enabled and dedup canvas does not steal pager drags`() {
+        val manifest = repoFile("app/src/main/AndroidManifest.xml").readText()
+        val dedup = repoFile(
+            "app/src/main/java/dev/sawitulm/palmannotate/ui/dedup/DeduplicationScreen.kt",
+        ).readText()
+        val halfCanvas = dedup.substringAfter("private fun DedupHalfCanvas(")
+
+        assertTrue(manifest.contains("android:enableOnBackInvokedCallback=\"true\""))
+        assertTrue(halfCanvas.contains("tool = CanvasTool.VIEW"))
+        assertFalse(halfCanvas.contains("tool = CanvasTool.SELECT"))
+    }
+
+    @Test
+    fun `remote mirror requires exclusive tree reservation before overwrite`() {
+        val store = repoFile(
+            "app/src/main/java/dev/sawitulm/palmannotate/data/storage/SafMirrorStore.kt",
+        ).readText()
+        val repository = repoFile(
+            "app/src/main/java/dev/sawitulm/palmannotate/data/storage/SessionRepository.kt",
+        ).readText()
+
+        assertTrue(store.contains("fun createTextExclusively("))
+        assertTrue(repository.contains("ensureRemoteReservation(tree, session, uri)"))
+        assertTrue(repository.contains("Remote tree path is owned by another capture"))
+    }
+
+    @Test
+    fun `newer canonical revision never receives an older journal rollback`() {
+        val repository = repoFile(
+            "app/src/main/java/dev/sawitulm/palmannotate/data/storage/SessionRepository.kt",
+        ).readText()
+        val recovery = repository.substringAfter("private suspend fun recoverPendingLocalRevisionsLocked()")
+            .substringBefore("private fun validateConfirmedLinks")
+
+        assertTrue(recovery.contains("tree.revision < pending.revision"))
+        assertTrue(recovery.contains("storage.rollbackRevision(pending)"))
+        assertTrue(recovery.contains("storage.discardRevisionState(pending)"))
+    }
+
+    @Test
+    fun `CameraX writes recoverable unique incoming draft files`() {
+        val capture = repoFile(
+            "app/src/main/java/dev/sawitulm/palmannotate/ui/capture/CaptureFlowScreen.kt",
+        ).readText()
+        val repository = repoFile(
+            "app/src/main/java/dev/sawitulm/palmannotate/data/storage/SessionRepository.kt",
+        ).readText()
+
+        assertTrue(capture.contains("createOutputFile = viewModel::preparePhoneCaptureFile"))
+        assertTrue(capture.contains("UUID.randomUUID().toString()"))
+        assertTrue(repository.contains("suspend fun recoverIncomingPhoneCaptures(runId: String)"))
+    }
+
+    @Test
     fun `valid persisted side upgrades stale preview cursor`() {
         assertTrue(CaptureDraftCursorPolicy.restoreStep("PREVIEW", hasValidSide = true) == "REVIEW")
         assertTrue(CaptureDraftCursorPolicy.restoreStep("PREVIEW", hasValidSide = false) == "PREVIEW")

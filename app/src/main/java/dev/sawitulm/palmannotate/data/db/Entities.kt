@@ -274,6 +274,9 @@ interface SessionDao {
     @Query("SELECT * FROM sessions WHERE sessionId = :id")
     suspend fun getById(id: String): SessionEntity?
 
+    @Query("SELECT * FROM sessions WHERE sessionId = :id")
+    fun observeById(id: String): Flow<SessionEntity?>
+
     /** Find an existing run for a variety+block key (C-01: one run per groupKey). */
     @Query("SELECT * FROM sessions WHERE groupKey = :groupKey LIMIT 1")
     suspend fun getByGroupKey(groupKey: String): SessionEntity?
@@ -492,6 +495,9 @@ interface MirrorDeletionDao {
 
     @Query("SELECT * FROM mirror_deletions WHERE treeKey = :treeKey")
     suspend fun getByTree(treeKey: String): MirrorDeletionEntity?
+
+    @Query("SELECT DISTINCT treeName FROM mirror_deletions WHERE remoteUri = :remoteUri AND status IN ('DELETE_PENDING', 'DELETE_FAILED')")
+    suspend fun getBlockedTreeNames(remoteUri: String): List<String>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(tombstone: MirrorDeletionEntity)

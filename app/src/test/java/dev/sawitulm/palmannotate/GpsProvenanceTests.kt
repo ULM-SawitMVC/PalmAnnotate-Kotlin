@@ -9,6 +9,7 @@ import dev.sawitulm.palmannotate.domain.model.GpsSource
 import dev.sawitulm.palmannotate.domain.model.GpsStatus
 import dev.sawitulm.palmannotate.domain.model.TreeMetadata
 import org.json.JSONObject
+import java.time.Instant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -259,6 +260,15 @@ class OperatorProvenanceTest {
         )
         assertEquals("", PackageProvenanceCodec.readCaptureDate(JSONObject()))
         assertEquals("", PackageProvenanceCodec.readCaptureDate(null))
+    }
+
+    @Test fun `legacy capture timestamp survives resume as the original instant`() {
+        val timestamp = "2026-07-28T03:34:44.631Z"
+        assertEquals(
+            Instant.parse(timestamp).toEpochMilli(),
+            PackageProvenanceCodec.readCapturedAtMillis(JSONObject().put("timestamp", timestamp)),
+        )
+        assertEquals(null, PackageProvenanceCodec.readCapturedAtMillis(JSONObject()))
     }
 
     @Test fun `identity round-trips through the sidecar`() {

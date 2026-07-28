@@ -347,7 +347,10 @@ class DatasetZipExporter @Inject constructor(
                     hasAnyDepth = hasAnyDepth,
                     hasValidDepth = hasValidDepth,
                     hasVerifiedDepthBinding = hasVerifiedDepthBinding,
-                    rejectUnverifiedLegacy = true,
+                    // Resume accepts legacy packages with explicit IMPORTED_LEGACY provenance.
+                    // Backup must remain available for those trees; the marker is preserved rather
+                    // than laundering them into a verified camera origin.
+                    rejectUnverifiedLegacy = false,
                 )
                 decision.error?.let {
                     return "side ${side.sideIndex + 1}: $it"

@@ -20,6 +20,7 @@ internal object ArtifactIdentityPolicy {
     fun collisionProbePaths(treeName: String, sideIndices: List<Int>): List<String> =
         buildList {
             add("dataset/manifests/$treeName.json")
+            add("dataset/reservations/$treeName.json")
             add("dataset/metadata/$treeName.json")
             add("Output JSON/$treeName.json")
             for (sideIndex in sideIndices) {

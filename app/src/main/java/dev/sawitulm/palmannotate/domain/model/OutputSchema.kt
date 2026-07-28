@@ -49,19 +49,43 @@ object OutputSchema {
         for (key in images.keys()) {
             val s = images.getJSONObject(key)
             val sideIndex = s.optInt("side_index", key.removePrefix("side_").toIntOrNull()?.minus(1) ?: continue)
+            val imageWidth = s.optInt("width", s.optInt("imageWidth"))
+            val imageHeight = s.optInt("height", s.optInt("imageHeight"))
             val anns = s.optJSONArray("annotations") ?: org.json.JSONArray()
             val bboxes = ArrayList<ParsedBbox>()
             for (i in 0 until anns.length()) {
                 val a = anns.getJSONObject(i)
-                val px = a.optJSONArray("bbox_pixel") ?: continue
+                val px = a.optJSONArray("bbox_pixel")
+                val yolo = a.optJSONArray("bbox_yolo")
+                val coords = when {
+                    yolo != null && yolo.length() >= 4 && imageWidth > 0 && imageHeight > 0 -> {
+                        val cx = yolo.optDouble(0, Double.NaN)
+                        val cy = yolo.optDouble(1, Double.NaN)
+                        val width = yolo.optDouble(2, Double.NaN)
+                        val height = yolo.optDouble(3, Double.NaN)
+                        if (listOf(cx, cy, width, height).all { it.isFinite() }) {
+                            floatArrayOf(
+                                ((cx - width / 2.0) * imageWidth).toFloat(),
+                                ((cy - height / 2.0) * imageHeight).toFloat(),
+                                ((cx + width / 2.0) * imageWidth).toFloat(),
+                                ((cy + height / 2.0) * imageHeight).toFloat(),
+                            )
+                        } else null
+                    }
+                    else -> null
+                } ?: px?.let {
+                    floatArrayOf(
+                        it.optDouble(0, 0.0).toFloat(), it.optDouble(1, 0.0).toFloat(),
+                        it.optDouble(2, 0.0).toFloat(), it.optDouble(3, 0.0).toFloat(),
+                    )
+                } ?: continue
                 val boxIndex = a.optInt("box_index", i)
                 val classId = a.optInt("class_id", AnnotationClass.fromName(a.optString("class_name", "U")).id)
                 val cls = AnnotationClass.fromId(classId)
                 bboxes.add(
                     ParsedBbox(
                         id = "b$boxIndex", classId = cls.id, className = cls.displayName,
-                        x1 = px.optDouble(0, 0.0).toFloat(), y1 = px.optDouble(1, 0.0).toFloat(),
-                        x2 = px.optDouble(2, 0.0).toFloat(), y2 = px.optDouble(3, 0.0).toFloat(),
+                        x1 = coords[0], y1 = coords[1], x2 = coords[2], y2 = coords[3],
                     )
                 )
             }

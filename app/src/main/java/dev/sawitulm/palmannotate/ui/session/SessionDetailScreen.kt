@@ -45,10 +45,11 @@ class SessionDetailViewModel @Inject constructor(
     private val exportFolder: ExportFolderRepository,
 ) : ViewModel() {
 
-    var run by mutableStateOf<SessionEntity?>(null)
-        private set
-
     private val runIdFlow = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+
+    val run: StateFlow<SessionEntity?> = runIdFlow
+        .flatMapLatest { id -> if (id == null) flowOf(null) else repo.observeRun(id) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
     val trees: StateFlow<List<TreeEntity>> = runIdFlow
         .flatMapLatest { id -> if (id == null) flowOf(emptyList()) else repo.observeTrees(id) }
@@ -62,7 +63,6 @@ class SessionDetailViewModel @Inject constructor(
 
     fun load(runId: String) {
         runIdFlow.value = runId
-        viewModelScope.launch { run = repo.getRun(runId) }
     }
 
     fun deleteTree(treeKey: String) {
@@ -74,7 +74,6 @@ class SessionDetailViewModel @Inject constructor(
                 // by the "mirror once if absent" guard, leaving the OLD photo in the export.
                 val safTreeUri = exportFolder.folderUri.first()
                 repo.deleteTree(treeKey, safTreeUri)
-                run?.let { run = repo.getRun(it.sessionId) } // refresh nextId
             } catch (e: Exception) {
                 Log.e("SessionDetailVM", "deleteTree failed", e)
             }
@@ -97,7 +96,7 @@ fun SessionDetailScreen(
     viewModel: SessionDetailViewModel = hiltViewModel(),
 ) {
     LaunchedEffect(sessionId) { viewModel.load(sessionId) }
-    val run = viewModel.run
+    val run by viewModel.run.collectAsState()
     val trees by viewModel.trees.collectAsState()
     val mirrorStatuses by viewModel.mirrorStatuses.collectAsState()
     val mirrorByTree = remember(mirrorStatuses) { mirrorStatuses.associateBy { it.treeKey } }

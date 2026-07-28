@@ -36,12 +36,15 @@ import dev.sawitulm.palmannotate.R
 import dev.sawitulm.palmannotate.ui.theme.PalmColors
 import dev.sawitulm.palmannotate.data.detection.OnnxDetector
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
+import dev.sawitulm.palmannotate.data.storage.SaveResult
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
 import dev.sawitulm.palmannotate.domain.model.*
 import dev.sawitulm.palmannotate.domain.usecase.SessionUseCases
 import dev.sawitulm.palmannotate.domain.util.OperationQueue
 import dev.sawitulm.palmannotate.ui.common.AnnotationCanvas
 import dev.sawitulm.palmannotate.ui.common.CanvasTool
+import dev.sawitulm.palmannotate.ui.common.LocalToasts
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -73,6 +76,9 @@ class CarouselViewModel @Inject constructor(
     var mode by mutableStateOf(CarouselMode.REVIEW)
     var isLoading by mutableStateOf(true)
     var isSaving by mutableStateOf(false)
+        private set
+    var saveErrorMessage by mutableStateOf<String?>(null)
+        private set
     var linkArmed by mutableStateOf(false)
     /** Pending link source — mirrors dedup's pendingBboxId/pendingSide pattern.
      *  Set when user selects a box and taps Link; cleared on link creation or cancel. */
@@ -96,6 +102,7 @@ class CarouselViewModel @Inject constructor(
     // Unpersisted-edit flag so auto-save is a no-op when nothing changed (avoids
     // re-writing identical label/SAF artifacts on every swipe or mode toggle).
     private var dirty = false
+    private var editGeneration = 0L
 
     val currentSide: TreeSide?
         get() = session?.sides?.getOrNull(currentSideIndex)
@@ -146,26 +153,73 @@ class CarouselViewModel @Inject constructor(
         editTool = CanvasTool.SELECT
     }
 
-    /**
-     * Silent persistence (no busy overlay): writes DB + local artifacts synchronously and
-     * mirrors SAF in the background. No-op unless [dirty]. Called on side change / mode
-     * toggle / exit so the operator never has to remember to "Save".
-     */
-    /** Serializes autosaves so a fast side-swipe can't launch two concurrent saves whose IO
-     *  reorders and persists the OLDER snapshot — silently dropping an edit. The Mutex is fair
-     *  (FIFO), so saves commit in the order they were queued, and it keeps autosave SILENT (no
-     *  busy overlay), unlike the opq-driven save()/saveAndExit(). */
+    /** Serializes all Carousel saves so revision tokens are applied in commit order. */
     private val autoSaveMutex = kotlinx.coroutines.sync.Mutex()
 
+    private fun markDirty() {
+        dirty = true
+        editGeneration++
+    }
+
+    private suspend fun persistLatest(markComplete: Boolean): SaveResult {
+        while (true) {
+            val snapshot = withContext(Dispatchers.Main.immediate) { session }
+                ?: return SaveResult.Failure("Tree is not loaded")
+            val generation = withContext(Dispatchers.Main.immediate) { editGeneration }
+            val result = try {
+                val safTreeUri = exportFolder.folderUri.first()
+                if (markComplete) {
+                    repo.saveOutputJson(snapshot, safTreeUri, awaitSafVerification = false)
+                } else {
+                    repo.saveSession(snapshot, safTreeUri)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                SaveResult.Failure(error.message ?: "Save failed", error)
+            }
+            if (result !is SaveResult.Success) return result
+
+            val stable = withContext(Dispatchers.Main.immediate) {
+                session = session?.copy(revision = result.revision)
+                val unchanged = editGeneration == generation
+                if (unchanged) dirty = false
+                unchanged
+            }
+            if (stable) return result
+        }
+    }
+
+    private suspend fun reportSaveFailure(result: SaveResult) {
+        val message = when (result) {
+            is SaveResult.Success -> return
+            is SaveResult.Conflict ->
+                "Tree changed while saving (current revision r${result.actualRevision}). Reopen it before editing again."
+            is SaveResult.Failure -> result.message
+        }
+        withContext(Dispatchers.Main.immediate) {
+            dirty = true
+            saveErrorMessage = message
+        }
+    }
+
+    fun consumeSaveError() {
+        saveErrorMessage = null
+    }
+
+    /**
+     * Silent persistence (no busy overlay). A failed/conflicting save stays dirty and never emits
+     * the saved pulse; a successful save publishes the returned revision into the live snapshot.
+     */
     fun autoSave() {
-        if (!dirty) return
-        val s = session ?: return
-        dirty = false
+        if (!dirty || session == null) return
         viewModelScope.launch {
             autoSaveMutex.withLock {
-                val safTreeUri = exportFolder.folderUri.first()
-                repo.saveSession(s, safTreeUri)
-                savedTick = System.currentTimeMillis()
+                if (!dirty) return@withLock
+                when (val result = persistLatest(markComplete = false)) {
+                    is SaveResult.Success -> savedTick = System.currentTimeMillis()
+                    else -> reportSaveFailure(result)
+                }
             }
         }
     }
@@ -178,14 +232,14 @@ class CarouselViewModel @Inject constructor(
     fun changeBboxClass(bboxId: String, newClass: AnnotationClass) {
         val s = session ?: return
         session = SessionUseCases.setBboxClass(s, currentSideIndex, bboxId, newClass, propagate = true)
-        dirty = true
+        markDirty()
     }
 
     fun deleteBbox(bboxId: String) {
         val s = session ?: return
         session = SessionUseCases.deleteBbox(s, currentSideIndex, bboxId)
         selectedBboxId = null
-        dirty = true
+        markDirty()
     }
 
     fun addBbox(x1: Float, y1: Float, x2: Float, y2: Float) {
@@ -196,13 +250,13 @@ class CarouselViewModel @Inject constructor(
         val newId = Bbox.nextId(side.bboxes, "b")
         session = SessionUseCases.addBbox(s, currentSideIndex, x1, y1, x2, y2)
         selectedBboxId = newId
-        dirty = true
+        markDirty()
     }
 
     fun updateBbox(bboxId: String, x1: Float, y1: Float, x2: Float, y2: Float) {
         val s = session ?: return
         session = SessionUseCases.updateBbox(s, currentSideIndex, bboxId, x1, y1, x2, y2)
-        dirty = true
+        markDirty()
     }
 
     fun armLink() {
@@ -238,7 +292,7 @@ class CarouselViewModel @Inject constructor(
         // is deselected after linking and tapping a class is a no-op ("can't change the class
         // after linking"). Changing it now propagates to the whole cluster and auto-saves.
         selectedBboxId = targetBboxId
-        dirty = true
+        markDirty()
     }
 
     /**
@@ -284,39 +338,56 @@ class CarouselViewModel @Inject constructor(
     }
 
     fun save() {
-        val s = session ?: return
+        if (session == null || isSaving) return
+        isSaving = true
         opq.enqueue("save-carousel") {
-            autoSaveMutex.withLock {
-                val safTreeUri = exportFolder.folderUri.first()
-                repo.saveSession(s, safTreeUri)
+            try {
+                val result = autoSaveMutex.withLock { persistLatest(markComplete = false) }
+                if (result !is SaveResult.Success) reportSaveFailure(result)
+            } finally {
+                withContext(Dispatchers.Main.immediate) { isSaving = false }
             }
         }
     }
 
     fun saveAndExit(onDone: () -> Unit) {
-        val s = session ?: return
+        if (session == null) {
+            onDone()
+            return
+        }
+        if (isSaving) return
+        if (isDetecting) {
+            saveErrorMessage = "Wait for detection to finish before leaving this tree."
+            return
+        }
+        isSaving = true
         opq.enqueue("save-carousel") {
-            autoSaveMutex.withLock {
-                val safTreeUri = exportFolder.folderUri.first()
-                repo.saveSession(s, safTreeUri)
-                // Finalize only when actually leaving the annotation workflow.
-                // The local package and completion flag remain synchronous. SAF mirror +
-                // read-back verification stay serialized on the repository's background queue.
-                repo.saveOutputJson(s, safTreeUri, awaitSafVerification = false)
+            try {
+                // One revision commit both persists the latest snapshot and marks the tree complete.
+                // Calling saveSession first made this second commit use a stale revision forever.
+                when (val result = autoSaveMutex.withLock { persistLatest(markComplete = true) }) {
+                    is SaveResult.Success -> withContext(Dispatchers.Main.immediate) { onDone() }
+                    else -> reportSaveFailure(result)
+                }
+            } finally {
+                withContext(Dispatchers.Main.immediate) { isSaving = false }
             }
-            withContext(Dispatchers.Main) { onDone() }
         }
     }
 
     /** Save before opening another editor/viewer, without falsely marking the tree complete. */
     fun saveAndNavigate(onDone: () -> Unit) {
-        val s = session ?: return
+        if (session == null || isSaving || isDetecting) return
+        isSaving = true
         opq.enqueue("save-carousel") {
-            autoSaveMutex.withLock {
-                val safTreeUri = exportFolder.folderUri.first()
-                repo.saveSession(s, safTreeUri)
+            try {
+                when (val result = autoSaveMutex.withLock { persistLatest(markComplete = false) }) {
+                    is SaveResult.Success -> withContext(Dispatchers.Main.immediate) { onDone() }
+                    else -> reportSaveFailure(result)
+                }
+            } finally {
+                withContext(Dispatchers.Main.immediate) { isSaving = false }
             }
-            withContext(Dispatchers.Main) { onDone() }
         }
     }
 
@@ -366,7 +437,7 @@ class CarouselViewModel @Inject constructor(
                     originalBboxes = baseline,
                 )
                 session = s.copy(sides = updatedSides)
-                if (newBoxes.isNotEmpty()) dirty = true
+                if (newBoxes.isNotEmpty()) markDirty()
             } catch (_: Exception) {
             } finally {
                 isDetecting = false
@@ -440,8 +511,16 @@ fun CarouselScreen(
     // below, leaving Edit always re-enables swiping.
     LaunchedEffect(viewModel.mode, viewModel.currentSideIndex) { isEditingBox = false }
 
-    // System / gesture back also saves before leaving.
-    BackHandler { viewModel.saveAndExit { onBack() } }
+    // While no session exists there is nothing to save, so let NavHost handle Back normally.
+    BackHandler(enabled = session != null) { viewModel.saveAndExit { onBack() } }
+
+    val toasts = LocalToasts.current
+    LaunchedEffect(viewModel.saveErrorMessage) {
+        viewModel.saveErrorMessage?.let {
+            toasts.error(it)
+            viewModel.consumeSaveError()
+        }
+    }
 
     // Brief "Tersimpan ✓" pulse whenever an auto-save completes.
     var showSaved by remember { mutableStateOf(false) }
@@ -468,7 +547,10 @@ fun CarouselScreen(
                 },
                 navigationIcon = {
                     // Save-then-leave so edits are never lost by tapping Back.
-                    IconButton(onClick = { viewModel.saveAndExit { onBack() } }) {
+                    IconButton(
+                        onClick = { viewModel.saveAndExit { onBack() } },
+                        enabled = !viewModel.isSaving && !viewModel.isDetecting,
+                    ) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_back))
                     }
                 },
@@ -531,7 +613,8 @@ fun CarouselScreen(
                 showBoxes = viewModel.showBoxes,
                 reverseSwipe = viewModel.reverseSwipe,
                 linkArmed = viewModel.linkArmed,
-                isSave = viewModel.isSaving,
+                isSaving = viewModel.isSaving || viewModel.isDetecting,
+                nextTreeEnabled = viewModel.runId != null,
                 editMode = viewModel.mode == CarouselMode.EDIT,
                 editTool = viewModel.editTool,
                 onToggleDraw = { viewModel.toggleDrawTool() },
@@ -543,9 +626,9 @@ fun CarouselScreen(
                 onCancelLink = { viewModel.cancelLink() },
                 onSaveExit = { viewModel.saveAndExit { onBack() } },
                 onNextTree = {
-                    val rid = viewModel.runId
-                    if (rid != null) viewModel.saveAndExit { onNextTree(rid) }
-                    else viewModel.saveAndExit { onBack() }
+                    viewModel.runId?.let { rid ->
+                        viewModel.saveAndExit { onNextTree(rid) }
+                    }
                 },
             )
         },
@@ -723,7 +806,8 @@ private fun CarouselBottomBar(
     showBoxes: Boolean,
     reverseSwipe: Boolean,
     linkArmed: Boolean,
-    isSave: Boolean,
+    isSaving: Boolean,
+    nextTreeEnabled: Boolean,
     editMode: Boolean,
     editTool: CanvasTool,
     onToggleDraw: () -> Unit,
@@ -860,10 +944,12 @@ private fun CarouselBottomBar(
             ) {
                 OutlinedButton(
                     onClick = onSaveExit,
+                    enabled = !isSaving,
                     modifier = Modifier.weight(1f).height(48.dp),
                 ) { Text(stringResource(R.string.carousel_save_exit), style = MaterialTheme.typography.labelLarge) }
                 Button(
                     onClick = onNextTree,
+                    enabled = !isSaving && nextTreeEnabled,
                     modifier = Modifier.weight(1f).height(48.dp),
                 ) { Text(stringResource(R.string.carousel_next_tree), style = MaterialTheme.typography.labelLarge) }
             }

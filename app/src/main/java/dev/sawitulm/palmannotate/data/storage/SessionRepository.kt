@@ -1,5 +1,6 @@
 package dev.sawitulm.palmannotate.data.storage
 
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Log
 import androidx.room.withTransaction
@@ -8,6 +9,7 @@ import dev.sawitulm.palmannotate.data.export.CaptureSetMergePolicy
 import dev.sawitulm.palmannotate.data.export.ExportManager
 import dev.sawitulm.palmannotate.data.yolo.YoloParser
 import dev.sawitulm.palmannotate.domain.model.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -121,6 +123,8 @@ class SessionRepository(
         sessionDao.getById(sessionId)
     }
 
+    fun observeRun(sessionId: String): Flow<SessionEntity?> = sessionDao.observeById(sessionId)
+
     private fun normToken(s: String) = s.uppercase().replace(Regex("[^A-Z0-9]"), "")
     fun groupKeyFor(variety: String, block: String) = "${normToken(variety)}__${normToken(block)}"
 
@@ -190,6 +194,18 @@ class SessionRepository(
      * transaction; writes nothing when there is nothing to change, so re-opening a fully
      * provisioned run does not churn `updatedAt` (which orders the home list).
      */
+    suspend fun adoptRunProvenance(
+        sessionId: String,
+        identity: CaptureSetIdentity,
+        operatorName: String = "",
+    ) = withContext(Dispatchers.IO) {
+        db.withTransaction {
+            sessionDao.getById(sessionId)?.let {
+                adoptRunProvenanceLocked(it, identity, operatorName)
+            }
+        }
+    }
+
     private suspend fun adoptRunProvenanceLocked(
         existing: SessionEntity,
         identity: CaptureSetIdentity,
@@ -223,6 +239,9 @@ class SessionRepository(
         artifactCoordinator.withExclusiveAccess {
             withContext(Dispatchers.IO) {
                 val trees = treeDao.getBySession(sessionId)
+                check(storage.discardUncommittedDraft(sessionId)) {
+                    "Cannot delete capture draft for run $sessionId"
+                }
                 trees.forEach { tree ->
                     ArtifactIdentityPolicy.treeNameError(tree.treeName)?.let {
                         throw IllegalArgumentException(
@@ -283,25 +302,23 @@ class SessionRepository(
         ArtifactIdentityPolicy.sideSetError(sides.map { it.sideIndex })?.let {
             throw IllegalArgumentException("Invalid capture package: $it")
         }
-        // SAF collision probing is advisory and deliberately outside ArtifactCoordinator. A slow
-        // or revoked DocumentsProvider must never block local Room/filesystem commits. The local
-        // tree-name uniqueness check below remains the definitive in-process identity guard.
+        // A provider failure is not evidence that a path is absent. Fail closed before committing
+        // a name that could later overwrite another tablet's package in the shared SAF folder.
         if (safTreeUri != null) {
-            val remoteCollision = withContext(Dispatchers.IO) {
-                runCatching {
-                    // One batched probe, not one probe per path: existsAll queries each distinct
-                    // directory freshly exactly once. The verdict is read back in probe order so
-                    // the reported colliding path is the same one the per-path loop reported.
-                    val probePaths = ArtifactIdentityPolicy.collisionProbePaths(
-                        treeName,
-                        sides.map { it.sideIndex },
-                    )
-                    val states = saf.existsAll(safTreeUri, probePaths)
-                    probePaths.firstOrNull { states[it] == SafPathState.Present }
-                }.getOrNull()
-            }
-            check(remoteCollision == null) {
-                "Tree name already exists in the export folder: $treeName"
+            withContext(Dispatchers.IO) {
+                val probePaths = ArtifactIdentityPolicy.collisionProbePaths(
+                    treeName,
+                    sides.map { it.sideIndex },
+                )
+                val states = saf.existsAll(safTreeUri, probePaths)
+                val inaccessible = probePaths.firstOrNull { states[it] is SafPathState.Inaccessible }
+                check(inaccessible == null) {
+                    "Cannot verify tree-name availability in the export folder: $inaccessible"
+                }
+                val remoteCollision = probePaths.firstOrNull { states[it] == SafPathState.Present }
+                check(remoteCollision == null) {
+                    "Tree name already exists in the export folder: $treeName ($remoteCollision)"
+                }
             }
         }
         return artifactCoordinator.withExclusiveAccess {
@@ -398,12 +415,14 @@ class SessionRepository(
         //    output boundary, so an unset operator is never confused with someone named UNKNOWN.
         //  - captureDate: never defaulted to today. An unknown capture day stays unknown rather
         //    than being relabelled with the day the folder happened to be resumed.
-        val committedIdentity = metadata?.identity?.takeIf { it.isKnown }
+        // A non-null metadata record belongs to an existing/imported package. Preserve its unknown
+        // values honestly; only a fresh local capture (metadata absent) inherits run provenance.
+        val committedIdentity = metadata?.identity
             ?: CaptureSetIdentity(run.captureSetId, run.deviceToken, run.nameToken)
         val committedGps = metadata?.gps ?: GpsProvenance.UNKNOWN
-        val committedOperator = (metadata?.operatorName?.trim()?.takeIf { it.isNotEmpty() }
-            ?: run.operatorName.trim())
+        val committedOperator = metadata?.operatorName?.trim() ?: run.operatorName.trim()
         val captureDate = metadata?.date?.trim().orEmpty()
+        val capturedAtMillis = metadata?.capturedAtMillis ?: now
 
         // Prepare every synchronous local sidecar before Room exposes the tree. The DB row is
         // the commit marker, so failed/partial files can never become an exportable tree.
@@ -413,7 +432,7 @@ class SessionRepository(
             gps = committedGps,
             operatorName = committedOperator,
             captureDate = captureDate,
-            atMillis = now,
+            atMillis = capturedAtMillis,
         ).toString(2)
         storage.writeText(storage.metadataFile(treeName), metaJson)
         writeLocalArtifacts(treeName, split, sides)
@@ -450,7 +469,7 @@ class SessionRepository(
                     treeKey = treeKey, sessionId = sessionId, treeName = treeName, treeId = treeId,
                     split = split, sideCount = declaredSideCount,
                     variety = metadata?.variety ?: run.variety, block = metadata?.block ?: run.block,
-                    createdAt = now, updatedAt = now,
+                    createdAt = capturedAtMillis, updatedAt = now,
                     // WS-12/WS-13: identity and provenance are frozen with the capture. A resumed
                     // tree keeps the identity recorded in ITS sidecar (metadata.identity), which
                     // is why the run's identity is only the fallback for a fresh local capture.
@@ -546,6 +565,13 @@ class SessionRepository(
         // fallback for trees that were never mirrored.
         val persistedRemoteUri = mirrorDao.getByTree(tree.treeKey)?.remoteUri
         val remote = persistedRemoteUri ?: explicitRemoteUri?.toString()
+        if (remote != null) {
+            val session = loadActiveSessionWhileExclusive(tree.treeKey)
+                ?: throw IllegalStateException("Cannot load tree before remote deletion")
+            check(ensureRemoteReservation(tree, session, Uri.parse(remote))) {
+                "Remote delete ownership could not be claimed"
+            }
+        }
         return remote?.let {
             MirrorDeletionEntity(
                 treeKey = tree.treeKey,
@@ -786,6 +812,7 @@ class SessionRepository(
         block = block,
         treeId = treeId.toString(),
         date = captureDate,
+        capturedAtMillis = createdAt,
         gps = GpsProvenance(
             status = GpsStatus.fromPersisted(gpsStatus),
             latitude = gpsLatitude,
@@ -1256,6 +1283,43 @@ class SessionRepository(
         return loadCaptureDraftLocked(runId) ?: error("Capture draft could not be created")
     }
 
+    suspend fun recoverIncomingPhoneCaptures(runId: String) = withContext(Dispatchers.IO) {
+        val root = storage.captureDraftDir(runId)
+        val incomingPattern = Regex("^side_(\\d+)\\.[A-Za-z0-9-]+\\.incoming\\.jpg$")
+        root.listFiles()?.filter { it.isFile }?.sortedBy { it.lastModified() }?.forEach { incoming ->
+            val sideIndex = incomingPattern.matchEntire(incoming.name)
+                ?.groupValues?.getOrNull(1)?.toIntOrNull()?.minus(1)
+                ?: return@forEach
+            val generation = beginCaptureDraftSideWrite(runId, sideIndex)
+            val accepted = try {
+                val bytes = JpegOrientationNormalizer.normalize(incoming.readBytes())
+                val dimensions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, dimensions)
+                check(dimensions.outWidth > 0 && dimensions.outHeight > 0) {
+                    "Recovered CameraX JPEG has zero dimensions"
+                }
+                persistCaptureDraftSide(
+                    runId = runId,
+                    sideIndex = sideIndex,
+                    generation = generation,
+                    imageBytes = bytes,
+                    imageWidth = dimensions.outWidth,
+                    imageHeight = dimensions.outHeight,
+                    captureOrigin = CaptureOrigin.PHONE_CAMERA,
+                    depthRequired = false,
+                )
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Log.w(TAG, "Could not recover incoming phone capture ${incoming.path}", error)
+                false
+            }
+            if (accepted && !storage.deleteFile(incoming)) {
+                Log.w(TAG, "Could not remove recovered phone capture ${incoming.path}")
+            }
+        }
+    }
+
     suspend fun loadCaptureDraft(runId: String): CaptureDraftSnapshot? = withContext(Dispatchers.IO) {
         draftLock(runId).withLock { loadCaptureDraftLocked(runId) }
     }
@@ -1537,6 +1601,19 @@ class SessionRepository(
             updatedAt = System.currentTimeMillis(),
         ) > 0
 
+    private fun deletionOwnsRemote(requested: MirrorDeletionEntity): Boolean {
+        val uri = Uri.parse(requested.remoteUri)
+        val path = "dataset/reservations/${requested.treeName}.json"
+        return when (val reservation = saf.readBytesResult(uri, path)) {
+            SafReadResult.Absent -> true // Package predates reservations; preserve legacy behavior.
+            is SafReadResult.Inaccessible -> false
+            is SafReadResult.Success -> runCatching {
+                JSONObject(reservation.bytes.toString(Charsets.UTF_8))
+                    .optString("treeKey") == requested.treeKey
+            }.getOrDefault(false)
+        }
+    }
+
     private suspend fun runDeleteMirrorJob(requested: MirrorDeletionEntity) {
         // If a replacement tree with the same on-disk identity was committed before this queued
         // delete ran, never delete its remote package. Its own mirror request will converge SAF.
@@ -1557,6 +1634,9 @@ class SessionRepository(
         }
         if (superseded || !markDeletionAttempting(requested)) return
         try {
+            check(deletionOwnsRemote(requested)) {
+                "Remote delete ownership could not be verified"
+            }
             when (val result = saf.deleteDatasetTree(Uri.parse(requested.remoteUri), requested.treeName, requested.sideCount)) {
                 SafDeleteResult.Verified -> markDeletionVerified(requested)
                 is SafDeleteResult.Failed ->
@@ -1565,6 +1645,86 @@ class SessionRepository(
         } catch (error: Throwable) {
             markDeletionFailed(requested, error)
             Log.w(TAG, "SAF delete failed for ${requested.treeName}", error)
+        }
+    }
+
+    private fun remoteCaptureMatches(session: ActiveSession, uri: Uri): Boolean {
+        val metadataText = when (val read = saf.readBytesResult(
+            uri,
+            "dataset/metadata/${session.treeName}.json",
+        )) {
+            is SafReadResult.Success -> read.bytes.toString(Charsets.UTF_8)
+            else -> return false
+        }
+        return runCatching {
+            val metadata = JSONObject(metadataText)
+            if (metadata.optString("name") != session.treeName) return@runCatching false
+            val remoteIdentity = PackageProvenanceCodec.readIdentity(metadata)
+            val localIdentity = session.metadata?.identity ?: CaptureSetIdentity.UNKNOWN
+            if (remoteIdentity.isKnown && localIdentity.isKnown && remoteIdentity != localIdentity) {
+                return@runCatching false
+            }
+            val artifacts = metadata.optJSONObject("artifacts")?.optJSONArray("sides")
+                ?: return@runCatching false
+            val hashes = (0 until artifacts.length()).associate { index ->
+                val side = artifacts.getJSONObject(index)
+                side.getInt("sideIndex") to side.optString("rgbSha256")
+            }
+            session.sides.all { side ->
+                side.rgbSha256.isNotBlank() &&
+                    hashes[side.sideIndex].equals(side.rgbSha256, ignoreCase = true)
+            }
+        }.getOrDefault(false)
+    }
+
+    private fun ensureRemoteReservation(
+        tree: TreeEntity,
+        session: ActiveSession,
+        uri: Uri,
+    ): Boolean {
+        val path = "dataset/reservations/${tree.treeName}.json"
+        val reservation = JSONObject().apply {
+            put("treeName", tree.treeName)
+            put("treeKey", tree.treeKey)
+            put("captureSetId", tree.captureSetId)
+            put("deviceToken", tree.deviceToken)
+        }.toString()
+        fun ownership(bytes: ByteArray): Int = runCatching {
+            val json = JSONObject(bytes.toString(Charsets.UTF_8))
+            when {
+                json.optString("treeKey") == tree.treeKey -> 2
+                tree.captureSetId.isNotBlank() &&
+                    json.optString("captureSetId") == tree.captureSetId &&
+                    json.optString("deviceToken") == tree.deviceToken -> 1
+                else -> 0
+            }
+        }.getOrDefault(0)
+        fun acceptOwned(bytes: ByteArray): Boolean = when (ownership(bytes)) {
+            2 -> true
+            1 -> saf.writeText(uri, path, reservation) // Transfer a durable capture after resume.
+            else -> false
+        }
+
+        when (val existing = saf.readBytesResult(uri, path)) {
+            is SafReadResult.Success -> return acceptOwned(existing.bytes)
+            is SafReadResult.Inaccessible -> return false
+            SafReadResult.Absent -> Unit
+        }
+
+        val probePaths = ArtifactIdentityPolicy.collisionProbePaths(
+            tree.treeName,
+            session.sides.map { it.sideIndex },
+        )
+        val states = saf.existsAll(uri, probePaths)
+        if (states.values.any { it is SafPathState.Inaccessible }) return false
+        if (states.values.any { it == SafPathState.Present } && !remoteCaptureMatches(session, uri)) {
+            return false
+        }
+
+        if (saf.createTextExclusively(uri, path, reservation)) return true
+        return when (val raced = saf.readBytesResult(uri, path)) {
+            is SafReadResult.Success -> acceptOwned(raced.bytes)
+            else -> false
         }
     }
 
@@ -1580,6 +1740,13 @@ class SessionRepository(
         if (!markMirrorAttempting(requested)) return
         if (deletionBlocksMirror(requested.treeKey)) return
         try {
+            val tree = treeDao.getByKey(requested.treeKey)
+                ?: throw IllegalStateException("Mirror tree no longer exists")
+            val session = loadActiveSession(requested.treeKey)
+                ?: throw IllegalStateException("Mirror session is unavailable")
+            check(ensureRemoteReservation(tree, session, uri)) {
+                "Remote tree path is owned by another capture"
+            }
             check(mirrorSafArtifacts(requested.treeName, sides, uri, forceMediaOverwrite = true)) {
                 "Initial package mirror incomplete"
             }
@@ -1606,9 +1773,13 @@ class SessionRepository(
         if (!markMirrorAttempting(requested)) return
         if (deletionBlocksMirror(requested.treeKey)) return
         val session = loadActiveSession(requested.treeKey) ?: return
+        val tree = treeDao.getByKey(requested.treeKey) ?: return
         val metadata = storage.readText(storage.metadataFile(session.treeName))
         if (requested.requestedRevision == 0L) {
             try {
+                check(ensureRemoteReservation(tree, session, uri)) {
+                    "Remote tree path is owned by another capture"
+                }
                 check(mirrorSafArtifacts(session.treeName, session.sides, uri, forceMediaOverwrite = true)) {
                     "Initial package mirror incomplete"
                 }
@@ -1631,6 +1802,9 @@ class SessionRepository(
         val output = storage.readText(storage.outputJsonFile(session.treeName))
         val manifest = storage.readText(storage.manifestFile(session.treeName))
         try {
+            check(ensureRemoteReservation(tree, session, uri)) {
+                "Remote tree path is owned by another capture"
+            }
             check(output != null && manifest != null && metadata != null) { "Local revision artifacts are incomplete" }
             check(DepthArtifactContract.sha256Hex(manifest.toByteArray(Charsets.UTF_8)).equals(requested.requestedHash, ignoreCase = true)) {
                 "Local manifest revision does not match queued SAF revision"
@@ -1668,18 +1842,33 @@ class SessionRepository(
         mirrorDeletionDao.getPendingOrFailed().forEach { runDeleteMirrorJob(it) }
     }
 
-    /** Caller must hold [ArtifactCoordinator]. */
+    /** Caller must hold [ArtifactCoordinator]. Recovery is fail-closed before any newer save. */
     private suspend fun recoverPendingLocalRevisionsLocked() {
-        storage.pendingRevisions().forEach { pending ->
-            val tree = treeDao.getByName(pending.treeName)
-            if (tree != null && tree.revision == pending.revision) {
-                runCatching { storage.publishRevision(pending.treeName, pending.revision, pending.entries) }
-                    .onFailure { Log.w(TAG, "Local revision recovery failed for ${pending.treeName}", it) }
-            } else {
-                runCatching { storage.rollbackRevision(pending) }
-                    .onFailure { Log.w(TAG, "Local revision rollback failed for ${pending.treeName}", it) }
+        storage.pendingRevisions()
+            .sortedWith(compareBy({ it.treeName }, { it.revision }))
+            .forEach { pending ->
+                val tree = treeDao.getByName(pending.treeName)
+                when {
+                    tree == null -> {
+                        // A deleted tree has no owner for either the staged bytes or old backups.
+                        storage.discardRevisionState(pending)
+                    }
+                    tree.revision == pending.revision -> {
+                        // Room committed this revision; publication must finish before any caller
+                        // may advance the tree again. Let failures propagate and block the save.
+                        storage.publishRevision(pending.treeName, pending.revision, pending.entries)
+                    }
+                    tree.revision < pending.revision -> {
+                        // Room never committed the staged revision, so restore its preimage.
+                        storage.rollbackRevision(pending)
+                    }
+                    else -> {
+                        // A newer revision already owns canonical files. Applying this old backup
+                        // would clobber it, so only discard the superseded journal state.
+                        storage.discardRevisionState(pending)
+                    }
+                }
             }
-        }
     }
 
     private fun validateConfirmedLinks(sides: List<TreeSide>, links: List<CrossSideLink>) {
@@ -1708,6 +1897,10 @@ class SessionRepository(
         treeDao.getByName(treeName) != null
     }
 
+    suspend fun pendingDeletionTreeNames(remoteUri: Uri): Set<String> = withContext(Dispatchers.IO) {
+        mirrorDeletionDao.getBlockedTreeNames(remoteUri.toString()).toSet()
+    }
+
     /**
      * WS-12: committed tree name → the identity it was captured under, for merge-safety checks.
      * `contentDigest` deliberately reuses the capture-set id: at this level identity is what
@@ -1717,11 +1910,14 @@ class SessionRepository(
     suspend fun allTreeIdentities(): Map<String, CaptureSetMergePolicy.Entry> =
         withContext(Dispatchers.IO) {
             treeDao.getAllOnce().associate { tree ->
+                val contentDigest = storage.readText(storage.manifestFile(tree.treeName))
+                    ?.let { runCatching { JSONObject(it).optString("annotationRevision") }.getOrDefault("") }
+                    .orEmpty()
                 tree.treeName to CaptureSetMergePolicy.Entry(
                     treeName = tree.treeName,
                     captureSetId = tree.captureSetId,
                     deviceToken = tree.deviceToken,
-                    contentDigest = tree.captureSetId,
+                    contentDigest = contentDigest,
                 )
             }
         }

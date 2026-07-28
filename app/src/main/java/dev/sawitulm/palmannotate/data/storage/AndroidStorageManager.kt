@@ -111,6 +111,19 @@ class AndroidStorageManager(private val context: Context) {
     fun captureDraftImageFile(runId: String, sideIndex: Int): File =
         File(captureDraftDir(runId), "side_${sideIndex + 1}.jpg")
 
+    fun captureDraftIncomingImageFile(runId: String, sideIndex: Int, token: String): File {
+        require(token.matches(Regex("^[A-Za-z0-9-]+$"))) { "Invalid incoming capture token" }
+        return File(captureDraftDir(runId), "side_${sideIndex + 1}.$token.incoming.jpg")
+    }
+
+    fun deleteCaptureDraftIncomingImages(runId: String, sideIndex: Int): Boolean {
+        val prefix = "side_${sideIndex + 1}."
+        val files = captureDraftDir(runId).listFiles()?.filter {
+            it.isFile && it.name.startsWith(prefix) && it.name.endsWith(".incoming.jpg")
+        }.orEmpty()
+        return files.all(::deleteFile)
+    }
+
     fun captureDraftDepthRawFile(runId: String, sideIndex: Int): File =
         File(captureDraftDir(runId), "side_${sideIndex + 1}.raw")
 
@@ -151,8 +164,12 @@ class AndroidStorageManager(private val context: Context) {
         val result = ArrayList<PendingRevision>()
         revisionJournalRoot.listFiles()?.filter { it.isDirectory }?.forEach { treeDir ->
             treeDir.listFiles()?.filter { it.isFile && it.extension == "json" }?.forEach { journal ->
-                runCatching { readPendingRevision(journal) }.onSuccess { result.add(it) }
-                    .onFailure { Log.w(TAG, "Invalid revision journal ${journal.path}", it) }
+                val pending = try {
+                    readPendingRevision(journal)
+                } catch (error: Exception) {
+                    throw IOException("Invalid revision journal ${journal.path}", error)
+                }
+                result.add(pending)
             }
         }
         return result
@@ -215,10 +232,16 @@ class AndroidStorageManager(private val context: Context) {
         entries.forEachIndexed { index, (_, target) ->
             if (target.isFile) copySynced(target, File(backup, "$index-${target.name}"))
         }
-        writeText(journal, JSONObject().apply {
+        val journalBytes = JSONObject().apply {
             put("treeName", treeName); put("revision", revision); put("state", "PUBLISHING")
             put("entries", jsonEntries)
-        }.toString())
+        }.toString().toByteArray(Charsets.UTF_8)
+        val tempJournal = File(journal.parentFile, "${journal.name}.tmp")
+        writeSyncedFile(tempJournal, journalBytes)
+        if (!tempJournal.renameTo(journal)) {
+            tempJournal.delete()
+            throw IOException("Cannot publish revision journal ${journal.path}")
+        }
     }
 
     /**
@@ -272,9 +295,20 @@ class AndroidStorageManager(private val context: Context) {
 
     fun rollbackRevision(pending: PendingRevision) {
         restoreRevisionFiles(pending)
-        pending.journal.delete()
-        revisionBackupDir(pending.treeName, pending.revision).deleteRecursively()
-        revisionStagingDir(pending.treeName, pending.revision).deleteRecursively()
+        discardRevisionState(pending)
+    }
+
+    /** Remove a superseded journal without applying its older backups to canonical files. */
+    fun discardRevisionState(pending: PendingRevision) {
+        check(pending.journal.delete() || !pending.journal.exists()) {
+            "Cannot delete revision journal ${pending.journal.path}"
+        }
+        check(revisionBackupDir(pending.treeName, pending.revision).deleteRecursively()) {
+            "Cannot delete revision backup for ${pending.treeName} r${pending.revision}"
+        }
+        check(revisionStagingDir(pending.treeName, pending.revision).deleteRecursively()) {
+            "Cannot delete revision staging for ${pending.treeName} r${pending.revision}"
+        }
     }
 
     /**

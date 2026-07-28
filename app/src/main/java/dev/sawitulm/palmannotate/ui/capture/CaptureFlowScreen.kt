@@ -556,6 +556,7 @@ class CaptureFlowViewModel @Inject constructor(
             repeat(sideCount) { capturedImages.add(null); capturedDepths.add(null); capturedSources.add(null) }
             currentSide = 0; currentStep = SideStep.PREVIEW; phase = CapturePhase.SIDES
             val expectedName = CaptureSetPolicy.treeName(r.variety, r.block, r.nameToken, r.nextId)
+            repo.recoverIncomingPhoneCaptures(runId)
             val draft = repo.ensureCaptureDraft(runId, sideCount, expectedName, r.nextId)
             if (!r.autoId && draft.expectedTreeId > 0) manualId = draft.expectedTreeId.toString()
             draftStatus = draft.status.takeIf { it != "ACTIVE" }
@@ -667,6 +668,17 @@ class CaptureFlowViewModel @Inject constructor(
         }
     }
 
+    fun preparePhoneCaptureFile(): File? {
+        val runId = run?.sessionId ?: return null
+        val sideIndex = currentSide
+        if (sideIndex !in capturedImages.indices) return null
+        return storage.captureDraftIncomingImageFile(
+            runId,
+            sideIndex,
+            UUID.randomUUID().toString(),
+        )
+    }
+
     fun onImageCaptured(uri: Uri) {
         val sideIndex = currentSide
         val runId = run?.sessionId ?: return
@@ -690,6 +702,9 @@ class CaptureFlowViewModel @Inject constructor(
                     CaptureOrigin.PHONE_CAMERA, depthRequired = false,
                 )
                 val refreshedDraft = if (accepted) repo.loadCaptureDraft(runId) else null
+                if (accepted && uri.scheme == "file") {
+                    uri.path?.let { storage.deleteFile(File(it)) }
+                }
                 val reviewCursor = withContext(Dispatchers.Main) {
                     if (!accepted || !repo.isCaptureDraftSideWriteCurrent(runId, sideIndex, generation)) {
                         return@withContext null
@@ -740,6 +755,7 @@ class CaptureFlowViewModel @Inject constructor(
             capturedDepths.getOrNull(currentSide)?.let { capturedDepths[currentSide] = null }
             if (currentSide < capturedSources.size) capturedSources[currentSide] = null
             if (runId != null) {
+                storage.deleteCaptureDraftIncomingImages(runId, currentSide)
                 val generation = repo.invalidateCaptureDraftSide(runId, currentSide)
                 viewModelScope.launch { repo.removeCaptureDraftSide(runId, currentSide, generation) }
             }
@@ -765,6 +781,7 @@ class CaptureFlowViewModel @Inject constructor(
             if (index < capturedDepths.size) capturedDepths[index] = null
             if (index < capturedSources.size) capturedSources[index] = null
             run?.sessionId?.let { runId ->
+                storage.deleteCaptureDraftIncomingImages(runId, index)
                 val generation = repo.invalidateCaptureDraftSide(runId, index)
                 viewModelScope.launch { repo.removeCaptureDraftSide(runId, index, generation) }
             }
@@ -1224,6 +1241,7 @@ fun CaptureFlowScreen(
                             when (viewModel.currentStep) {
                                 SideStep.PREVIEW -> {
                                     CameraCaptureStage(
+                                        createOutputFile = viewModel::preparePhoneCaptureFile,
                                         onCaptured = {
                                             val side = viewModel.currentSide + 1
                                             viewModel.onImageCaptured(it)
@@ -1554,6 +1572,7 @@ private fun ReviewAllPager(
 
 @Composable
 private fun CameraCaptureStage(
+    createOutputFile: () -> File?,
     onCaptured: (Uri) -> Unit,
 ) {
     val context = LocalContext.current
@@ -1598,8 +1617,11 @@ private fun CameraCaptureStage(
                 }
                 if (capturing) return@FloatingActionButton
                 capturing = true
-                val ts = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
-                val file = File(context.cacheDir, "cap_$ts.jpg")
+                val file = createOutputFile() ?: run {
+                    capturing = false
+                    toasts.error(context.getString(R.string.capture_failed, "draft storage unavailable"))
+                    return@FloatingActionButton
+                }
                 val opts = ImageCapture.OutputFileOptions.Builder(file).build()
                 imageCapture.takePicture(
                     opts,

@@ -120,6 +120,12 @@ internal object PackageProvenanceCodec {
         return if (raw.isEmpty() || raw.equals(UNKNOWN_OPERATOR, ignoreCase = true)) "" else raw
     }
 
+    fun readCapturedAtMillis(root: JSONObject?): Long? {
+        val timestamp = root?.optString("timestamp")?.trim().orEmpty()
+        if (timestamp.isEmpty()) return null
+        return runCatching { isoFormat.parse(timestamp)?.time }.getOrNull()
+    }
+
     fun readCaptureDate(root: JSONObject?): String {
         val explicit = root?.optString("captureDate")?.trim().orEmpty()
         if (explicit.isNotEmpty()) return explicit

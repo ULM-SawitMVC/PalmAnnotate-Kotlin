@@ -2,6 +2,7 @@ package dev.sawitulm.palmannotate.ui.results
 
 import android.net.Uri
 import android.util.Log
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -38,6 +39,7 @@ import dev.sawitulm.palmannotate.domain.model.*
 import dev.sawitulm.palmannotate.domain.quality.QualityCheck
 import dev.sawitulm.palmannotate.domain.results.ResultsComputer
 import dev.sawitulm.palmannotate.ui.common.QualityGateModal
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -67,6 +69,8 @@ class ResultsViewModel @Inject constructor(
     var isComputing by mutableStateOf(false)
         private set
     var isExporting by mutableStateOf(false)
+        private set
+    var isFinishing by mutableStateOf(false)
         private set
     var exportStatus by mutableStateOf<String?>(null)
         private set
@@ -102,21 +106,29 @@ class ResultsViewModel @Inject constructor(
      */
     fun finishAndThen(onNavigate: () -> Unit) {
         val s = session ?: return
-        if (results == null) return
+        if (results == null || isFinishing) return
+        isFinishing = true
         viewModelScope.launch {
             try {
                 val safTreeUri = exportFolder.folderUri.first()
                 when (val result = repo.saveOutputJson(s, safTreeUri, awaitSafVerification = false)) {
-                    is SaveResult.Success -> { session = s.copy(revision = result.revision); exportStatus = "Output JSON saved" }
-                    is SaveResult.Conflict -> { exportStatus = "This tree changed elsewhere (expected r${result.expectedRevision}, current r${result.actualRevision}); reopen before retrying"; return@launch }
-                    is SaveResult.Failure -> { exportStatus = result.message; return@launch }
+                    is SaveResult.Success -> {
+                        session = s.copy(revision = result.revision)
+                        exportStatus = "Output JSON saved"
+                        onNavigate()
+                    }
+                    is SaveResult.Conflict ->
+                        exportStatus = "This tree changed elsewhere (expected r${result.expectedRevision}, current r${result.actualRevision}); reopen before retrying"
+                    is SaveResult.Failure -> exportStatus = result.message
                 }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (e: Exception) {
                 Log.e(TAG, "finishAndThen failed", e)
                 exportStatus = e.localizedMessage ?: "Could not save Output JSON"
-                return@launch
+            } finally {
+                isFinishing = false
             }
-            onNavigate()
         }
     }
 
@@ -271,6 +283,8 @@ fun ResultsScreen(
     val results = viewModel.results
     var showExportSheet by remember { mutableStateOf(false) }
 
+    BackHandler(enabled = viewModel.isFinishing) { /* Keep the destination alive until commit ends. */ }
+
     // Surface export/save status through the single app-level toast host instead of an
     // awkward Snackbar wedged into the scrolling content.
     val toasts = LocalToasts.current
@@ -286,7 +300,9 @@ fun ResultsScreen(
             TopAppBar(
                 title = { Text(session?.treeName ?: stringResource(R.string.results_title)) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_back)) }
+                    IconButton(onClick = onBack, enabled = !viewModel.isFinishing) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_back))
+                    }
                 },
             )
         },
@@ -360,14 +376,14 @@ fun ResultsScreen(
                 // is written automatically here.
                 item {
                     SectionCard(stringResource(R.string.results_finish)) {
-                        if (viewModel.isExporting) {
+                        if (viewModel.isExporting || viewModel.isFinishing) {
                             LinearProgressIndicator(Modifier.fillMaxWidth().padding(bottom = 10.dp))
                         }
                         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            ActionButton(stringResource(R.string.results_capture_next), Icons.Default.PhotoCamera, primary = true, busy = viewModel.isExporting, Modifier.weight(1f)) {
+                            ActionButton(stringResource(R.string.results_capture_next), Icons.Default.PhotoCamera, primary = true, busy = viewModel.isExporting || viewModel.isFinishing, Modifier.weight(1f)) {
                                 viewModel.runId?.let { rid -> viewModel.finishAndThen { onCaptureNext(rid) } }
                             }
-                            ActionButton(stringResource(R.string.results_tree_list), Icons.AutoMirrored.Filled.List, primary = false, busy = viewModel.isExporting, Modifier.weight(1f)) {
+                            ActionButton(stringResource(R.string.results_tree_list), Icons.AutoMirrored.Filled.List, primary = false, busy = viewModel.isExporting || viewModel.isFinishing, Modifier.weight(1f)) {
                                 viewModel.runId?.let { rid -> viewModel.finishAndThen { onTreeList(rid) } }
                             }
                         }
@@ -399,13 +415,13 @@ fun ResultsScreen(
                     modifier = Modifier.padding(top = 4.dp, bottom = 14.dp),
                 )
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    ActionButton(stringResource(R.string.results_export_output_json), Icons.Default.DataObject, primary = false, busy = viewModel.isExporting, Modifier.weight(1f)) { showExportSheet = false; viewModel.exportOutputJson() }
-                    ActionButton(stringResource(R.string.results_export_yolo), Icons.Default.Description, primary = false, busy = viewModel.isExporting, Modifier.weight(1f)) { showExportSheet = false; viewModel.exportYolo() }
+                    ActionButton(stringResource(R.string.results_export_output_json), Icons.Default.DataObject, primary = false, busy = viewModel.isExporting || viewModel.isFinishing, Modifier.weight(1f)) { showExportSheet = false; viewModel.exportOutputJson() }
+                    ActionButton(stringResource(R.string.results_export_yolo), Icons.Default.Description, primary = false, busy = viewModel.isExporting || viewModel.isFinishing, Modifier.weight(1f)) { showExportSheet = false; viewModel.exportYolo() }
                 }
                 Spacer(Modifier.height(10.dp))
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    ActionButton(stringResource(R.string.results_export_csv), Icons.Default.TableChart, primary = false, busy = viewModel.isExporting, Modifier.weight(1f)) { showExportSheet = false; viewModel.exportCsv() }
-                    ActionButton(stringResource(R.string.results_export_identity), Icons.Default.Fingerprint, primary = false, busy = viewModel.isExporting, Modifier.weight(1f)) { showExportSheet = false; viewModel.exportIdentity() }
+                    ActionButton(stringResource(R.string.results_export_csv), Icons.Default.TableChart, primary = false, busy = viewModel.isExporting || viewModel.isFinishing, Modifier.weight(1f)) { showExportSheet = false; viewModel.exportCsv() }
+                    ActionButton(stringResource(R.string.results_export_identity), Icons.Default.Fingerprint, primary = false, busy = viewModel.isExporting || viewModel.isFinishing, Modifier.weight(1f)) { showExportSheet = false; viewModel.exportIdentity() }
                 }
             }
         }

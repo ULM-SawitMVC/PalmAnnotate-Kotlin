@@ -1,6 +1,7 @@
 package dev.sawitulm.palmannotate
 
 import dev.sawitulm.palmannotate.data.export.ExportManager
+import dev.sawitulm.palmannotate.data.yolo.YoloParser
 import dev.sawitulm.palmannotate.domain.model.*
 import dev.sawitulm.palmannotate.domain.results.ResultsComputer
 import org.junit.Assert.*
@@ -141,6 +142,23 @@ class ExportOutputJsonTest {
         assertEquals(0.2, yolo.getDouble(1), 1e-9)
         assertEquals(0.2, yolo.getDouble(2), 1e-9)
         assertEquals(0.2, yolo.getDouble(3), 1e-9)
+    }
+
+    @Test fun `resume parser preserves YOLO precision instead of rounded pixel projection`() {
+        val sourceSide = side(
+            0,
+            listOf(box("b0", 0, x1 = 100.25f, y1 = 200.75f, x2 = 300.5f, y2 = 600.25f)),
+        )
+        val output = ExportManager.generateOutputJson(session("T_0001", listOf(sourceSide)))
+        val parsed = OutputSchema.toSessionData(output).sides.single()
+        val restored = parsed.bboxes.map {
+            Bbox(it.id, it.classId, it.className, it.x1, it.y1, it.x2, it.y2)
+        }
+
+        assertEquals(
+            YoloParser.serialize(sourceSide.bboxes, sourceSide.imageWidth, sourceSide.imageHeight),
+            YoloParser.serialize(restored, parsed.imageWidth, parsed.imageHeight),
+        )
     }
 
     @Test fun `bbox_yolo on a zero-dimension side degrades to finite numbers, not a crash`() {

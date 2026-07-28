@@ -31,6 +31,7 @@ class ArtifactIdentityPolicyTest {
     @Test fun `collision probes cover every artifact that a new capture could overwrite`() {
         val paths = ArtifactIdentityPolicy.collisionProbePaths("DXP_A01_0007", listOf(0))
         assertTrue(paths.contains("dataset/manifests/DXP_A01_0007.json"))
+        assertTrue(paths.contains("dataset/reservations/DXP_A01_0007.json"))
         assertTrue(paths.contains("dataset/metadata/DXP_A01_0007.json"))
         assertTrue(paths.contains("Output JSON/DXP_A01_0007.json"))
         assertTrue(paths.contains("dataset/images/field/DXP_A01_0007_1.jpg"))
@@ -48,11 +49,12 @@ class ArtifactIdentityPolicyTest {
      */
     @Test fun `collision probes are distinct and span a small fixed set of directories`() {
         val paths = ArtifactIdentityPolicy.collisionProbePaths("DXP_A01_0007", listOf(0, 1, 2, 3))
-        assertEquals(23, paths.size)
+        assertEquals(24, paths.size)
         assertEquals(paths.size, paths.toSet().size)
         assertEquals(
             setOf(
                 "dataset/manifests",
+                "dataset/reservations",
                 "dataset/metadata",
                 "Output JSON",
                 "dataset/images/field",

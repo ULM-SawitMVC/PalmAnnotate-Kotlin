@@ -57,6 +57,7 @@ data class TreeMetadata(
     val block: String = "",
     val treeId: String = "",
     val date: String = "",             // ISO date string YYYY-MM-DD (capture day)
+    val capturedAtMillis: Long? = null, // Original capture instant when the package recorded one.
     val gps: GpsProvenance = GpsProvenance.UNKNOWN,
     val operatorName: String = "",
     val identity: CaptureSetIdentity = CaptureSetIdentity.UNKNOWN,
