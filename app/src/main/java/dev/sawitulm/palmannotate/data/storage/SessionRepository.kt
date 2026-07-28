@@ -565,12 +565,15 @@ class SessionRepository(
         // fallback for trees that were never mirrored.
         val persistedRemoteUri = mirrorDao.getByTree(tree.treeKey)?.remoteUri
         val remote = persistedRemoteUri ?: explicitRemoteUri?.toString()
+        // Claiming the remote reservation while the tree still exists lets the delete worker prove
+        // ownership later. It is best-effort on purpose: an unreachable or never-mirrored export
+        // folder must never block the local delete, and the worker re-checks ownership anyway.
         if (remote != null) {
-            val session = loadActiveSessionWhileExclusive(tree.treeKey)
-                ?: throw IllegalStateException("Cannot load tree before remote deletion")
-            check(ensureRemoteReservation(tree, session, Uri.parse(remote))) {
-                "Remote delete ownership could not be claimed"
-            }
+            runCatching {
+                loadActiveSessionWhileExclusive(tree.treeKey)?.let { session ->
+                    ensureRemoteReservation(tree, session, Uri.parse(remote))
+                }
+            }.onFailure { Log.w(TAG, "Could not claim remote reservation for ${tree.treeName}", it) }
         }
         return remote?.let {
             MirrorDeletionEntity(
@@ -1622,6 +1625,16 @@ class SessionRepository(
             val replacement = treeDao.getByName(requested.treeName)
             val replacementMirror = replacement?.let { mirrorDao.getByTree(it.treeKey) }
             if (replacementMirror?.remoteUri == requested.remoteUri) {
+                // The replacement owns this path now. Release the deleted tree's reservation so the
+                // replacement's mirror can claim it; leaving it would block the recapture forever.
+                if (deletionOwnsRemote(requested)) {
+                    runCatching {
+                        saf.deletePath(
+                            Uri.parse(requested.remoteUri),
+                            "dataset/reservations/${requested.treeName}.json",
+                        )
+                    }
+                }
                 mirrorDeletionDao.markSuperseded(
                     requested.treeKey,
                     requested.remoteUri,
