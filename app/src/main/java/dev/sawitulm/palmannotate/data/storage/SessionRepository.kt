@@ -497,7 +497,7 @@ class SessionRepository(
         // The queue row was committed atomically with the tree. Only the worker launch is
         // best-effort; restart reconciliation will pick up PENDING if the process dies here.
         initialMirror?.let { queued ->
-            mirrorWorkScheduler.enqueue { runInitialMirrorJob(queued, run.sideCount, sides, split, metaJson) }
+            mirrorWorkScheduler.enqueue { runInitialMirrorJob(queued, sides, metaJson) }
         }
 
         treeKey
@@ -1018,7 +1018,6 @@ class SessionRepository(
      */
     private fun mirrorSafArtifacts(
         treeName: String,
-        split: String,
         sides: List<TreeSide>,
         safTreeUri: Uri,
         forceMediaOverwrite: Boolean,
@@ -1052,10 +1051,12 @@ class SessionRepository(
                 packageFilesOk = packageFilesOk && labelOk
             }
             val annotLogOk = runCatching {
+                val localAnnotLog = storage.annotLogFile(treeName, side.sideIndex)
+                check(localAnnotLog.isFile) { "Local annot-log is missing" }
                 saf.writeText(
                     safTreeUri,
                     "dataset/annotlog/field/${treeName}_${side.sideIndex + 1}.json",
-                    buildAnnotLog(treeName, split, side),
+                    localAnnotLog.readText(),
                 )
             }.getOrDefault(false)
             packageFilesOk = packageFilesOk && annotLogOk
@@ -1569,9 +1570,7 @@ class SessionRepository(
 
     private suspend fun runInitialMirrorJob(
         requested: MirrorStatusEntity,
-        sideCount: Int,
         sides: List<TreeSide>,
-        split: String,
         metadataText: String,
     ) {
         val uri = requested.remoteUri?.let(Uri::parse) ?: return
@@ -1581,7 +1580,7 @@ class SessionRepository(
         if (!markMirrorAttempting(requested)) return
         if (deletionBlocksMirror(requested.treeKey)) return
         try {
-            check(mirrorSafArtifacts(requested.treeName, split, sides, uri, forceMediaOverwrite = true)) {
+            check(mirrorSafArtifacts(requested.treeName, sides, uri, forceMediaOverwrite = true)) {
                 "Initial package mirror incomplete"
             }
             check(saf.writeText(uri, "dataset/metadata/${requested.treeName}.json", metadataText)) {
@@ -1610,7 +1609,7 @@ class SessionRepository(
         val metadata = storage.readText(storage.metadataFile(session.treeName))
         if (requested.requestedRevision == 0L) {
             try {
-                check(mirrorSafArtifacts(session.treeName, session.split, session.sides, uri, forceMediaOverwrite = true)) {
+                check(mirrorSafArtifacts(session.treeName, session.sides, uri, forceMediaOverwrite = true)) {
                     "Initial package mirror incomplete"
                 }
                 check(metadata != null && saf.writeText(uri, "dataset/metadata/${session.treeName}.json", metadata)) {
@@ -1646,7 +1645,7 @@ class SessionRepository(
                             saf.exists(uri, remoteManifest, forceRefresh = true) == SafPathState.Absent
                 }
             ) { "Could not invalidate remote manifest" }
-            check(mirrorSafArtifacts(session.treeName, session.split, session.sides, uri, forceMediaOverwrite = true)) {
+            check(mirrorSafArtifacts(session.treeName, session.sides, uri, forceMediaOverwrite = true)) {
                 "SAF package mirror incomplete"
             }
             check(saf.writeText(uri, "dataset/metadata/${session.treeName}.json", metadata)) { "SAF metadata write failed" }

@@ -1,5 +1,6 @@
 package dev.sawitulm.palmannotate.data.storage
 
+import dev.sawitulm.palmannotate.repoFile
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -96,6 +97,18 @@ class PhaseARegressionTest {
         secondGate.complete(Unit)
         save.join()
         assertTrue(saved)
+    }
+
+    @Test
+    fun `SAF mirror copies the committed annot log instead of regenerating it`() {
+        val source = repoFile(
+            "app/src/main/java/dev/sawitulm/palmannotate/data/storage/SessionRepository.kt",
+        ).readText()
+        val mirror = source.substringAfter("private fun mirrorSafArtifacts(")
+            .substringBefore("// ─── Output JSON")
+
+        assertTrue(mirror.contains("storage.annotLogFile(treeName, side.sideIndex)"))
+        assertFalse(mirror.contains("buildAnnotLog(treeName, split, side)"))
     }
 
     @Test
