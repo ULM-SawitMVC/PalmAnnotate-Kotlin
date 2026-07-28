@@ -295,6 +295,10 @@ class SessionRepository(
         requiredDepthSides: Set<Int>,
         confirmedLinks: List<CrossSideLink> = emptyList(),
         safTreeUri: Uri? = null,
+        // A capture commits the run's pinned draft and must agree with it. A folder-resume import
+        // commits a historical package instead, so an unrelated draft for the NEXT tree must not
+        // veto it — that is what blocked recovering DAMIMAS_A21B_0089 while 0153 was in progress.
+        consumesCaptureDraft: Boolean = true,
     ): String {
         ArtifactIdentityPolicy.treeNameError(treeName)?.let {
             throw IllegalArgumentException("Invalid tree name: $it")
@@ -332,7 +336,7 @@ class SessionRepository(
         ArtifactIdentityPolicy.sideSetError(sides.map { it.sideIndex })?.let {
             throw IllegalArgumentException("Invalid capture package: $it")
         }
-        val captureDraft = captureDraftDao.get(sessionId)
+        val captureDraft = captureDraftDao.get(sessionId).takeIf { consumesCaptureDraft }
         if (captureDraft != null && captureDraft.expectedTreeName.isNotBlank()) {
             check(captureDraft.expectedTreeName == treeName) {
                 "Capture draft belongs to ${captureDraft.expectedTreeName}, not $treeName"
@@ -508,8 +512,13 @@ class SessionRepository(
         // The local Room/filesystem commit is complete before the non-blocking mirror worker is
         // launched. Its queue row was committed atomically with the tree. A draft is deleted only
         // after that local commit succeeded.
-        val draftAfterCommit = captureDraftDao.get(sessionId)
-        if (draftAfterCommit == null || draftAfterCommit.expectedTreeName.isBlank() || draftAfterCommit.expectedTreeName == treeName) {
+        // An import never consumes the run's draft, so it must not discard one either.
+        val draftAfterCommit = captureDraftDao.get(sessionId).takeIf { consumesCaptureDraft }
+        if (consumesCaptureDraft &&
+            (draftAfterCommit == null ||
+                draftAfterCommit.expectedTreeName.isBlank() ||
+                draftAfterCommit.expectedTreeName == treeName)
+        ) {
             captureDraftDao.delete(sessionId)
             storage.discardUncommittedDraft(sessionId)
         }

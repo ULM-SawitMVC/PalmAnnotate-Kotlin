@@ -179,6 +179,23 @@ class PhaseARegressionTest {
     }
 
     @Test
+    fun `an open capture draft cannot veto or be consumed by a resume import`() {
+        val repository = repoFile(
+            "app/src/main/java/dev/sawitulm/palmannotate/data/storage/SessionRepository.kt",
+        ).readText()
+        val importer = repoFile(
+            "app/src/main/java/dev/sawitulm/palmannotate/data/storage/FolderResumeImporter.kt",
+        ).readText()
+
+        assertTrue(repository.contains("consumesCaptureDraft: Boolean = true"))
+        assertTrue(
+            repository.contains("captureDraftDao.get(sessionId).takeIf { consumesCaptureDraft }"),
+        )
+        assertTrue(repository.contains("if (consumesCaptureDraft &&"))
+        assertTrue(importer.contains("consumesCaptureDraft = false"))
+    }
+
+    @Test
     fun `an unknown identity on either side never blocks the whole folder resume`() {
         val source = repoFile(
             "app/src/main/java/dev/sawitulm/palmannotate/data/storage/FolderResumeImporter.kt",

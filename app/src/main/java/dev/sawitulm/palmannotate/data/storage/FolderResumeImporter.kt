@@ -637,6 +637,9 @@ class FolderResumeImporter @Inject constructor(
                 // package is copied into local storage and Room, but its verified remote source
                 // must not be deleted and rewritten as if it were a brand-new capture.
                 safTreeUri = null,
+                // An in-progress capture draft belongs to the NEXT tree, not to this historical
+                // package, so it must neither veto nor be consumed by this import.
+                consumesCaptureDraft = false,
             )
             true
         }.getOrElse {
