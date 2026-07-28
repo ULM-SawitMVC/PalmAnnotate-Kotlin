@@ -42,7 +42,10 @@ class SafMirrorStore(private val context: Context) {
         private const val TAG = "SafMirror"
     }
 
-    /** Resolved directory DocumentFile per "treeUri|relDir" key. */
+    /**
+     * Resolved directory DocumentFile per "treeUri|relDir" key.
+     * Every cached child directory is a validated tree-capable handle, never SingleDocumentFile.
+     */
     private val dirCache = ConcurrentHashMap<String, DocumentFile>()
     /** Per-directory child map (name -> provider-classified child), keyed by the same "treeUri|relDir". */
     private val childCache = ConcurrentHashMap<String, Map<String, ChildEntry>>()
@@ -53,6 +56,7 @@ class SafMirrorStore(private val context: Context) {
         "$treeUri|${dirSegments.joinToString("/")}"
 
     private data class ChildEntry(
+        val documentId: String,
         val document: DocumentFile,
         val mimeType: String,
     ) {
@@ -67,8 +71,9 @@ class SafMirrorStore(private val context: Context) {
     /** Query DocumentsProvider directly. MIME type is the provider's authoritative document type. */
     private fun listChildrenFromProvider(treeUri: Uri, dir: DocumentFile): ChildListing {
         return try {
-            val documentId = runCatching { DocumentsContract.getDocumentId(dir.uri) }
-                .getOrElse { DocumentsContract.getTreeDocumentId(treeUri) }
+            // Every directory handle used here must retain its own document id. Falling back to
+            // the root tree id would silently query the wrong directory instead of failing closed.
+            val documentId = DocumentsContract.getDocumentId(dir.uri)
             val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, documentId)
             val projection = arrayOf(
                 DocumentsContract.Document.COLUMN_DOCUMENT_ID,
@@ -95,13 +100,41 @@ class SafMirrorStore(private val context: Context) {
                     val childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childId)
                     val child = DocumentFile.fromSingleUri(context, childUri)
                         ?: return ChildListing.Error(IllegalStateException("SAF child document unavailable"))
-                    children[name] = ChildEntry(child, mimeType)
+                    if (children.containsKey(name)) {
+                        return ChildListing.Error(
+                            IllegalStateException("SAF directory contains duplicate child name: $name")
+                        )
+                    }
+                    children[name] = ChildEntry(childId, child, mimeType)
                 }
             }
             ChildListing.Success(children.toMap())
         } catch (error: Throwable) {
             ChildListing.Error(error)
         }
+    }
+
+    /** Convert a provider-listed directory into a tree-capable handle without changing identity. */
+    private fun treeDirectoryHandle(treeUri: Uri, child: ChildEntry): DocumentFile {
+        check(child.isDirectory) { "SAF child is not a directory" }
+        val childUri = child.document.uri
+        check(DocumentsContract.isDocumentUri(context, childUri)) {
+            "SAF child directory URI is not a document URI"
+        }
+        val expectedTreeId = DocumentsContract.getTreeDocumentId(treeUri)
+        check(DocumentsContract.getTreeDocumentId(childUri) == expectedTreeId) {
+            "SAF child directory belongs to a different tree"
+        }
+        check(DocumentsContract.getDocumentId(childUri) == child.documentId) {
+            "SAF child directory identity mismatch"
+        }
+        val directory = DocumentFile.fromTreeUri(context, childUri)
+            ?: throw IllegalStateException("SAF child directory is unavailable")
+        check(DocumentsContract.getTreeDocumentId(directory.uri) == expectedTreeId &&
+            DocumentsContract.getDocumentId(directory.uri) == child.documentId) {
+            "SAF tree directory identity mismatch"
+        }
+        return directory
     }
 
     /**
@@ -134,7 +167,7 @@ class SafMirrorStore(private val context: Context) {
                 if (!listed.isDirectory) {
                     throw IllegalStateException("SAF path segment is not a directory: $seg")
                 }
-                node = listed.document
+                node = treeDirectoryHandle(treeUri, listed)
             } else {
                 val created = if (create) node.createDirectory(seg) else null
                 node = created ?: return null
@@ -172,7 +205,9 @@ class SafMirrorStore(private val context: Context) {
         mimeType: String,
     ) {
         val key = dirKey(treeUri, dirSegments)
-        childCache[key] = childCache[key].orEmpty() + (name to ChildEntry(document, mimeType))
+        val documentId = DocumentsContract.getDocumentId(document.uri)
+        childCache[key] = childCache[key].orEmpty() +
+            (name to ChildEntry(documentId, document, mimeType))
     }
 
     private fun removeChild(treeUri: Uri, dirSegments: List<String>, name: String) {
@@ -207,8 +242,12 @@ class SafMirrorStore(private val context: Context) {
             if (!child.isDirectory) {
                 return ProbeDir.Error(IllegalStateException("SAF path segment is not a directory: $segment"))
             }
-            node = child.document
-            dirCache[dirKey(treeUri, acc)] = child.document
+            node = try {
+                treeDirectoryHandle(treeUri, child)
+            } catch (error: Exception) {
+                return ProbeDir.Error(error)
+            }
+            dirCache[dirKey(treeUri, acc)] = node
         }
         return ProbeDir.Found(node)
     }
@@ -410,7 +449,86 @@ class SafMirrorStore(private val context: Context) {
             pathStateLocked(treeUri, relPath, forceRefresh)
         }
 
-    /** Typed read for resume-sensitive callers. */
+    /**
+     * Batched `exists(..., forceRefresh = true)` for probes that ask about many paths at once.
+     *
+     * Per-path semantics are identical to the single-path form — every parent directory is still
+     * queried freshly, so the answer can never come from a stale cache. The difference is that each
+     * DISTINCT directory is queried **once per batch** instead of once per path. The commit-time
+     * collision probe asks about 23 paths spread over 7 directories, and the per-path form also
+     * re-listed every ancestor directory on the way down; against an export folder whose depth
+     * directory holds 1208 entries that dominated the cost of saving a tree.
+     */
+    fun existsAll(treeUri: Uri, relPaths: List<String>): Map<String, SafPathState> =
+        synchronized(cacheLock) {
+            val states = LinkedHashMap<String, SafPathState>()
+            // Per parent directory, either its fresh listing or the single verdict that applies to
+            // every path beneath it. Both are resolved at most once per batch.
+            val listings = HashMap<String, Map<String, ChildEntry>>()
+            val dirVerdicts = HashMap<String, SafPathState>()
+            for (relPath in relPaths) {
+                if (states.containsKey(relPath)) continue
+                val segments = relPath.split('/').filter { it.isNotBlank() }
+                if (segments.isEmpty()) {
+                    states[relPath] =
+                        SafPathState.Inaccessible(IllegalArgumentException("Empty SAF path"))
+                    continue
+                }
+                val dirSegments = segments.dropLast(1)
+                val key = dirKey(treeUri, dirSegments)
+                if (!listings.containsKey(key) && !dirVerdicts.containsKey(key)) {
+                    when (val resolved = resolveDirForProbe(treeUri, dirSegments)) {
+                        ProbeDir.Missing -> dirVerdicts[key] = SafPathState.Absent
+                        is ProbeDir.Error ->
+                            dirVerdicts[key] = SafPathState.Inaccessible(resolved.cause)
+                        is ProbeDir.Found -> try {
+                            listings[key] = childrenOf(
+                                treeUri,
+                                dirSegments,
+                                resolved.document,
+                                forceRefresh = true,
+                            )
+                        } catch (error: Exception) {
+                            dirVerdicts[key] = SafPathState.Inaccessible(error)
+                        }
+                    }
+                }
+                val children = listings[key]
+                states[relPath] = if (children == null) {
+                    dirVerdicts[key]
+                        ?: SafPathState.Inaccessible(
+                            IllegalStateException("SAF directory state unresolved: $relPath")
+                        )
+                } else {
+                    when (val target = children[segments.last()]) {
+                        null -> SafPathState.Absent
+                        else -> if (target.isDirectory) {
+                            SafPathState.Inaccessible(
+                                IllegalStateException("SAF path is a directory, not a file")
+                            )
+                        } else {
+                            SafPathState.Present
+                        }
+                    }
+                }
+            }
+            states
+        }
+
+    /**
+     * Typed read for resume-sensitive callers.
+     *
+     * The child listing is served from [childCache] first. That is safe because the cache holds
+     * only the child's DocumentFile **handle** — the bytes below are always streamed live from the
+     * provider — and every create/delete in this app keeps the map in step. Forcing a fresh
+     * directory listing on every read instead made the cost quadratic: resuming the 151-tree
+     * export folder re-enumerated the 1208-entry depth directory once per file it read, which is
+     * how "Restoring existing trees" went from minutes to over half an hour.
+     *
+     * Correctness is unchanged because a miss is never trusted: neither [SafReadResult.Absent] nor
+     * [SafReadResult.Inaccessible] is returned until the same lookup has been retried against a
+     * freshly queried listing.
+     */
     fun readBytesResult(treeUri: Uri, relPath: String): SafReadResult = synchronized(cacheLock) {
         try {
             if (DocumentFile.fromTreeUri(context, treeUri) == null) {
@@ -423,24 +541,45 @@ class SafMirrorStore(private val context: Context) {
                 return@synchronized SafReadResult.Inaccessible(IllegalArgumentException("Empty SAF path"))
             }
             val dirSegments = segments.dropLast(1)
+            val name = segments.last()
             val dir = resolveDir(treeUri, dirSegments, create = false)
                 ?: return@synchronized SafReadResult.Absent
-            val target = childrenOf(treeUri, dirSegments, dir, forceRefresh = true)[segments.last()]
-                ?: return@synchronized SafReadResult.Absent
-            if (target.isDirectory) {
-                return@synchronized SafReadResult.Inaccessible(
-                    IllegalStateException("SAF path is a directory, not a file")
-                )
-            }
-            val bytes = context.contentResolver.openInputStream(target.document.uri)?.use { it.readBytes() }
-                ?: return@synchronized SafReadResult.Inaccessible(
-                    IllegalStateException("SAF input stream returned null")
-                )
-            SafReadResult.Success(bytes)
+            val cached = readChildLocked(treeUri, dirSegments, dir, name, forceRefresh = false)
+            if (cached is SafReadResult.Success) return@synchronized cached
+            // Both remaining verdicts can also mean "the cached listing is stale": the file was
+            // created, or replaced, outside this store since the directory was last listed. Re-list
+            // once and let the fresh answer stand.
+            readChildLocked(treeUri, dirSegments, dir, name, forceRefresh = true)
         } catch (e: Exception) {
             Log.w(TAG, "readBytes failed for $relPath", e)
             SafReadResult.Inaccessible(e)
         }
+    }
+
+    /** Locate [name] under [dir] and stream it; the caller decides whether the listing may be cached. */
+    private fun readChildLocked(
+        treeUri: Uri,
+        dirSegments: List<String>,
+        dir: DocumentFile,
+        name: String,
+        forceRefresh: Boolean,
+    ): SafReadResult {
+        val target = childrenOf(treeUri, dirSegments, dir, forceRefresh = forceRefresh)[name]
+            ?: return SafReadResult.Absent
+        if (target.isDirectory) {
+            return SafReadResult.Inaccessible(
+                IllegalStateException("SAF path is a directory, not a file")
+            )
+        }
+        // A handle from the cache can outlive its document. Treat the failure as a possible stale
+        // handle rather than a provider fault; the caller retries with a fresh listing.
+        val bytes = try {
+            context.contentResolver.openInputStream(target.document.uri)?.use { it.readBytes() }
+        } catch (error: Exception) {
+            return SafReadResult.Inaccessible(error)
+        }
+        return bytes?.let { SafReadResult.Success(it) }
+            ?: SafReadResult.Inaccessible(IllegalStateException("SAF input stream returned null"))
     }
 
     /** Best-effort convenience wrapper; null intentionally conflates absent/error here. */

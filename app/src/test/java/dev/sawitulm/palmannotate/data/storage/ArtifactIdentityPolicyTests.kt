@@ -1,5 +1,6 @@
 package dev.sawitulm.palmannotate.data.storage
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -37,5 +38,29 @@ class ArtifactIdentityPolicyTest {
         assertTrue(paths.contains("dataset/depth/field/DXP_A01_0007_1.json"))
         assertTrue(paths.contains("dataset/annotlog/field/DXP_A01_0007_1.json"))
         assertTrue(paths.contains("Output TXT/field/DXP_A01_0007_1.txt"))
+    }
+
+    /**
+     * `commitTreePackage` probes these paths through `SafMirrorStore.existsAll`, which queries each
+     * DISTINCT parent directory once per batch. That only pays off while the probe set stays
+     * concentrated in a handful of directories and free of duplicates — a duplicate would be
+     * silently collapsed, and a new directory would add a full listing to every tree save.
+     */
+    @Test fun `collision probes are distinct and span a small fixed set of directories`() {
+        val paths = ArtifactIdentityPolicy.collisionProbePaths("DXP_A01_0007", listOf(0, 1, 2, 3))
+        assertEquals(23, paths.size)
+        assertEquals(paths.size, paths.toSet().size)
+        assertEquals(
+            setOf(
+                "dataset/manifests",
+                "dataset/metadata",
+                "Output JSON",
+                "dataset/images/field",
+                "dataset/depth/field",
+                "dataset/annotlog/field",
+                "Output TXT/field",
+            ),
+            paths.map { it.substringBeforeLast('/') }.toSet(),
+        )
     }
 }

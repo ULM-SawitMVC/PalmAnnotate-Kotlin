@@ -289,12 +289,15 @@ class SessionRepository(
         if (safTreeUri != null) {
             val remoteCollision = withContext(Dispatchers.IO) {
                 runCatching {
-                    ArtifactIdentityPolicy.collisionProbePaths(
+                    // One batched probe, not one probe per path: existsAll queries each distinct
+                    // directory freshly exactly once. The verdict is read back in probe order so
+                    // the reported colliding path is the same one the per-path loop reported.
+                    val probePaths = ArtifactIdentityPolicy.collisionProbePaths(
                         treeName,
                         sides.map { it.sideIndex },
-                    ).firstOrNull {
-                        saf.exists(safTreeUri, it, forceRefresh = true) == SafPathState.Present
-                    }
+                    )
+                    val states = saf.existsAll(safTreeUri, probePaths)
+                    probePaths.firstOrNull { states[it] == SafPathState.Present }
                 }.getOrNull()
             }
             check(remoteCollision == null) {
