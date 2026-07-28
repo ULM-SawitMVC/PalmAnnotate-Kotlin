@@ -19,7 +19,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MirrorStatusEntity::class,
         MirrorDeletionEntity::class,
     ],
-    version = 6,
+    version = 7,
     exportSchema = true,
 )
 abstract class PalmAnnotateDatabase : RoomDatabase() {
@@ -209,11 +209,45 @@ abstract class PalmAnnotateDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v6 -> v7: WS-12 capture-set identity + WS-13 capture/GPS/operator provenance.
+         *
+         * Additive only: ALTER TABLE ADD COLUMN, no table rebuild, no index change, no row
+         * touched. Every existing run/tree keeps its data and lands on the "unknown provenance"
+         * defaults — '' for identity and operator, 'UNKNOWN'/'NONE' for GPS, NULL for the
+         * coordinates. Nothing is back-filled: a tree captured before this migration genuinely
+         * has no recorded operator or fix age, and claiming otherwise would be worse than
+         * admitting it. The columns are nullable/defaulted so a downgrade path is not needed.
+         */
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `sessions` ADD COLUMN `captureSetId` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `sessions` ADD COLUMN `deviceToken` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `sessions` ADD COLUMN `nameToken` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `sessions` ADD COLUMN `operatorName` TEXT NOT NULL DEFAULT ''")
+
+                db.execSQL("ALTER TABLE `trees` ADD COLUMN `captureSetId` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `trees` ADD COLUMN `deviceToken` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `trees` ADD COLUMN `nameToken` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `trees` ADD COLUMN `captureDate` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `trees` ADD COLUMN `operatorName` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `trees` ADD COLUMN `gpsStatus` TEXT NOT NULL DEFAULT 'UNKNOWN'")
+                db.execSQL("ALTER TABLE `trees` ADD COLUMN `gpsLatitude` REAL")
+                db.execSQL("ALTER TABLE `trees` ADD COLUMN `gpsLongitude` REAL")
+                db.execSQL("ALTER TABLE `trees` ADD COLUMN `gpsAccuracyM` REAL")
+                db.execSQL("ALTER TABLE `trees` ADD COLUMN `gpsFixTimeMillis` INTEGER")
+                db.execSQL("ALTER TABLE `trees` ADD COLUMN `gpsAgeMs` INTEGER")
+                db.execSQL("ALTER TABLE `trees` ADD COLUMN `gpsProvider` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `trees` ADD COLUMN `gpsSource` TEXT NOT NULL DEFAULT 'NONE'")
+            }
+        }
+
         val ALL_MIGRATIONS: Array<Migration> = arrayOf(
             MIGRATION_2_3,
             MIGRATION_3_4,
             MIGRATION_4_5,
             MIGRATION_5_6,
+            MIGRATION_6_7,
         )
 
         fun create(context: Context): PalmAnnotateDatabase =

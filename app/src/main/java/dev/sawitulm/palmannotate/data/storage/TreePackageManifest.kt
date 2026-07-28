@@ -1,5 +1,6 @@
 package dev.sawitulm.palmannotate.data.storage
 
+import dev.sawitulm.palmannotate.domain.model.CaptureSetIdentity
 import dev.sawitulm.palmannotate.domain.model.TreeSide
 import org.json.JSONArray
 import org.json.JSONObject
@@ -12,7 +13,8 @@ internal object TreePackageManifest {
         storage: AndroidStorageManager,
         treeName: String,
         sides: List<TreeSide>,
-    ): String = materializeAt(storage, treeName, sides, storage.rootDir)
+        identity: CaptureSetIdentity = CaptureSetIdentity.UNKNOWN,
+    ): String = materializeAt(storage, treeName, sides, storage.rootDir, identity)
 
     /** Build a manifest from staged annotation files without touching canonical files. */
     fun materializeAt(
@@ -20,6 +22,7 @@ internal object TreePackageManifest {
         treeName: String,
         sides: List<TreeSide>,
         artifactRoot: File,
+        identity: CaptureSetIdentity = CaptureSetIdentity.UNKNOWN,
     ): String {
         ArtifactIdentityPolicy.treeNameError(treeName)?.let {
             throw IllegalArgumentException("Invalid manifest tree name: $it")
@@ -97,7 +100,12 @@ internal object TreePackageManifest {
         val text = JSONObject().apply {
             put("schemaVersion", 1)
             put("treeName", treeName)
+            // NOTE: this pre-existing `captureSetId` is a CONTENT digest of the RGB set, not the
+            // WS-12 cross-device identity. It keeps its name and meaning because
+            // FolderResumeImporter.manifestMatchesMirror already validates against it. The
+            // cross-device identity lives in the additive `captureSet` object below.
             put("captureSetId", captureSetId)
+            put("captureSet", PackageProvenanceCodec.identityJson(identity))
             put("annotationRevision", annotationRevision)
             put("sides", sideArray)
             put("outputJson", JSONObject().apply { put("file", "$treeName.json"); put("sha256", outputSha) })

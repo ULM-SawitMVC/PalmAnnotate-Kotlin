@@ -67,6 +67,7 @@ import dev.sawitulm.palmannotate.data.storage.DraftWriteAwaiter
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
 import dev.sawitulm.palmannotate.data.storage.InputCache
 import dev.sawitulm.palmannotate.data.storage.JpegOrientationNormalizer
+import dev.sawitulm.palmannotate.data.storage.PackageProvenanceCodec
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
 import dev.sawitulm.palmannotate.domain.model.*
 import dev.sawitulm.palmannotate.domain.quality.QualityCheck
@@ -116,8 +117,16 @@ class CaptureFlowViewModel @Inject constructor(
         private set
     var retakingFromReview by mutableStateOf(false)
         private set
-    private var latitude: Double? = null
-    private var longitude: Double? = null
+    /**
+     * WS-13 — the full GPS record, not a bare coordinate pair.
+     *
+     * Replacing this wholesale on every refresh is the point: the previous code only ever
+     * ASSIGNED lat/lng on success, so a failed refresh silently kept the previous tree's
+     * coordinates and the next capture inherited them. Here a failure overwrites the record with
+     * an explicit PERMISSION_DENIED / LOCATION_OFF / UNAVAILABLE and no coordinates.
+     */
+    var gpsProvenance by mutableStateOf(GpsProvenance.UNKNOWN)
+        private set
     var isSaving by mutableStateOf(false)
         private set
     var saveError by mutableStateOf<String?>(null)
@@ -497,7 +506,14 @@ class CaptureFlowViewModel @Inject constructor(
                     )
                     return@launch
                 }
-                val hasGps = latitude != null && longitude != null
+                // WS-13: re-judge the fix here so the operator's GPS line, this QA gate and the
+                // record that gets committed all describe the same instant. `hasGps` keeps its
+                // historical meaning — "a coordinate was obtained at all" — deliberately: the
+                // freshness window is 60 s and one tree takes minutes, so gating the warning on
+                // FRESH would raise a blocking dialog on every single save without adding any
+                // information the sidecar's gps.status does not already carry.
+                val judgedGps = rejudgeGps()
+                val hasGps = judgedGps.recordedCoordinates != null
                 val report = QualityCheck.analyzeCaptureShots(
                     capturedSides = capturedCount,
                     expectedSides = sideCount,
@@ -539,9 +555,7 @@ class CaptureFlowViewModel @Inject constructor(
             capturedImages.clear(); capturedDepths.clear(); capturedSources.clear()
             repeat(sideCount) { capturedImages.add(null); capturedDepths.add(null); capturedSources.add(null) }
             currentSide = 0; currentStep = SideStep.PREVIEW; phase = CapturePhase.SIDES
-            val expectedVariety = safe(r.variety)
-            val expectedBlock = safeBlock(r.block)
-            val expectedName = if (expectedBlock.isNotEmpty()) "${expectedVariety}_${expectedBlock}_${"%04d".format(r.nextId)}" else "${expectedVariety}_${"%04d".format(r.nextId)}"
+            val expectedName = CaptureSetPolicy.treeName(r.variety, r.block, r.nameToken, r.nextId)
             val draft = repo.ensureCaptureDraft(runId, sideCount, expectedName, r.nextId)
             if (!r.autoId && draft.expectedTreeId > 0) manualId = draft.expectedTreeId.toString()
             draftStatus = draft.status.takeIf { it != "ACTIVE" }
@@ -604,21 +618,52 @@ class CaptureFlowViewModel @Inject constructor(
      */
     fun refreshGps() {
         viewModelScope.launch {
-            runCatching {
-                val loc = gps.getBestLocation()
-                gpsStatus = if (loc != null) {
-                    latitude = loc.latitude
-                    longitude = loc.longitude
-                    // Locale.US so the decimal stays a dot — the default (Indonesian) locale
-                    // uses a comma, rendering "-3,44941, 114,84279" which reads as four numbers.
-                    String.format(java.util.Locale.US, "%.5f, %.5f", loc.latitude, loc.longitude)
-                } else when {
-                    // Distinguish the failure so the message is actionable instead of a blank "unavailable".
-                    !gps.hasPermission() -> appContext.getString(R.string.capture_gps_no_permission)
-                    !gps.isLocationEnabled() -> appContext.getString(R.string.capture_gps_off)
-                    else -> appContext.getString(R.string.capture_gps_unavailable)
-                }
-            }.onFailure { gpsStatus = appContext.getString(R.string.capture_gps_unavailable) }
+            val resolved = runCatching { gps.bestProvenance() }
+                .getOrElse { GpsProvenance.unavailable(GpsStatus.UNAVAILABLE) }
+            // Unconditional replacement — see the gpsProvenance KDoc. A failure must CLEAR the
+            // previous fix, not fall through and leave it in place for the next tree.
+            gpsProvenance = resolved
+            gpsStatus = describeGps(resolved)
+        }
+    }
+
+    /**
+     * Re-judge the stored fix against [nowMillis], publish any downgrade to the on-screen GPS
+     * line, and return the judged record.
+     *
+     * The GPS is read once, when the capture screen opens. Four or eight photos later the fix can
+     * have aged out. Without this, the QA gate would test the status from screen-open while the
+     * commit wrote a different one — the operator would read a coordinate that looks live while a
+     * STALE record was persisted. Downgrade-only: [GpsFreshnessPolicy.recheckAtCommit] can never
+     * turn STALE back into FRESH.
+     */
+    private fun rejudgeGps(nowMillis: Long = System.currentTimeMillis()): GpsProvenance {
+        val judged = GpsFreshnessPolicy.recheckAtCommit(gpsProvenance, nowMillis)
+        if (judged != gpsProvenance) {
+            gpsProvenance = judged
+            gpsStatus = describeGps(judged)
+        }
+        return judged
+    }
+
+    /** Operator-facing GPS line. Stale is spelled out; it never looks like a live reading. */
+    private fun describeGps(p: GpsProvenance): String {
+        // Locale.US so the decimal stays a dot — the default (Indonesian) locale uses a comma,
+        // rendering "-3,44941, 114,84279" which reads as four numbers.
+        val coords = if (p.latitude != null && p.longitude != null) {
+            String.format(java.util.Locale.US, "%.5f, %.5f", p.latitude, p.longitude)
+        } else null
+        return when (p.status) {
+            GpsStatus.FRESH -> coords ?: appContext.getString(R.string.capture_gps_unavailable)
+            GpsStatus.STALE -> {
+                val minutes = ((p.ageMs ?: 0L) / 60_000L).coerceAtLeast(1L)
+                appContext.getString(R.string.capture_gps_stale, coords.orEmpty(), minutes)
+            }
+            GpsStatus.PERMISSION_DENIED ->
+                appContext.getString(R.string.capture_gps_no_permission)
+            GpsStatus.LOCATION_OFF -> appContext.getString(R.string.capture_gps_off)
+            GpsStatus.UNAVAILABLE, GpsStatus.UNKNOWN ->
+                appContext.getString(R.string.capture_gps_unavailable)
         }
     }
 
@@ -746,8 +791,10 @@ class CaptureFlowViewModel @Inject constructor(
 
     val allCaptured: Boolean get() = capturedImages.isNotEmpty() && capturedImages.all { it != null }
 
-    private fun safe(s: String) = s.uppercase().replace(Regex("[^A-Z0-9_]+"), "_").trim('_').ifBlank { "TREE" }
-    private fun safeBlock(s: String) = s.uppercase().replace(Regex("[^A-Z0-9]"), "")
+    // The former `safe`/`safeBlock` helpers moved into CaptureSetPolicy.treeName so the draft
+    // cursor and the commit derive the name from ONE implementation. The character rules are
+    // reproduced there byte-for-byte, so a run with no naming token still produces the exact
+    // names already on disk.
 
     private fun save(runId: String, context: Context, onDone: (String) -> Unit) {
         val r = run ?: return
@@ -770,9 +817,7 @@ class CaptureFlowViewModel @Inject constructor(
                     return@launch
                 }
                 val treeId = if (r.autoId) r.nextId else (manualId.toIntOrNull() ?: r.nextId).coerceAtLeast(1)
-                val v = safe(r.variety)
-                val b = safeBlock(r.block)
-                val treeName = if (b.isNotEmpty()) "${v}_${b}_${"%04d".format(treeId)}" else "${v}_${"%04d".format(treeId)}"
+                val treeName = CaptureSetPolicy.treeName(r.variety, r.block, r.nameToken, treeId)
                 repo.updateCaptureDraftCursor(runId, currentSide, phase.name, currentStep.name, treeName, treeId)
 
                 // Never overwrite a committed tree in-place. The operator must explicitly delete
@@ -921,8 +966,21 @@ class CaptureFlowViewModel @Inject constructor(
                         variety = r.variety,
                         block = r.block,
                         treeId = treeId.toString(),
-                        latitude = latitude,
-                        longitude = longitude,
+                        // WS-13: the capture day, recorded once here. Downstream never
+                        // back-fills it, so a re-export years later still says today.
+                        date = PackageProvenanceCodec.captureDate(System.currentTimeMillis()),
+                        // WS-13: judged against the COMMIT instant, not the instant the screen
+                        // opened. Four or eight photos can take longer than the freshness
+                        // window, and a fix that aged out during them is not a fresh fix.
+                        // rejudgeGps() also updates the on-screen line, so what the operator
+                        // reads and what lands in the sidecar can never disagree.
+                        gps = rejudgeGps(),
+                        operatorName = r.operatorName,
+                        identity = CaptureSetIdentity(
+                            r.captureSetId,
+                            r.deviceToken,
+                            r.nameToken,
+                        ),
                     ),
                     stagingDir = requireNotNull(stagingDir),
                     requiredDepthSides = sides

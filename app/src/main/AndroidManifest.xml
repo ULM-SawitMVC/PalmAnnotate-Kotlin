@@ -14,9 +14,33 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
 
+    <!--
+        WS-22 — backup policy is explicit, not inherited.
+
+        The working dataset lives in getExternalFilesDir()/PalmAnnotate/ and reaches multiple GB
+        (528 RGB+depth sides for one block alone). Android Auto Backup includes that directory by
+        default, caps an app at 25 MB, and drops the whole backup once the quota is exceeded — so
+        the default would produce a backup that silently never completes while still uploading
+        field GPS coordinates and operator names to a personal Google account.
+
+        A restore could not make the app usable either: SAF folder grants are not restored, and a
+        restored Room database would reference RGB/depth files that were never copied, i.e. the
+        exact split-brain state Phase A exists to prevent. The sanctioned recovery path is the
+        dataset ZIP / SAF mirror, which is operator-triggered and verified.
+
+        Therefore backup is OFF — but allowBackup="false" only covers CLOUD backup on API 31+.
+        Device-to-device transfer is blocked by the <device-transfer> block in
+        data_extraction_rules.xml, which is load-bearing today, not a placeholder: a D2D copy
+        would clone the Room database and the install id, giving two tablets one capture-set
+        identity. backup_rules.xml is the redundant one; it stays exhaustive so that if
+        allowBackup is ever turned back on, the dataset, database and crash logs are already
+        excluded rather than newly exposed.
+    -->
     <application
         android:name=".PalmAnnotateApp"
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher"
@@ -35,13 +59,21 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- Auto-launch when Orbbec USB camera is attached -->
-            <intent-filter>
-                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
-            </intent-filter>
-            <meta-data
-                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
-                android:resource="@xml/orbbec_usb_filter" />
+            <!--
+                WS-22 — USB_DEVICE_ATTACHED auto-launch is NOT declared here.
+
+                All three variants (field/debug/trace) install side by side with different
+                application ids. When every one of them claimed the Orbbec vendor filter, plugging
+                the camera in raised a package chooser, and the USB permission Android grants on
+                that dialog binds to whichever package was picked — routinely not the collecting
+                one. Ownership now lives in src/field/AndroidManifest.xml so exactly one package
+                auto-launches by default.
+
+                This removes only the *auto-launch* convenience. Every variant still opens the
+                camera through OrbbecManager.requestPermission(), which asks UsbManager at runtime
+                and is unaffected by this filter. Diagnostic builds are started from the launcher
+                with the camera already attached.
+            -->
         </activity>
 
         <provider

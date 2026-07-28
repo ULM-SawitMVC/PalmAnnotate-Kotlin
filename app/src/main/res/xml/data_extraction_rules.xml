@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    WS-22 — API 31+ data extraction rules.
+
+    Two separate transfers had to be answered, not one:
+      cloud-backup    Google account backup. Excluded for the same reason as backup_rules.xml —
+                      quota, and field GPS/operator data leaving the device.
+      device-transfer New-device setup copy. Also excluded: a copied Room database plus a copied
+                      install identity would give two physical tablets the same capture-set
+                      identity, which is exactly the cross-device collision WS-12 closes. The
+                      new device must resume from the dataset ZIP / SAF folder instead.
+
+    DO NOT DELETE THIS FILE OR ITS REFERENCE. On API 31+, android:allowBackup="false" turns off
+    cloud backup ONLY — it does NOT cover device-to-device transfer. The <device-transfer> block
+    below is therefore load-bearing today: without it, new-device setup would copy the Room
+    database and the SharedPreferences install id, giving two physical tablets the same WS-12
+    capture-set identity. Only <cloud-backup> is currently redundant, and it is kept exhaustive so
+    re-enabling backup cannot expose a domain by omission.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="external" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="root" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="external" path="." />
+        <exclude domain="database" path="." />
+        <exclude domain="sharedpref" path="." />
+        <exclude domain="file" path="." />
+        <exclude domain="root" path="." />
+    </device-transfer>
+</data-extraction-rules>

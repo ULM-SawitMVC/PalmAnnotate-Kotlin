@@ -67,6 +67,55 @@ class DatabaseMigrationTest {
         migrated.close()
     }
 
+    /**
+     * WS-12 + WS-13. The assertion that matters is not that the columns exist — it is that the
+     * pre-existing rows survive and land on "no claim" defaults. A migration that invented a
+     * capture-set id or back-filled today's date onto a July capture would corrupt provenance
+     * far more quietly than a crash.
+     */
+    @Test
+    fun migrateV6ToV7AddsIdentityAndProvenanceWithoutTouchingRows() {
+        val db = helper.createDatabase("migration-v6", 6)
+        db.execSQL("INSERT INTO sessions VALUES ('run', 'V', 'B', 'V__B', 4, 1, 3, 111, 222)")
+        db.execSQL("INSERT INTO trees VALUES ('tree-key', 'run', 'V_B_0001', 1, 'field', 4, 0, 'V', 'B', 7, 333, 444)")
+        db.close()
+
+        val migrated = helper.runMigrationsAndValidate(
+            "migration-v6", 7, true, PalmAnnotateDatabase.MIGRATION_6_7,
+        )
+
+        migrated.query("SELECT nextId, updatedAt FROM sessions WHERE sessionId='run'").use {
+            assertTrue(it.moveToFirst())
+            assertEquals(3, it.getInt(0))
+            assertEquals(222L, it.getLong(1))
+        }
+        migrated.query(
+            "SELECT captureSetId, deviceToken, nameToken, operatorName FROM sessions WHERE sessionId='run'",
+        ).use {
+            assertTrue(it.moveToFirst())
+            for (column in 0..3) assertEquals("", it.getString(column))
+        }
+        migrated.query(
+            "SELECT treeName, revision, captureSetId, captureDate, operatorName, gpsStatus, gpsSource " +
+                "FROM trees WHERE treeKey='tree-key'",
+        ).use {
+            assertTrue(it.moveToFirst())
+            assertEquals("V_B_0001", it.getString(0))
+            assertEquals(7L, it.getLong(1))
+            assertEquals("", it.getString(2))
+            assertEquals("", it.getString(3))
+            assertEquals("", it.getString(4))
+            assertEquals("UNKNOWN", it.getString(5))
+            assertEquals("NONE", it.getString(6))
+        }
+        // A missing fix must stay NULL — a 0.0 default would put every legacy tree at 0°N 0°E.
+        migrated.query("SELECT gpsLatitude, gpsLongitude, gpsFixTimeMillis FROM trees WHERE treeKey='tree-key'").use {
+            assertTrue(it.moveToFirst())
+            for (column in 0..2) assertTrue("column $column must be NULL", it.isNull(column))
+        }
+        migrated.close()
+    }
+
     @Test(expected = IllegalStateException::class)
     fun duplicateLogicalBboxFailsLoudly() {
         val db = helper.createDatabase("migration-duplicate-bbox", 4)

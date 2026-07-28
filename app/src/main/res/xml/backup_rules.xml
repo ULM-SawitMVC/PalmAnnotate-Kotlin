@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    WS-22 — Auto Backup content rules (API 24-30).
+
+    android:allowBackup is "false" in AndroidManifest.xml, so nothing here is exercised today.
+    The file exists so the policy is written down and stays fail-closed if backup is ever
+    re-enabled: everything is excluded, and any new domain would have to be added deliberately.
+    (data_extraction_rules.xml is NOT redundant in the same way — its <device-transfer> block is
+    the only thing blocking device-to-device copying on API 31+.)
+
+      external  the multi-GB RGB/depth dataset — far over the 25 MB Auto Backup quota, and it
+                carries field GPS coordinates and operator names.
+      database  Room rows that would reference dataset files a restore never brings back.
+      sharedpref  install identity / SAF grant bookkeeping; a restored install must mint its own
+                capture-set identity instead of impersonating the device it was copied from.
+      file / root  crash logs and staging/journal directories, which are process-local state.
+-->
+<full-backup-content>
+    <exclude domain="external" path="." />
+    <exclude domain="database" path="." />
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="file" path="." />
+    <exclude domain="root" path="." />
+</full-backup-content>

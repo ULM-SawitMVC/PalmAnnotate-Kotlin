@@ -51,17 +51,31 @@ object ExportManager {
         // today (device-local) so the field is never blank.
         val date = session.metadata?.date?.takeIf { it.isNotBlank() }
             ?: dateOnlyFormat.format(Date())
+        val identity = session.metadata?.identity ?: CaptureSetIdentity.UNKNOWN
+        val gps = session.metadata?.gps ?: GpsProvenance.UNKNOWN
         out.put("metadata", JSONObject().apply {
             put("date", date)
             // session_id: {YYYYMMDD}-{VARIETY}-{BLOCK} from the capture data — the native model
             // has no run-sequence counter (the reference's trailing "-001"), so the block is the
             // stable batch identifier. Same for every tree in a block, like a session id should be.
-            put("session_id", deriveSessionId(date, variety, session))
+            //
+            // WS-12: a device token is appended when the package HAS one. Two tablets working the
+            // same block previously produced byte-identical session_ids, so nothing in the merged
+            // dataset could separate them. Packages without an identity keep the exact legacy
+            // value — the token is never synthesised for old data.
+            put("session_id", deriveSessionId(date, variety, session, identity.deviceToken))
             // number: per-tree sequence parsed from the tree-name suffix (…_0001 -> 1),
             // matching the metadata sidecar's treeId. Omitted if the name has no suffix.
             deriveTreeNumber(session.treeName)?.let { put("number", it) }
             put("generated_at", dateFormat.format(Date()))
             put("variety", variety)
+            // WS-12/WS-13 provenance. Additive keys: a reader that ignores them sees the same
+            // document as before. `gps_status` is always present so "no GPS claim" is explicit
+            // rather than inferred from an absent field.
+            if (identity.captureSetId.isNotBlank()) put("capture_set_id", identity.captureSetId)
+            if (identity.deviceToken.isNotBlank()) put("device_token", identity.deviceToken)
+            put("operator", operatorForOutput(session))
+            put("gps_status", gps.status.name)
         })
 
         // images
@@ -202,15 +216,25 @@ object ExportManager {
     /** Capture-batch id `{YYYYMMDD}-{VARIETY}-{BLOCK}` (e.g. 20260618-DAMIMAS-A21B). Block comes
      *  from metadata, falling back to the 2nd `_`-segment of the tree name; the block segment is
      *  dropped only when neither is available, never emitting a dangling trailing dash. */
-    private fun deriveSessionId(date: String, variety: String, session: ActiveSession): String {
+    private fun deriveSessionId(
+        date: String,
+        variety: String,
+        session: ActiveSession,
+        deviceToken: String,
+    ): String {
         val ymd = date.filter { it.isDigit() }
         val block = session.metadata?.block?.takeIf { it.isNotBlank() }
             ?: session.treeName.split("_").getOrNull(1)?.takeIf { it.isNotBlank() }
         return buildString {
             append(ymd); append('-'); append(variety.uppercase())
             if (block != null) { append('-'); append(block.uppercase()) }
+            if (deviceToken.isNotBlank()) { append('-'); append(deviceToken.uppercase()) }
         }
     }
+
+    /** WS-13: an unlabelled package says UNKNOWN rather than shipping an empty string. */
+    private fun operatorForOutput(session: ActiveSession): String =
+        session.metadata?.operatorName?.trim()?.takeIf { it.isNotEmpty() } ?: "UNKNOWN"
 
     private fun deriveVariety(treeName: String): String {
         val m = Regex("^([A-Za-z]+)_").find(treeName)

@@ -41,6 +41,7 @@
     <string name="home_folder_resume_failed">Could not resume folder: %1$s</string>
     <string name="home_folder_resuming">Restoring existing trees from the export folder…</string>
     <string name="home_run_resumed">Continuing existing run for block %1$s</string>
+    <string name="home_run_resumed_named">Continuing block %1$s — next tree: %2$s</string>
     <string name="home_group_summary">%1$d session(s) · %2$d trees</string>
     <string name="home_run_summary">%1$d trees · %2$d photos/tree</string>
     <string name="home_delete_session_title">Delete session?</string>
@@ -83,6 +84,14 @@
     <string name="dialog_photos_per_tree">Photos per Tree</string>
     <string name="dialog_auto_id">Auto ID Mode</string>
     <string name="dialog_auto_id_hint">Tree ID increments (0001, 0002, …)</string>
+    <string name="dialog_operator_label">Operator</string>
+    <string name="dialog_operator_placeholder">e.g. Zainal</string>
+    <string name="dialog_operator_hint">Recorded in every package. Left blank it is stored as UNKNOWN.</string>
+    <string name="dialog_name_token">Add device token %1$s to tree names</string>
+    <string name="dialog_name_token_hint">Keeps this tablet\'s packages from overwriting another tablet\'s when both ZIPs are merged. Cannot be changed after the first tree.</string>
+    <string name="dialog_name_token_locked">Fixed by the existing run for this block — its packages are already named. The device token is still recorded inside every package and in the ZIP name.</string>
+    <string name="dialog_name_preview">First tree will be named: %1$s</string>
+    <string name="dialog_name_preview_next">Next tree will be named: %1$s</string>
 
     <!-- Capture -->
     <string name="capture_title">Capture — View %1$d/%2$d</string>
@@ -93,6 +102,7 @@
     <string name="capture_gps_unavailable">GPS unavailable — no signal yet</string>
     <string name="capture_gps_off">Location is off — turn on GPS in settings</string>
     <string name="capture_gps_no_permission">Location permission denied</string>
+    <string name="capture_gps_stale">%1$s — last fix %2$d min old, recorded as stale</string>
     <string name="capture_camera_starting">Camera is still starting — tap again in a moment</string>
     <string name="capture_tree_id">Tree ID</string>
     <string name="capture_permission_required">Camera permission is required for capture.</string>

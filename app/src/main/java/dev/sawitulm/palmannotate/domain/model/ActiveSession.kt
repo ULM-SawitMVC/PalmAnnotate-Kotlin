@@ -44,16 +44,29 @@ data class ActiveSession(
 }
 
 /**
- * Metadata captured with a tree (variety, block, GPS, date).
+ * Metadata captured with a tree (variety, block, GPS, date, operator, capture-set identity).
+ *
+ * WS-13: the raw `latitude`/`longitude` pair was replaced by [gps]. A bare coordinate carries no
+ * statement about when it was measured, which is exactly how 42 trees ended up sharing one
+ * hours-old fix with nothing in the data to say so. [latitude]/[longitude] remain available as
+ * derived accessors over the same record, so old call sites keep compiling and keep seeing the
+ * coordinate that was actually measured; whether it may be trusted is [gps].`status`.
  */
 data class TreeMetadata(
     val variety: String = "",
     val block: String = "",
     val treeId: String = "",
-    val date: String = "",             // ISO date string YYYY-MM-DD
-    val latitude: Double? = null,
-    val longitude: Double? = null,
-)
+    val date: String = "",             // ISO date string YYYY-MM-DD (capture day)
+    val gps: GpsProvenance = GpsProvenance.UNKNOWN,
+    val operatorName: String = "",
+    val identity: CaptureSetIdentity = CaptureSetIdentity.UNKNOWN,
+) {
+    /** The recorded latitude, whatever its freshness. Read [gps].`status` before trusting it. */
+    val latitude: Double? get() = gps.recordedCoordinates?.first
+
+    /** The recorded longitude, whatever its freshness. Read [gps].`status` before trusting it. */
+    val longitude: Double? get() = gps.recordedCoordinates?.second
+}
 
 /**
  * DatasetTree: the file-level grouping of images/labels for one tree.

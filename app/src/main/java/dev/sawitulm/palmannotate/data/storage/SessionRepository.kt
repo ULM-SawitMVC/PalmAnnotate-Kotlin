@@ -4,6 +4,7 @@ import android.net.Uri
 import android.util.Log
 import androidx.room.withTransaction
 import dev.sawitulm.palmannotate.data.db.*
+import dev.sawitulm.palmannotate.data.export.CaptureSetMergePolicy
 import dev.sawitulm.palmannotate.data.export.ExportManager
 import dev.sawitulm.palmannotate.data.yolo.YoloParser
 import dev.sawitulm.palmannotate.domain.model.*
@@ -123,7 +124,33 @@ class SessionRepository(
     private fun normToken(s: String) = s.uppercase().replace(Regex("[^A-Z0-9]"), "")
     fun groupKeyFor(variety: String, block: String) = "${normToken(variety)}__${normToken(block)}"
 
-    suspend fun createRun(variety: String, block: String, sideCount: Int, autoId: Boolean): String =
+    /**
+     * Create (or fold into) a run.
+     *
+     * WS-12/WS-13: [identity] and [operatorName] are minted/entered by the caller and applied to
+     * the resolved run — including an EXISTING one. Writing them only on INSERT was the defect
+     * that made both workstreams inert in the field: the collection tablet already holds a
+     * `DAMIMAS__A21B` run (folder resume, or a row migrated from v6), so the branch that stores
+     * the identity would never have run and every package would still have shipped with a blank
+     * capture set, a blank device token and `operator: UNKNOWN`.
+     *
+     * What may be adopted onto an existing run, and what may not:
+     *  - `captureSetId`/`deviceToken` — adopted only while the run has NONE. A run that already
+     *    carries an identity keeps it, so the trees it has written stay attributable.
+     *  - `operatorName` — adopted whenever a non-blank name is supplied. Already-committed trees
+     *    froze their own operator at commit time and are untouched; this only labels what is
+     *    captured from now on, which is correct when a different person continues a block.
+     *  - `nameToken` — adopted only when the run has written nothing at all
+     *    ([CaptureSetPolicy.resolveNameToken]). A started run keeps its filename format.
+     */
+    suspend fun createRun(
+        variety: String,
+        block: String,
+        sideCount: Int,
+        autoId: Boolean,
+        identity: CaptureSetIdentity = CaptureSetIdentity.UNKNOWN,
+        operatorName: String = "",
+    ): String =
         withContext(Dispatchers.IO) {
             val groupKey = groupKeyFor(variety, block)
             // C-01: one run per variety+block. Re-using the same block must fold into the SAME run
@@ -134,7 +161,11 @@ class SessionRepository(
             // the row; INSERT OR REPLACE on the unique groupKey then deletes the first run and
             // cascades all of its trees. Plain INSERT is an additional fail-closed backstop.
             db.withTransaction {
-                sessionDao.getByGroupKey(groupKey)?.sessionId ?: run {
+                val existing = sessionDao.getByGroupKey(groupKey)
+                if (existing != null) {
+                    adoptRunProvenanceLocked(existing, identity, operatorName)
+                    existing.sessionId
+                } else {
                     val id = UUID.randomUUID().toString()
                     val now = System.currentTimeMillis()
                     sessionDao.insert(
@@ -143,12 +174,50 @@ class SessionRepository(
                             groupKey = groupKey,
                             sideCount = sideCount.coerceAtLeast(2), autoId = autoId, nextId = 1,
                             createdAt = now, updatedAt = now,
+                            captureSetId = identity.captureSetId,
+                            deviceToken = identity.deviceToken,
+                            nameToken = identity.nameToken,
+                            operatorName = operatorName.trim(),
                         )
                     )
                     id
                 }
             }
         }
+
+    /**
+     * Apply the adoption rules above to an existing run row. Runs inside `createRun`'s
+     * transaction; writes nothing when there is nothing to change, so re-opening a fully
+     * provisioned run does not churn `updatedAt` (which orders the home list).
+     */
+    private suspend fun adoptRunProvenanceLocked(
+        existing: SessionEntity,
+        identity: CaptureSetIdentity,
+        operatorName: String,
+    ) {
+        // "Started" = anything already written under this run's naming. A capture draft counts:
+        // its expectedTreeName is pinned (ensureCaptureDraftLocked never rewrites a non-blank
+        // one) and commitTreePackage refuses a treeName that disagrees with it, so changing the
+        // token underneath an in-flight capture would make that capture uncommittable.
+        val runHasStarted = treeDao.getBySession(existing.sessionId).isNotEmpty() ||
+            captureDraftDao.get(existing.sessionId)?.expectedTreeName?.isNotBlank() == true
+        val adoptIdentity = existing.captureSetId.isBlank() && identity.isKnown
+        val resolvedToken = CaptureSetPolicy.resolveNameToken(
+            existingToken = existing.nameToken,
+            runHasStarted = runHasStarted,
+            requestedToken = identity.nameToken,
+        )
+        val trimmedOperator = operatorName.trim()
+        val updated = existing.copy(
+            captureSetId = if (adoptIdentity) identity.captureSetId else existing.captureSetId,
+            deviceToken = if (adoptIdentity) identity.deviceToken else existing.deviceToken,
+            nameToken = resolvedToken,
+            operatorName = if (trimmedOperator.isNotEmpty()) trimmedOperator else existing.operatorName,
+        )
+        if (updated != existing) {
+            sessionDao.update(updated.copy(updatedAt = System.currentTimeMillis()))
+        }
+    }
 
     suspend fun deleteRun(sessionId: String, safTreeUri: Uri? = null) =
         artifactCoordinator.withExclusiveAccess {
@@ -314,9 +383,35 @@ class SessionRepository(
             requiredDepthSides = requiredDepthSides,
         )
 
+        // WS-12/WS-13: resolve the provenance that will be frozen into BOTH the sidecar and the
+        // Room row, so the two can never disagree.
+        //  - identity: the tree's own (a resumed package carries the capturing device's) falling
+        //    back to this run's. Never re-stamped with the local device on resume.
+        //  - GPS: stored verbatim. Freshness is judged by the CAPTURE screen against its own
+        //    commit instant (CaptureFlowViewModel.save). Re-judging it here would also re-judge a
+        //    package being resumed days later and turn a genuinely fresh historical fix into
+        //    STALE — the resume is not a new measurement.
+        //  - operator: tree, then run. Empty stays empty here; it becomes "UNKNOWN" only at the
+        //    output boundary, so an unset operator is never confused with someone named UNKNOWN.
+        //  - captureDate: never defaulted to today. An unknown capture day stays unknown rather
+        //    than being relabelled with the day the folder happened to be resumed.
+        val committedIdentity = metadata?.identity?.takeIf { it.isKnown }
+            ?: CaptureSetIdentity(run.captureSetId, run.deviceToken, run.nameToken)
+        val committedGps = metadata?.gps ?: GpsProvenance.UNKNOWN
+        val committedOperator = (metadata?.operatorName?.trim()?.takeIf { it.isNotEmpty() }
+            ?: run.operatorName.trim())
+        val captureDate = metadata?.date?.trim().orEmpty()
+
         // Prepare every synchronous local sidecar before Room exposes the tree. The DB row is
         // the commit marker, so failed/partial files can never become an exportable tree.
-        val metaJson = buildMetadataJson(metadata, treeName, run, treeId, sides).toString(2)
+        val metaJson = buildMetadataJson(
+            metadata, treeName, run, treeId, sides,
+            identity = committedIdentity,
+            gps = committedGps,
+            operatorName = committedOperator,
+            captureDate = captureDate,
+            atMillis = now,
+        ).toString(2)
         storage.writeText(storage.metadataFile(treeName), metaJson)
         writeLocalArtifacts(treeName, split, sides)
 
@@ -353,6 +448,22 @@ class SessionRepository(
                     split = split, sideCount = declaredSideCount,
                     variety = metadata?.variety ?: run.variety, block = metadata?.block ?: run.block,
                     createdAt = now, updatedAt = now,
+                    // WS-12/WS-13: identity and provenance are frozen with the capture. A resumed
+                    // tree keeps the identity recorded in ITS sidecar (metadata.identity), which
+                    // is why the run's identity is only the fallback for a fresh local capture.
+                    captureSetId = committedIdentity.captureSetId,
+                    deviceToken = committedIdentity.deviceToken,
+                    nameToken = committedIdentity.nameToken,
+                    captureDate = captureDate,
+                    operatorName = committedOperator,
+                    gpsStatus = committedGps.status.name,
+                    gpsLatitude = committedGps.latitude,
+                    gpsLongitude = committedGps.longitude,
+                    gpsAccuracyM = committedGps.accuracyM?.toDouble(),
+                    gpsFixTimeMillis = committedGps.fixTimeMillis,
+                    gpsAgeMs = committedGps.ageMs,
+                    gpsProvider = committedGps.provider,
+                    gpsSource = committedGps.source.name,
                 )
             )
             persistSidesDb(treeKey, sides)
@@ -457,24 +568,49 @@ class SessionRepository(
         }
     }
 
+    /**
+     * The metadata sidecar.
+     *
+     * WS-12/WS-13 additions are strictly additive — `artifactSchemaVersion` stays 1 because the
+     * `artifacts` block it versions is unchanged, and every historical key keeps its name AND its
+     * population rule. New readers get `captureSet`, `gps` and `captureDate`; old readers see the
+     * same document they always did.
+     *
+     * Top-level `lat`/`lng` are written for ANY recorded coordinate, exactly as before. Gating
+     * them on freshness was tried and rejected: the freshness window is 60 s while one tree takes
+     * minutes, so the keys would have vanished from essentially every new package — and folder
+     * resume rewrites this file, so they would also have been stripped from the already-collected
+     * 42/90-tree sidecars. The 27 Jul complaint was that nothing in the data said the fix was one
+     * stale last-known reading; `gps.status`/`ageMs`/`source` say it, without removing anything.
+     */
     private fun buildMetadataJson(
         metadata: TreeMetadata?,
         treeName: String,
         run: SessionEntity,
         treeId: Int,
         sides: List<TreeSide>,
+        identity: CaptureSetIdentity = CaptureSetIdentity.UNKNOWN,
+        gps: GpsProvenance = GpsProvenance.UNKNOWN,
+        operatorName: String = "",
+        captureDate: String = "",
+        atMillis: Long = System.currentTimeMillis(),
     ): JSONObject {
-        val ts = ISO_FORMAT.format(Date())
+        val ts = ISO_FORMAT.format(Date(atMillis))
         return JSONObject().apply {
             put("artifactSchemaVersion", 1)
             put("name", treeName)
             put("variety", metadata?.variety ?: run.variety)
             put("blok", metadata?.block ?: run.block)
             put("treeId", treeId)
-            put("operator", "")
+            put("operator", PackageProvenanceCodec.operatorForOutput(operatorName))
             put("timestamp", ts)
-            metadata?.latitude?.let { put("lat", it) }
-            metadata?.longitude?.let { put("lng", it) }
+            // Empty means "not recorded". Never back-filled with the commit/export day.
+            put("captureDate", captureDate)
+            put("captureSet", PackageProvenanceCodec.identityJson(identity))
+            put("gps", PackageProvenanceCodec.gpsJson(gps))
+            // Legacy coordinate keys: unchanged population rule (see the KDoc above). A resumed
+            // legacy package therefore keeps the exact lat/lng it arrived with.
+            gps.recordedCoordinates?.let { (lat, lng) -> put("lat", lat); put("lng", lng) }
             put("artifacts", JSONObject().apply {
                 put("sides", JSONArray().apply {
                     for (side in sides.sortedBy { it.sideIndex }) {
@@ -525,7 +661,10 @@ class SessionRepository(
             ActiveSession(
                 sessionId = treeKey, treeName = tree.treeName, split = tree.split,
                 sides = sides, suggestedLinks = emptyList(), confirmedLinks = links,
-                metadata = TreeMetadata(variety = tree.variety, block = tree.block, treeId = tree.treeId.toString()),
+                // WS-12/WS-13: rebuild the FULL provenance, not just variety/block. Everything
+                // downstream (Output JSON, re-export, ZIP descriptor) reads it from here, so
+                // dropping it on load is how a round-trip silently erases it.
+                metadata = tree.toTreeMetadata(),
                 revision = tree.revision,
                 createdAt = tree.createdAt, updatedAt = tree.updatedAt,
             )
@@ -638,11 +777,35 @@ class SessionRepository(
 
     private class RevisionConflictException(val expected: Long, val actual: Long) : Exception()
 
+    /** Committed row → the provenance record every export path reads. */
+    private fun TreeEntity.toTreeMetadata(): TreeMetadata = TreeMetadata(
+        variety = variety,
+        block = block,
+        treeId = treeId.toString(),
+        date = captureDate,
+        gps = GpsProvenance(
+            status = GpsStatus.fromPersisted(gpsStatus),
+            latitude = gpsLatitude,
+            longitude = gpsLongitude,
+            accuracyM = gpsAccuracyM?.toFloat(),
+            fixTimeMillis = gpsFixTimeMillis,
+            ageMs = gpsAgeMs,
+            provider = gpsProvider,
+            source = GpsSource.fromPersisted(gpsSource),
+        ),
+        operatorName = operatorName,
+        identity = CaptureSetIdentity(captureSetId, deviceToken, nameToken),
+    )
+
     /** Stage all local text artifacts; RGB/depth remain the already-validated capture set. */
     private fun prepareRevisionStage(session: ActiveSession, tree: TreeEntity, stage: File) {
         writeLocalArtifacts(session.treeName, session.split, session.sides, stage)
         val outputText = ExportManager.generateOutputJson(session).toString(2)
         storage.writeText(File(stage, "Output JSON/${session.treeName}.json"), outputText)
+        // The committed sidecar is the capture-time record; re-saving annotations must never
+        // rewrite it (that would restamp the capture date and GPS with the edit instant). It is
+        // only rebuilt when the file is genuinely absent, and then from the tree's OWN stored
+        // provenance — not from "now".
         val metadataSource = storage.metadataFile(session.treeName)
         val metadataText = storage.readText(metadataSource) ?: buildMetadataJson(
             session.metadata,
@@ -651,9 +814,20 @@ class SessionRepository(
                 "", tree.sideCount, true, tree.treeId + 1, tree.createdAt, tree.updatedAt),
             tree.treeId,
             session.sides,
+            identity = CaptureSetIdentity(tree.captureSetId, tree.deviceToken, tree.nameToken),
+            gps = session.metadata?.gps ?: GpsProvenance.UNKNOWN,
+            operatorName = session.metadata?.operatorName?.takeIf { it.isNotBlank() } ?: tree.operatorName,
+            captureDate = session.metadata?.date?.takeIf { it.isNotBlank() } ?: tree.captureDate,
+            atMillis = tree.createdAt,
         ).toString(2)
         storage.writeText(File(stage, "metadata/${session.treeName}.json"), metadataText)
-        TreePackageManifest.materializeAt(storage, session.treeName, session.sides, stage)
+        TreePackageManifest.materializeAt(
+            storage,
+            session.treeName,
+            session.sides,
+            stage,
+            CaptureSetIdentity(tree.captureSetId, tree.deviceToken, tree.nameToken),
+        )
     }
 
     private fun revisionEntries(treeName: String, sides: List<TreeSide>, stage: File): List<Pair<File, File>> {
@@ -1532,6 +1706,24 @@ class SessionRepository(
         treeDao.getByName(treeName) != null
     }
 
+    /**
+     * WS-12: committed tree name → the identity it was captured under, for merge-safety checks.
+     * `contentDigest` deliberately reuses the capture-set id: at this level identity is what
+     * decides whether two same-named trees are the same tree, and reading every manifest would
+     * turn a resume pre-check into a full disk scan.
+     */
+    suspend fun allTreeIdentities(): Map<String, CaptureSetMergePolicy.Entry> =
+        withContext(Dispatchers.IO) {
+            treeDao.getAllOnce().associate { tree ->
+                tree.treeName to CaptureSetMergePolicy.Entry(
+                    treeName = tree.treeName,
+                    captureSetId = tree.captureSetId,
+                    deviceToken = tree.deviceToken,
+                    contentDigest = tree.captureSetId,
+                )
+            }
+        }
+
     /** Map of run groupKey → its sessionId (for reusing a run on resume). */
     suspend fun runGroupKeyToId(): Map<String, String> = withContext(Dispatchers.IO) {
         sessionDao.getAllOnce().associate { it.groupKey to it.sessionId }
@@ -1564,6 +1756,7 @@ private fun SessionEntity.toSummary(treeCount: Int) = RunSummary(
     sessionId = sessionId, variety = variety, block = block, groupKey = groupKey,
     sideCount = sideCount, autoId = autoId, nextId = nextId,
     createdAt = createdAt, updatedAt = updatedAt, treeCount = treeCount,
+    nameToken = nameToken, operatorName = operatorName,
 )
 
 private fun BboxEntity.toBbox() = Bbox(id = bboxId, classId = classId, className = className, x1 = x1, y1 = y1, x2 = x2, y2 = y2)
@@ -1581,4 +1774,8 @@ data class RunSummary(
     val createdAt: Long,
     val updatedAt: Long,
     val treeCount: Int,
+    /** WS-12: the naming token this run actually writes. Empty = legacy `VARIETY_BLOCK_0001`. */
+    val nameToken: String = "",
+    /** WS-13: operator recorded on the run; blank until one is entered. */
+    val operatorName: String = "",
 )

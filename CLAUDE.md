@@ -28,6 +28,10 @@ Output: `app/build/outputs/apk/field/PalmAnnotate-field-v<version>.apk`
 (for example `PalmAnnotate-field-v0.3.42.apk`). The version is part of the filename
 (see [Versioning](#versioning)), so don't hardcode it; resolve the newest APK instead.
 
+Without the signing secrets configured the name gains a `-NOKEY` suffix
+(`PalmAnnotate-field-v0.3.42-NOKEY.apk`). That build runs, but it cannot update — or be
+updated by — an APK signed with the real key. See [Distribution signing](#distribution-signing).
+
 The field variant is not debuggable, keeps R8/resource shrinking disabled, and uses
 `dev.sawitulm.palmannotate.field` so installing it cannot overwrite the existing debug
 app's private dataset.
@@ -121,6 +125,72 @@ The depth viewer uses the **jet colormap** (blue→cyan→green→yellow→red),
 The Dedup button originally called `saveAndAwait()` which waited for `writeSideArtifacts()` (YOLO labels + SAF image mirror) — **12 seconds**. Fixed by creating `saveDbOnly()` that only runs the DB transaction (**13ms**).
 
 **See:** `docs/PERF_GAIN.md` for full analysis.
+
+### Capture-set identity (cross-device merge safety)
+
+Two tablets collecting the same variety+block both counted from 1, so both produced
+`DAMIMAS_A21B_0001…`. Extracting the two ZIPs into one folder overwrote 168 samples silently
+(`docs/FIELD_REPORT_20260727.md` §3.1).
+
+- **`installId`** — a UUID minted once per install in `InputCache`. Private, never exported.
+- **`deviceToken`** — 6 chars derived from `installId` (`CaptureSetPolicy.deviceTokenFrom`).
+  Public, opaque, no hardware serial. Alphabet excludes I/L/O/U so it cannot be mistyped.
+- **`captureSetId`** — a UUID per run, stored on `sessions` and copied onto each `trees` row.
+  A **resumed** tree keeps the identity of the device that captured it.
+- **`nameToken`** — **opt-in**, off by default. When enabled in the Start Session dialog (which
+  shows the token and a live preview of the tree name), tree names become
+  `DAMIMAS_A21B_K7Q2M1_0001`. With it off, names are byte-identical to the legacy ones.
+
+**Adoption rules (`SessionRepository.createRun` → `adoptRunProvenanceLocked`).** C-01 folds a
+repeated variety+block into the run that already exists, so identity cannot be written only on
+INSERT — the collection tablet's `DAMIMAS__A21B` run predates WS-12 (folder resume, or a row
+migrated from v6) and would have stayed anonymous forever.
+
+| Field | Adopted onto an existing run? |
+|---|---|
+| `captureSetId` / `deviceToken` | Only while the run has none. A run that already has an identity keeps it. |
+| `operatorName` | Whenever a non-blank name is entered. Committed trees froze their own at commit; only future captures are labelled. |
+| `nameToken` | Only when the run has written **nothing** — no committed tree and no capture draft (`CaptureSetPolicy.resolveNameToken`). |
+
+A started run therefore keeps legacy naming, and the Start Session dialog says so: it looks up the
+run it will fold into and renders the real next tree name with the token switch disabled. Losing
+the filename token does **not** lose the protection — `captureSetId`/`deviceToken` still reach the
+sidecar, manifest, Output JSON, `capture_set.json` and the ZIP filename, so a merge tool can still
+separate two devices' identical names.
+
+Carried into: the metadata sidecar (`captureSet`), the package manifest (`captureSet` — note
+the pre-existing top-level `captureSetId` there is a *content digest*, unrelated), Output JSON
+(`capture_set_id`, `device_token`, and a token suffix on `session_id`), the ZIP filename, and a
+new root `capture_set.json` in the archive. `CaptureSetMergePolicy` is the merge rule and
+fails closed on any ambiguity, including a legacy package with no identity.
+
+**Compatibility:** every addition is additive. No existing file or field was renamed, so the
+already-collected 42/90-tree packages and the folder-resume path are unaffected.
+
+### GPS freshness and operator provenance
+
+`getBestLocation()` used to fall back to an unbounded-age last-known fix, which is how 42 trees
+shipped one identical coordinate with nothing in the data saying so.
+
+- `GpsProvider.bestProvenance()` returns a `GpsProvenance` record (status, coordinates,
+  accuracy, fix timestamp, age, provider, source) — never a bare coordinate.
+- A **stale** fix keeps its coordinates and is labelled `STALE`. **Top-level `lat`/`lng` keep
+  their historical population rule: any recorded coordinate is written.** Gating them on
+  freshness was tried and reverted — the window is 60 s while one tree takes minutes, so the keys
+  would have disappeared from ~100% of new packages *and* been stripped from the already-delivered
+  42/90-tree sidecars, which folder resume rewrites. The qualifier lives in `gps.status` /
+  `gps.ageMs` / `gps.source`, which is what §3 item 3 actually asked for.
+- A failed refresh **replaces** the record, clearing the previous tree's coordinates.
+- Freshness is re-judged at commit (`GpsFreshnessPolicy.recheckAtCommit`), because eight photos
+  can outlast the 60 s window. `CaptureFlowViewModel.rejudgeGps()` is the single place that does
+  it: the QA gate, the on-screen GPS line and the committed record all read the same judgement,
+  so the screen can never show a coordinate as live while a `STALE` record is written.
+  Resume does *not* re-judge — it is not a new measurement.
+- Capture is never blocked, and the QA warning keeps its historical meaning — "no coordinate at
+  all". Raising it for a merely stale fix would have put a blocking dialog on every one of ~90
+  saves without adding anything `gps.status` does not already record.
+- Operator is entered in the Start Session dialog, stored on `sessions`/`trees`, and written as
+  `UNKNOWN` (not an empty string) when unset.
 
 ### Tap-to-Read Depth
 
@@ -258,9 +328,10 @@ build you intend to carry into the field.
   shallow clone (depth 1) makes that return `1` and ships a silently downgraded
   `v0.3.1` / `versionCode 1` APK.
 - **CI never builds `release`.** `android-build.yml` builds `field`, `debug` and `trace`;
-  `release.yml` publishes `field` + `trace` only. All three are signed with the debug
-  signing config, all keep R8 and resource shrinking off, and each has its own application
-  id so none can overwrite another's app-private dataset. Only `field` is non-debuggable.
+  `release.yml` publishes `field` + `trace` only. All keep R8 and resource shrinking off, and
+  each has its own application id so none can overwrite another's app-private dataset. Only
+  `field` is non-debuggable. `field`/`trace` are signed with the persistent distribution key
+  when the secrets are present — see [Distribution signing](#distribution-signing).
 - **Only the `field` APK may be used for dataset collection.** `trace` is `initWith(debug)`
   and therefore debuggable, which costs roughly the 19 ms median frame measured in
   `docs/FIELD_REPORT_20260727.md` §4.5.
@@ -269,16 +340,118 @@ build you intend to carry into the field.
   side-by-side diagnostic app that replaces `debug` in releases, so it ships under the name
   operators recognise. Don't "fix" the name — but do remember that the *variant* is `trace`
   when reading logs, matching signatures, or issuing `pm uninstall`.
-- **A runner-generated debug keystore is not a stable update identity.** Before distributing a
-  field Release, either configure a persistent signing keystore in repository secrets or replace
-  the CI asset with a locally built APK whose signer matches the APK validated on the device.
-  Compare certificate SHA-256 digests with `apksigner verify --print-certs`; a mismatch forces
-  uninstall and would remove that package's app-private data.
+- **A runner-generated debug keystore is not a stable update identity.** `release.yml` now
+  **fails before building** when the signing secrets are absent, and Gradle renames an
+  unsigned distributable APK `…-NOKEY.apk`. Compare certificate SHA-256 digests with
+  `apksigner verify --print-certs`; a mismatch forces uninstall and would remove that
+  package's app-private data.
+- **Only ONE variant owns `USB_DEVICE_ATTACHED`.** The filter lives in
+  `app/src/field/AndroidManifest.xml`, not `src/main`. With all three packages installed, a
+  shared filter raised a package chooser on every camera plug-in and bound the USB permission
+  to whichever app was tapped. `debug`/`trace` still open the camera through
+  `OrbbecManager.requestPermission()` (runtime `UsbManager`), which this does not affect.
+  `VariantManifestPolicyTests` fails if a second source set ever claims the filter.
+  **Deployment precondition:** this only removes the chooser once *every installed* variant is
+  rebuilt from this commit. Tablet `b98cea56` still has the older `.debug` v0.3.41 (which holds
+  the 27 Jul data and must not be uninstalled) — its merged manifest still declares the filter,
+  so the chooser persists until that package is updated in place. It is debug-signed today, so
+  updating it in place is possible. Verify on the device; it cannot be checked from CI.
+- **`android:allowBackup` is `false`, deliberately.** The dataset under `getExternalFilesDir`
+  is multiple GB — far past Auto Backup's 25 MB quota — and carries field GPS and operator
+  names. A restore could not work anyway: SAF grants are not restored and a restored Room DB
+  would reference files that were never copied. `backup_rules.xml` and
+  `data_extraction_rules.xml` exclude every domain (cloud backup *and* device transfer) so
+  re-enabling backup cannot silently expose a domain. The sanctioned recovery path is the
+  dataset ZIP / SAF mirror.
 - **`release.yml` fails the run if a pushed tag disagrees with the built version.** That
   guard exists so a Release can never carry an APK whose internal version differs from
   its label. Don't relax it.
 - **`git push --follow-tags` triggers both workflows** (branch push + tag push) — correct
   output, one wasted build. Push commit and tag separately.
+
+### Distribution signing
+
+Android refuses `install -r` when the signer changed. The only way past it is `pm uninstall`,
+which deletes the package's app-private storage — i.e. the collected dataset. So `field` and
+`trace` are signed with one persistent key, sourced from repository secrets.
+
+| Secret / Gradle property | Contents |
+|---|---|
+| `PALMANNOTATE_KEYSTORE_BASE64` | base64 of the `.jks` (used by CI) |
+| `PALMANNOTATE_KEYSTORE_PATH` | path to the `.jks` (local alternative to the blob) |
+| `PALMANNOTATE_KEYSTORE_PASSWORD` | store password |
+| `PALMANNOTATE_KEY_ALIAS` | key alias |
+| `PALMANNOTATE_KEY_PASSWORD` | key password |
+| `PALMANNOTATE_SIGNING_CERT_SHA256` | **required to publish**; `release.yml` fails if the built cert differs |
+
+> ### ⛔ Read before configuring the secrets
+>
+> A tablet in the field already has `dev.sawitulm.palmannotate.field` installed **with a dataset
+> in it** (`docs/FIELD_REPORT_20260727.md` — tablet `b98cea56`, v0.3.44, 42 committed trees).
+> Introducing a *different* signer is not a packaging detail: `install -r` starts failing with
+> `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, and the only way to install the new build is
+> `pm uninstall`, which deletes that dataset. Generating a fresh key without checking would
+> **cause** the data-loss event this whole workstream exists to prevent.
+>
+> So the first question is not "which key do I create" but "which key is already on the device".
+
+**Step 1 — identify the installed signer (do this first, on the device).**
+
+```powershell
+$adb = 'C:\tools\android-sdk\platform-tools\adb.exe'
+$installed = & $adb -s 192.168.1.7:5555 shell pm path dev.sawitulm.palmannotate.field
+& $adb -s 192.168.1.7:5555 pull ($installed -replace '^package:','') installed-field.apk
+& 'C:\tools\android-sdk\build-tools\35.0.0\apksigner.bat' verify --print-certs installed-field.apk
+```
+
+**Step 2 — prefer adopting that signer.** If the digest matches a keystore you still hold (for a
+locally built APK that is `~/.android/debug.keystore`, alias `androiddebugkey`, store/key password
+`android`), use **that** file as `PALMANNOTATE_KEYSTORE_BASE64`. The identity then does not change,
+every installed app updates in place, and nothing has to be uninstalled.
+
+**Step 3 — only if the existing signer is unrecoverable**, generate a new one — and treat it as a
+migration, not a config change:
+
+1. Export a dataset ZIP from every device that holds data and **verify it off-device** (open the
+   ZIP, count trees) before the first key-change install.
+2. Record the pre-change digest from step 1 in the release notes.
+3. Then, and only then, `pm uninstall` + install the new build.
+
+```powershell
+$env:JAVA_HOME = 'C:\tools\jdk17\jdk-17.0.19+10'
+& "$env:JAVA_HOME\bin\keytool.exe" -genkeypair -v `
+    -keystore palmannotate-release.jks -alias palmannotate `
+    -keyalg RSA -keysize 2048 -validity 10000 `
+    -storepass '<store-pw>' -keypass '<key-pw>' `
+    -dname "CN=PalmAnnotate, O=SawitULM, C=ID"
+
+# Value for PALMANNOTATE_KEYSTORE_BASE64
+[Convert]::ToBase64String([IO.File]::ReadAllBytes('palmannotate-release.jks')) | Set-Clipboard
+
+# Value for PALMANNOTATE_SIGNING_CERT_SHA256 (required) — the SHA256 line
+& "$env:JAVA_HOME\bin\keytool.exe" -list -v -keystore palmannotate-release.jks -alias palmannotate
+```
+
+Back the `.jks` up off the machine and add it to the repository's Actions secrets
+(Settings → Secrets and variables → Actions). **Never commit it.**
+
+The pin is mandatory because `field` and `trace` are signed by the same config, so the
+field-vs-trace comparison in `release.yml` can never fail on its own. The pin is the only guard
+that can catch a *changed* key.
+
+Behaviour without the secrets:
+
+- **Local builds keep working.** Gradle falls back to the debug keystore and names the output
+  `PalmAnnotate-field-v<version>-NOKEY.apk`. `BuildConfig.SIGNING_IDENTITY` becomes
+  `EPHEMERAL_DEBUG` and `PalmAnnotateApp` logs a warning naming the data-loss consequence.
+- **`release.yml` refuses to run.** The secret check is the first step, before checkout, and a
+  `-NOKEY` asset is rejected again just before upload.
+- **`android-build.yml` still builds** (a PR from a fork has no secrets); the `-NOKEY` name is
+  the marker that the artifact cannot update anything.
+
+`release.yml` additionally rejects a `versionCode` that is not greater than the highest already
+published (the rebase/force-push case), except when re-running the same tag, and records the
+certificate SHA-256 in the release notes.
 
 ### CI does NOT replace on-device verification
 

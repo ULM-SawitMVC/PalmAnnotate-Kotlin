@@ -3,10 +3,13 @@ package dev.sawitulm.palmannotate.data.storage
 import android.net.Uri
 import android.graphics.BitmapFactory
 import android.util.Log
+import dev.sawitulm.palmannotate.data.export.CaptureSetMergePolicy
 import dev.sawitulm.palmannotate.domain.model.AnnotationClass
 import dev.sawitulm.palmannotate.domain.model.Bbox
 import dev.sawitulm.palmannotate.domain.model.CaptureOrigin
+import dev.sawitulm.palmannotate.domain.model.CaptureSetIdentity
 import dev.sawitulm.palmannotate.domain.model.CrossSideLink
+import dev.sawitulm.palmannotate.domain.model.GpsProvenance
 import dev.sawitulm.palmannotate.domain.model.OutputSchema
 import dev.sawitulm.palmannotate.domain.model.TreeMetadata
 import dev.sawitulm.palmannotate.domain.model.TreeSide
@@ -37,6 +40,7 @@ class FolderResumeImporter @Inject constructor(
     private val repo: SessionRepository,
     private val storage: AndroidStorageManager,
     private val saf: SafMirrorStore,
+    private val inputCache: InputCache,
 ) {
 
     companion object {
@@ -87,6 +91,13 @@ class FolderResumeImporter @Inject constructor(
         val groupKey: String,
         val sides: List<ParsedSidePlan>,
         val confirmedLinks: List<CrossSideLink>,
+        // WS-12/WS-13: provenance read back from the package's own sidecar. Defaults keep every
+        // existing caller and test compiling, and describe a legacy package honestly: no
+        // identity, no operator, no GPS claim.
+        val identity: CaptureSetIdentity = CaptureSetIdentity.UNKNOWN,
+        val operatorName: String = "",
+        val captureDate: String = "",
+        val gps: GpsProvenance = GpsProvenance.UNKNOWN,
     )
 
     data class ParsedSidePlan(
@@ -142,6 +153,11 @@ class FolderResumeImporter @Inject constructor(
         // Dedupe against runs/trees already in Room.
         val existingTreeNames = repo.allTreeNames().toHashSet()
         val existingGroupRuns = repo.runGroupKeyToId()
+        // WS-12: a name that already exists locally used to be dropped in silence. That is the
+        // exact moment two tablets' DAMIMAS_A21B_0001 meet, so the reason is now stated. The tree
+        // is still skipped (importing it would need a name that is already taken); what changes
+        // is that the collision is visible instead of looking like "nothing new to resume".
+        reportIdentityCollisions(scanned)
         val plans = planRuns(scanned, existingTreeNames)
         if (plans.isEmpty()) return@withContext 0
 
@@ -149,8 +165,25 @@ class FolderResumeImporter @Inject constructor(
         var failed = 0
         for (plan in plans) {
             // Reuse an existing run with the same group key, else create one.
+            //
+            // WS-12: a resumed run gets THIS device's identity, because it is this device that
+            // will capture the next tree in it. The trees being imported are unaffected — each
+            // keeps the identity recorded in its own sidecar (see ingestTree). nameToken stays
+            // blank so the resumed folder's existing filenames continue unchanged; without an
+            // identity here the run would stay anonymous forever and every later capture in it
+            // would ship with a blank capture set, which is the collision WS-12 exists to close.
             val runId = existingGroupRuns[plan.groupKey]
-                ?: repo.createRun(plan.variety, plan.block, plan.sideCount, autoId = true)
+                ?: repo.createRun(
+                    plan.variety,
+                    plan.block,
+                    plan.sideCount,
+                    autoId = true,
+                    identity = CaptureSetIdentity(
+                        captureSetId = UUID.randomUUID().toString(),
+                        deviceToken = runCatching { inputCache.deviceToken }.getOrDefault(""),
+                        nameToken = "",
+                    ),
+                )
             for (tree in plan.trees) {
                 val ok = ingestTree(safTreeUri, runId, tree, imageNames)
                 if (ok) imported++ else failed++
@@ -209,7 +242,12 @@ class FolderResumeImporter @Inject constructor(
 
         val variety = json.optJSONObject("metadata")?.optString("variety")?.takeIf { it.isNotBlank() }
             ?: deriveVariety(parsed.treeName)
-        val block = resolveBlock(safTreeUri, parsed.treeName)
+        // Read the metadata sidecar ONCE and take everything from it. Previously only "blok" was
+        // read here, so a resumed tree lost its capture date, operator and GPS record and got a
+        // fresh set of blanks on the next export.
+        val metaJson = readTextForResume(safTreeUri, "$METADATA_DIR/${parsed.treeName}.json")
+            ?.let { runCatching { JSONObject(it) }.getOrNull() }
+        val block = resolveBlock(metaJson, parsed.treeName)
 
         val treeId = parseTreeId(parsed.treeName)
         val sides = parsed.sides.map { s ->
@@ -233,7 +271,46 @@ class FolderResumeImporter @Inject constructor(
             treeName = parsed.treeName, treeId = treeId, split = parsed.split,
             variety = variety, block = block, groupKey = repo.groupKeyFor(variety, block),
             sides = sides, confirmedLinks = links,
+            identity = PackageProvenanceCodec.readIdentity(metaJson),
+            operatorName = PackageProvenanceCodec.readOperator(metaJson),
+            captureDate = PackageProvenanceCodec.readCaptureDate(metaJson),
+            gps = PackageProvenanceCodec.readGps(metaJson),
         )
+    }
+
+    /**
+     * WS-12 — state, per colliding tree name, why a scanned package cannot be merged with what
+     * Room already holds. Log-only on purpose: resume must keep importing everything it safely
+     * can, and refusing the whole folder because one name is taken would be a worse failure than
+     * the collision itself.
+     */
+    private suspend fun reportIdentityCollisions(scanned: List<ScannedTree>) {
+        val existing = repo.allTreeIdentities()
+        if (existing.isEmpty()) return
+        val remote = scanned.mapNotNull { tree ->
+            val local = existing[tree.treeName] ?: return@mapNotNull null
+            // Both sides pre-date WS-12: there is nothing new to say, and warning on all 42
+            // trees of a legacy folder would bury the collisions that do matter.
+            if (!local.hasIdentity && tree.identity.captureSetId.isBlank()) return@mapNotNull null
+            local to CaptureSetMergePolicy.Entry(
+                treeName = tree.treeName,
+                captureSetId = tree.identity.captureSetId,
+                deviceToken = tree.identity.deviceToken,
+                // No cheap content digest is available for a remote package here, so identity
+                // alone decides. Same identity + same name is treated as the same tree, which is
+                // the normal "resume the folder this device wrote" case.
+                contentDigest = tree.identity.captureSetId,
+            )
+        }
+        if (remote.isEmpty()) return
+        val verdict = CaptureSetMergePolicy.evaluate(
+            listOf(remote.map { it.first }, remote.map { it.second }),
+        )
+        if (verdict is CaptureSetMergePolicy.Verdict.Conflict) {
+            for (collision in verdict.collisions) {
+                Log.w(TAG, "resume identity collision — ${collision.describe()}")
+            }
+        }
     }
 
     private fun manifestMatchesMirror(
@@ -408,15 +485,10 @@ class FolderResumeImporter @Inject constructor(
     }
 
     /** Read block from the metadata sidecar ("blok"), else parse it from the tree name. */
-    private fun resolveBlock(safTreeUri: Uri, treeName: String): String {
-        val metaText = readTextForResume(safTreeUri,"$METADATA_DIR/${treeName}.json")
-        if (metaText != null) {
-            runCatching {
-                val blok = JSONObject(metaText).optString("blok").ifBlank {
-                    JSONObject(metaText).optString("block")
-                }
-                if (blok.isNotBlank()) return blok
-            }
+    private fun resolveBlock(metaJson: JSONObject?, treeName: String): String {
+        if (metaJson != null) {
+            val blok = metaJson.optString("blok").ifBlank { metaJson.optString("block") }
+            if (blok.isNotBlank()) return blok
         }
         return deriveBlock(treeName)
     }
@@ -495,7 +567,18 @@ class FolderResumeImporter @Inject constructor(
                 depthRequired = decision.depthRequired,
             ))
         }
-        val metadata = TreeMetadata(variety = tree.variety, block = tree.block, treeId = tree.treeId.toString())
+        // WS-12/WS-13: carry the CAPTURING device's identity and provenance, not this device's.
+        // Re-stamping a resumed package with the resuming tablet's identity would make two
+        // physically distinct collections look like one.
+        val metadata = TreeMetadata(
+            variety = tree.variety,
+            block = tree.block,
+            treeId = tree.treeId.toString(),
+            date = tree.captureDate,
+            gps = tree.gps,
+            operatorName = tree.operatorName,
+            identity = tree.identity,
+        )
         return runCatching {
             repo.commitTreePackage(
                 sessionId = runId,

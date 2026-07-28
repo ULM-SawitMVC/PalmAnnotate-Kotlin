@@ -36,6 +36,8 @@ import dev.sawitulm.palmannotate.data.storage.FolderResumeImporter
 import dev.sawitulm.palmannotate.data.storage.InputCache
 import dev.sawitulm.palmannotate.data.storage.RunSummary
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
+import dev.sawitulm.palmannotate.domain.model.CaptureSetIdentity
+import dev.sawitulm.palmannotate.domain.model.CaptureSetPolicy
 import dev.sawitulm.palmannotate.ui.common.NewSessionDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -93,6 +95,20 @@ class HomeViewModel @Inject constructor(
 
     val runs: StateFlow<List<RunSummary>> = repo.observeRuns()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    init {
+        // WS-12: mint the install id off the main thread. Its first read writes SharedPreferences
+        // with commit() (durability is required before the first captureSetId derived from it is
+        // persisted), and the first reader would otherwise be NewSessionDialog's composition —
+        // a blocking disk write on the UI thread of an app that already measures 89 ms p99
+        // frames. Every later read is a plain in-memory prefs lookup.
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { inputCache.deviceToken }
+        }
+    }
+
+    /** C-01 run key for a variety+block, so the Start Session dialog can find the run it will fold into. */
+    fun groupKeyFor(variety: String, block: String): String = repo.groupKeyFor(variety, block)
 
     val stats: StateFlow<HomeStats> = runs.map { list ->
         HomeStats(
@@ -154,20 +170,41 @@ class HomeViewModel @Inject constructor(
         block: String,
         sideCount: Int,
         autoId: Boolean,
-        onDone: (runId: String, resumedExisting: Boolean) -> Unit,
+        operatorName: String = "",
+        useNameToken: Boolean = false,
+        onDone: (runId: String, resumedExisting: Boolean, nextTreeName: String) -> Unit,
     ) {
         viewModelScope.launch {
             val result = try {
                 initialFolderResume.await()
                 val existingId = repo.runGroupKeyToId()[repo.groupKeyFor(variety, block)]
-                val id = repo.createRun(variety, block, sideCount, autoId)
-                id to (existingId == id)
+                // WS-12: mint the run identity here. createRun applies it to the resolved run —
+                // adopting it onto an existing run only while that run has none, so trees that
+                // are already committed are never re-stamped.
+                val deviceToken = runCatching { inputCache.deviceToken }.getOrDefault("")
+                val identity = CaptureSetIdentity(
+                    captureSetId = UUID.randomUUID().toString(),
+                    deviceToken = deviceToken,
+                    nameToken = if (useNameToken) deviceToken else "",
+                )
+                val id = repo.createRun(
+                    variety, block, sideCount, autoId, identity, operatorName,
+                )
+                // Read the run back and report the name the app will ACTUALLY write. The dialog's
+                // preview is computed from the run list, which can still be catching up with a
+                // folder resume that finished moments ago; this value comes from the committed
+                // row, so it is the one the operator should believe.
+                val resolved = repo.getRun(id)
+                val nextTreeName = resolved?.let {
+                    CaptureSetPolicy.treeName(it.variety, it.block, it.nameToken, it.nextId)
+                }.orEmpty()
+                Triple(id, existingId == id, nextTreeName)
             } catch (e: Exception) {
                 // Navigation must not fire (nor the app crash) on a failed create.
                 Log.e("HomeVM", "createRun failed", e)
                 return@launch
             }
-            onDone(result.first, result.second)
+            onDone(result.first, result.second, result.third)
         }
     }
 
@@ -470,16 +507,29 @@ fun HomeScreen(
     if (showNewDialog) {
         NewSessionDialog(
             onDismiss = { showNewDialog = false },
-            onCreate = { variety, block, sideCount, autoId ->
-                viewModel.createRun(variety, block, sideCount, autoId) { runId, resumedExisting ->
+            onCreate = { variety, block, sideCount, autoId, operatorName, useNameToken ->
+                viewModel.createRun(
+                    variety, block, sideCount, autoId, operatorName, useNameToken,
+                ) { runId, resumedExisting, nextTreeName ->
                     showNewDialog = false
                     if (resumedExisting) {
-                        toasts.info(context.getString(R.string.home_run_resumed, block))
+                        // Name the tree that will actually be written, not just the block: this
+                        // is the operator's last chance to notice that a folded run kept its
+                        // existing naming instead of the token they just switched on.
+                        toasts.info(
+                            if (nextTreeName.isNotEmpty()) {
+                                context.getString(R.string.home_run_resumed_named, block, nextTreeName)
+                            } else {
+                                context.getString(R.string.home_run_resumed, block)
+                            },
+                        )
                     }
                     onSessionClick(runId)
                 }
             },
             inputCache = viewModel.inputCache,
+            existingRuns = runs,
+            groupKeyOf = viewModel::groupKeyFor,
         )
     }
 

@@ -13,7 +13,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.sawitulm.palmannotate.R
 import dev.sawitulm.palmannotate.data.storage.InputCache
+import dev.sawitulm.palmannotate.data.storage.RunSummary
 import dev.sawitulm.palmannotate.domain.model.AnnotationClass
+import dev.sawitulm.palmannotate.domain.model.CaptureSetPolicy
 import dev.sawitulm.palmannotate.domain.quality.QualityCheck
 import dev.sawitulm.palmannotate.domain.usecase.SessionUseCases.MismatchCluster
 import dev.sawitulm.palmannotate.ui.theme.PalmColors
@@ -21,26 +23,69 @@ import dev.sawitulm.palmannotate.ui.theme.PalmColors
 /**
  * Dialog for starting a new SESSION (a capture run locked to variety+block).
  * Trees are added later from the session detail. Mirrors the JS Start-Session view.
+ *
+ * [existingRuns] and [groupKeyOf] exist so the name preview can tell the truth. C-01 folds a
+ * repeated variety+block into the run that already exists, and that run's naming token and
+ * sequence — not this dialog's inputs — decide the filename. Previewing an unconditional
+ * `…_TOKEN_0001` while the app was about to write `DAMIMAS_A21B_0043` is worse than showing no
+ * preview at all, because the operator would believe the collision protection was applied.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NewSessionDialog(
     onDismiss: () -> Unit,
-    onCreate: (variety: String, block: String, sideCount: Int, autoId: Boolean) -> Unit,
+    onCreate: (
+        variety: String,
+        block: String,
+        sideCount: Int,
+        autoId: Boolean,
+        operatorName: String,
+        useNameToken: Boolean,
+    ) -> Unit,
     inputCache: InputCache? = null,
+    existingRuns: List<RunSummary> = emptyList(),
+    groupKeyOf: (variety: String, block: String) -> String = { _, _ -> "" },
 ) {
     var variety by remember { mutableStateOf(inputCache?.lastVariety ?: "DAMIMAS") }
     var block by remember { mutableStateOf(inputCache?.lastBlock ?: "") }
     var sideCount by remember { mutableIntStateOf(inputCache?.lastSideCount ?: 4) }
     var autoId by remember { mutableStateOf(inputCache?.lastAutoId ?: true) }
+    var operatorName by remember { mutableStateOf(inputCache?.lastOperatorName ?: "") }
+    var useNameToken by remember { mutableStateOf(inputCache?.lastUseNameToken ?: false) }
     var varietyError by remember { mutableStateOf(false) }
     var blockError by remember { mutableStateOf(false) }
+    // WS-12: the device token has to be visible BEFORE the first photo, because from the first
+    // commit onwards it is baked into every filename in the run and cannot be changed.
+    val deviceToken = remember(inputCache) {
+        runCatching { inputCache?.deviceToken }.getOrNull().orEmpty()
+    }
+    // The run this Start Session will actually fold into, if it already exists.
+    val existingRun = remember(variety, block, existingRuns) {
+        val key = groupKeyOf(variety, block)
+        if (key.isBlank()) null else existingRuns.firstOrNull { it.groupKey == key }
+    }
+    // Same rule the repository applies, from CaptureSetPolicy, so the two cannot disagree.
+    val tokenLocked = existingRun != null &&
+        (existingRun.nameToken.isNotBlank() || existingRun.treeCount > 0)
+    val effectiveToken = CaptureSetPolicy.resolveNameToken(
+        existingToken = existingRun?.nameToken.orEmpty(),
+        runHasStarted = (existingRun?.treeCount ?: 0) > 0,
+        requestedToken = if (useNameToken) deviceToken else "",
+    )
+    val nextSeq = existingRun?.nextId ?: 1
+    val namePreview = CaptureSetPolicy.treeName(variety, block, effectiveToken, nextSeq)
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.dialog_start_session)) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            // Scrollable: the dialog is taller than the content area on a landscape tablet once
+            // the soft keyboard is up, and a clipped Column would hide the token switch and the
+            // name preview with no indication that anything is below the fold.
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 Text(
                     stringResource(R.string.dialog_session_lock_hint),
                     style = MaterialTheme.typography.bodySmall,
@@ -81,6 +126,52 @@ fun NewSessionDialog(
                     }
                     Switch(checked = autoId, onCheckedChange = { autoId = it })
                 }
+                // WS-13: the operator field used to be hardcoded empty in every metadata sidecar.
+                OutlinedTextField(
+                    value = operatorName,
+                    onValueChange = { operatorName = it },
+                    label = { Text(stringResource(R.string.dialog_operator_label)) },
+                    placeholder = { Text(stringResource(R.string.dialog_operator_placeholder)) },
+                    supportingText = { Text(stringResource(R.string.dialog_operator_hint)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                // WS-12: opt-in, off by default so existing collections keep their exact naming.
+                // Disabled once the run has started — the format is fixed by what it has already
+                // written, and an enabled switch that changes nothing is a lie the operator would
+                // only discover after the first save.
+                if (deviceToken.isNotEmpty()) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                stringResource(R.string.dialog_name_token, deviceToken),
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            Text(
+                                stringResource(
+                                    if (tokenLocked) R.string.dialog_name_token_locked
+                                    else R.string.dialog_name_token_hint,
+                                ),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = if (tokenLocked) effectiveToken.isNotEmpty() else useNameToken,
+                            onCheckedChange = { useNameToken = it },
+                            enabled = !tokenLocked,
+                        )
+                    }
+                }
+                Text(
+                    stringResource(
+                        if (existingRun != null) R.string.dialog_name_preview_next
+                        else R.string.dialog_name_preview,
+                        namePreview,
+                    ),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                )
             }
         },
         confirmButton = {
@@ -94,8 +185,17 @@ fun NewSessionDialog(
                             cache.lastBlock = block.trim()
                             cache.lastSideCount = sideCount
                             cache.lastAutoId = autoId
+                            cache.lastOperatorName = operatorName.trim()
+                            cache.lastUseNameToken = useNameToken
                         }
-                        onCreate(variety.trim(), block.trim(), sideCount, autoId)
+                        onCreate(
+                            variety.trim(),
+                            block.trim(),
+                            sideCount,
+                            autoId,
+                            operatorName.trim(),
+                            useNameToken,
+                        )
                     }
                 },
             ) { Text(stringResource(R.string.action_start)) }

@@ -5,6 +5,7 @@ import android.net.Uri
 import android.util.Log
 import androidx.core.content.FileProvider
 import dagger.hilt.android.qualifiers.ApplicationContext
+import dev.sawitulm.palmannotate.BuildConfig
 import dev.sawitulm.palmannotate.data.db.TreeDao
 import dev.sawitulm.palmannotate.data.db.TreeEntity
 import dev.sawitulm.palmannotate.data.storage.AndroidStorageManager
@@ -13,9 +14,11 @@ import dev.sawitulm.palmannotate.data.storage.ArtifactIdentityPolicy
 import dev.sawitulm.palmannotate.data.storage.CaptureIntegrityPolicy
 import dev.sawitulm.palmannotate.data.storage.DepthArtifactContract
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
+import dev.sawitulm.palmannotate.data.storage.InputCache
 import dev.sawitulm.palmannotate.data.storage.SafMirrorStore
 import dev.sawitulm.palmannotate.data.storage.SaveResult
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
+import dev.sawitulm.palmannotate.domain.model.CaptureSetIdentity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -60,6 +63,7 @@ class DatasetZipExporter @Inject constructor(
     private val exportFolder: ExportFolderRepository,
     private val repo: SessionRepository,
     private val artifactCoordinator: ArtifactCoordinator,
+    private val inputCache: InputCache,
 ) {
 
     companion object {
@@ -103,7 +107,7 @@ class DatasetZipExporter @Inject constructor(
                 ?.let { sanitize("${it.variety}_${it.block}") }
                 ?.takeIf { it.isNotBlank() }
                 ?: "session"
-            exportLocked(trees, "${base}_${timestamp()}", onProgress, isCancelled)
+            exportLocked(trees, "${base}${archiveToken()}_${timestamp()}", onProgress, isCancelled)
         }
         return publishPrepared(prepared, isCancelled)
     }
@@ -115,10 +119,31 @@ class DatasetZipExporter @Inject constructor(
     ): Outcome {
         val prepared = artifactCoordinator.withExclusiveAccess {
             val trees = treeDao.getAllOnce()
-            exportLocked(trees, "PalmAnnotate_all_${timestamp()}", onProgress, isCancelled)
+            exportLocked(
+                trees,
+                "PalmAnnotate_all${archiveToken()}_${timestamp()}",
+                onProgress,
+                isCancelled,
+            )
         }
         return publishPrepared(prepared, isCancelled)
     }
+
+    /**
+     * WS-12: the exporting device's token, as a filename segment.
+     *
+     * Two tablets used to hand over `PalmAnnotate_all_20260727-161122.zip` and
+     * `PalmAnnotate_all_20260727-163544.zip` — nothing but a clock separated them, and nothing
+     * inside said which tablet produced which. The token makes the two archives distinguishable
+     * before anyone opens them. Failure to read it degrades to the legacy name rather than
+     * blocking an export the operator needs.
+     */
+    private fun archiveToken(): String =
+        runCatching { inputCache.deviceToken }.getOrNull()
+            ?.let { sanitize(it) }
+            ?.takeIf { it.isNotBlank() }
+            ?.let { "_$it" }
+            .orEmpty()
 
     // ─── Core ────────────────────────────────────────────────────────────────────
 
@@ -151,11 +176,33 @@ class DatasetZipExporter @Inject constructor(
         }
         if (items.isEmpty()) return PreparedExport.Finished(Outcome.Empty)
 
+        // WS-12: the root capture-set descriptor. Written as an ADDITIONAL entry — no existing
+        // path in the archive changes — so a consumer that has never heard of it reads the ZIP
+        // exactly as before, while a merge tool can refuse an unsafe extraction.
+        val descriptorFile = try {
+            writeCaptureSetDescriptor(trees)
+        } catch (e: Exception) {
+            Log.w(TAG, "capture-set descriptor could not be prepared", e)
+            return PreparedExport.Finished(
+                Outcome.Failed(e.message ?: "Capture-set descriptor failed"),
+            )
+        }
+        items.add(
+            Item(
+                FileEntry(descriptorFile, CaptureSetDescriptor.FILE_NAME),
+                trees.firstOrNull()?.treeName.orEmpty(),
+            ),
+        )
+
         val fileName = "$zipBaseName.zip"
         val snapshotFile = try {
             File.createTempFile("PalmAnnotate-export-", ".zip", storage.exportsDir)
         } catch (e: Exception) {
             Log.w(TAG, "local export snapshot could not be created", e)
+            // This return is BEFORE the try/finally that deletes the staged descriptor, so it has
+            // to clean up itself. The realistic trigger is a full disk on a multi-GB dataset —
+            // exactly when leaving orphans in the operator's exports directory is worst.
+            descriptorFile.delete()
             return PreparedExport.Finished(Outcome.Failed(e.message ?: "Export failed"))
         }
 
@@ -180,6 +227,9 @@ class DatasetZipExporter @Inject constructor(
             Log.w(TAG, "zip snapshot failed", e)
             snapshotFile.delete()
             return PreparedExport.Finished(Outcome.Failed(e.message ?: "Export failed"))
+        } finally {
+            // Staging copy only; the authoritative bytes are already inside the archive.
+            descriptorFile.delete()
         }
         if (cancelled) {
             snapshotFile.delete()
@@ -324,6 +374,51 @@ class DatasetZipExporter @Inject constructor(
             Log.w(TAG, "package materialization failed for ${tree.treeName}", e)
             e.message ?: "package materialization failed"
         }
+    }
+
+    /**
+     * WS-12 — stage the root `capture_set.json`.
+     *
+     * The per-tree `contentDigest` is the SHA-256 of that tree's package manifest, which was just
+     * rebuilt and already binds the RGB, depth, label and Output JSON hashes. So one digest
+     * comparison answers "is this the same tree package?" without re-reading any image.
+     *
+     * The descriptor is validated against [CaptureSetMergePolicy] before it is written: an
+     * archive whose own listing already contains a collision must fail here, not surface as a
+     * silent overwrite on the merging workstation.
+     */
+    private fun writeCaptureSetDescriptor(trees: List<TreeEntity>): File {
+        val entries = trees.map { tree ->
+            val manifest = storage.manifestFile(tree.treeName)
+            CaptureSetMergePolicy.Entry(
+                treeName = tree.treeName,
+                captureSetId = tree.captureSetId,
+                deviceToken = tree.deviceToken,
+                contentDigest = if (manifest.isFile) DepthArtifactContract.sha256Hex(manifest) else "",
+            )
+        }
+        val verdict = CaptureSetMergePolicy.evaluate(listOf(entries))
+        check(verdict is CaptureSetMergePolicy.Verdict.Mergeable) {
+            "Export aborted: this dataset contains colliding tree identities — " +
+                (verdict as CaptureSetMergePolicy.Verdict.Conflict)
+                    .collisions.joinToString("; ") { it.describe() }
+        }
+        val exportingIdentity = CaptureSetIdentity(
+            captureSetId = trees.map { it.captureSetId }.distinct().singleOrNull().orEmpty(),
+            deviceToken = runCatching { inputCache.deviceToken }.getOrDefault(""),
+            nameToken = trees.map { it.nameToken }.distinct().singleOrNull().orEmpty(),
+        )
+        val json = CaptureSetDescriptor.build(
+            identity = exportingIdentity,
+            appVersion = BuildConfig.VERSION_NAME,
+            generatedAt = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
+                .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+                .format(Date()),
+            entries = entries,
+        ).toString(2)
+        val file = File.createTempFile("PalmAnnotate-captureset-", ".json", storage.exportsDir)
+        file.writeText(json)
+        return file
     }
 
     /** Collect the existing local files for one tree, mapped to their zip-internal paths.

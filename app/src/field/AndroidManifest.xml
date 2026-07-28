@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    WS-22 — the `field` variant is the single USB attach owner.
+
+    `field` (dev.sawitulm.palmannotate.field) is the only variant approved for dataset
+    collection, so it is the only one that claims USB_DEVICE_ATTACHED. `debug` and `trace`
+    deliberately do not merge this filter: with three packages installed, a shared filter turns
+    every camera plug-in into a package chooser and binds the USB permission to whichever app
+    the operator happened to tap.
+
+    The activity element below is merged into the one declared in src/main by name; it adds the
+    intent filter and the vendor-filter meta-data only. Runtime USB permission
+    (OrbbecManager.requestPermission) is unaffected in every variant.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <activity android:name=".MainActivity">
+
+            <!-- Auto-launch when the Orbbec USB camera is attached -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/orbbec_usb_filter" />
+        </activity>
+    </application>
+</manifest>

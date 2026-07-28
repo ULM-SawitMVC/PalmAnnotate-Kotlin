@@ -28,6 +28,16 @@ data class SessionEntity(
     val nextId: Int = 1,                 // next tree sequence number
     val createdAt: Long,
     val updatedAt: Long,
+    // ── WS-12 capture-set identity ────────────────────────────────────────────
+    // Minted once when the run is created and never rewritten, so every tree in the run — and
+    // every re-export of it — carries the same identity. Empty on rows migrated from v6: a run
+    // created before WS-12 has no identity, and inventing one would claim provenance it lacks.
+    @ColumnInfo(defaultValue = "''") val captureSetId: String = "",
+    @ColumnInfo(defaultValue = "''") val deviceToken: String = "",
+    /** Naming token actually used in this run's treeNames. Empty = legacy naming. */
+    @ColumnInfo(defaultValue = "''") val nameToken: String = "",
+    // ── WS-13 operator provenance ─────────────────────────────────────────────
+    @ColumnInfo(defaultValue = "''") val operatorName: String = "",
 )
 
 /** One tree (N side photos) inside a run. */
@@ -57,6 +67,27 @@ data class TreeEntity(
     val revision: Long = 0L,
     val createdAt: Long,
     val updatedAt: Long,
+    // ── WS-12: identity copied from the owning run at commit time ─────────────
+    // Denormalised on purpose: a resumed tree keeps the identity of the device that CAPTURED it,
+    // which is not the run identity of the device doing the resume.
+    @ColumnInfo(defaultValue = "''") val captureSetId: String = "",
+    @ColumnInfo(defaultValue = "''") val deviceToken: String = "",
+    @ColumnInfo(defaultValue = "''") val nameToken: String = "",
+    // ── WS-13: capture-time provenance that must survive resume and re-export ──
+    /** Device-local capture day (YYYY-MM-DD). Empty on legacy rows; never back-filled with today. */
+    @ColumnInfo(defaultValue = "''") val captureDate: String = "",
+    @ColumnInfo(defaultValue = "''") val operatorName: String = "",
+    /** GpsStatus.name. 'UNKNOWN' on legacy rows — an honest "no claim", not a fabricated FRESH. */
+    @ColumnInfo(defaultValue = "'UNKNOWN'") val gpsStatus: String = "UNKNOWN",
+    val gpsLatitude: Double? = null,
+    val gpsLongitude: Double? = null,
+    val gpsAccuracyM: Double? = null,
+    /** Epoch millis of the FIX, not of the commit. */
+    val gpsFixTimeMillis: Long? = null,
+    val gpsAgeMs: Long? = null,
+    @ColumnInfo(defaultValue = "''") val gpsProvider: String = "",
+    /** GpsSource.name. 'NONE' when no coordinate was recorded at all. */
+    @ColumnInfo(defaultValue = "'NONE'") val gpsSource: String = "NONE",
 )
 
 @Entity(

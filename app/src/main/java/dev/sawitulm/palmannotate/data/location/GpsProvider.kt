@@ -7,6 +7,10 @@ import android.location.Location
 import android.location.LocationManager
 import android.os.Looper
 import androidx.core.content.ContextCompat
+import dev.sawitulm.palmannotate.domain.model.GpsFreshnessPolicy
+import dev.sawitulm.palmannotate.domain.model.GpsProvenance
+import dev.sawitulm.palmannotate.domain.model.GpsSource
+import dev.sawitulm.palmannotate.domain.model.GpsStatus
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
@@ -16,7 +20,11 @@ import kotlin.coroutines.resume
  * Port of JS CaptureFlow._getPosition (GPS acquisition).
  *
  * Uses Android LocationManager (no Google Play Services dependency).
- * High accuracy, 15s timeout, graceful null on failure.
+ * High accuracy, 15s timeout, graceful degradation — capture is never blocked.
+ *
+ * WS-13: [bestProvenance] replaced the old `getBestLocation(): GpsLocation?`. The old signature
+ * could not express "this is a real coordinate but it is 40 minutes old", so its stale
+ * last-known fallback was indistinguishable from a fresh fix at the call site.
  */
 class GpsProvider(private val context: Context) {
 
@@ -25,13 +33,15 @@ class GpsProvider(private val context: Context) {
         val longitude: Double,
         val accuracy: Float,
         val timestampMillis: Long,
+        val provider: String = "",
     )
 
     companion object {
-        private const val MAX_LAST_KNOWN_AGE_MS = 60_000L
+        private const val MAX_LAST_KNOWN_AGE_MS = GpsFreshnessPolicy.MAX_FIX_AGE_MS
 
         internal fun isFresh(timestampMillis: Long, nowMillis: Long): Boolean =
-            nowMillis - timestampMillis in 0..MAX_LAST_KNOWN_AGE_MS
+            GpsFreshnessPolicy.classify(timestampMillis, nowMillis, MAX_LAST_KNOWN_AGE_MS) ==
+                GpsFreshnessPolicy.Freshness.FRESH
     }
 
     /**
@@ -84,7 +94,7 @@ class GpsProvider(private val context: Context) {
         }
 
         return bestLocation?.let {
-            GpsLocation(it.latitude, it.longitude, it.accuracy, it.time)
+            GpsLocation(it.latitude, it.longitude, it.accuracy, it.time, it.provider ?: "")
         }
     }
 
@@ -129,6 +139,7 @@ class GpsProvider(private val context: Context) {
                                     location.longitude,
                                     location.accuracy,
                                     location.time,
+                                    location.provider ?: provider,
                                 )
                             )
                         }
@@ -171,14 +182,55 @@ class GpsProvider(private val context: Context) {
     }
 
     /**
-     * Get GPS — tries last known first, then requests fresh if stale.
-     * Convenience wrapper for the capture flow.
+     * WS-13 — the capture flow's single entry point. Always returns a record, never a bare
+     * coordinate, and never claims freshness it cannot prove.
+     *
+     * Order of preference:
+     *   1. a last-known fix that is still inside the freshness window (free, instant);
+     *   2. otherwise a fresh single-shot request;
+     *   3. otherwise the last-known fix, reported as [GpsStatus.STALE] WITH its real age.
+     *
+     * Step 3 is where the old implementation silently lied: it returned that coordinate through
+     * the same type as a fresh one. Here the coordinate is still carried — losing a real
+     * measurement helps nobody — but the status makes it unusable as a fresh fix, and
+     * [GpsProvenance.publishableCoordinates] keeps it out of the unqualified lat/lng fields.
+     *
+     * Failure is always a status, never an exception: the operator must be able to keep
+     * collecting with an honest UNAVAILABLE/PERMISSION_DENIED/LOCATION_OFF record.
      */
-    suspend fun getBestLocation(): GpsLocation? {
+    suspend fun bestProvenance(nowMillis: Long = System.currentTimeMillis()): GpsProvenance {
+        if (!hasPermission()) return GpsProvenance.unavailable(GpsStatus.PERMISSION_DENIED)
+
         val lastKnown = getLastKnownLocation()
-        if (lastKnown != null && isFresh(lastKnown.timestampMillis, System.currentTimeMillis())) {
-            return lastKnown
+        if (lastKnown != null && isFresh(lastKnown.timestampMillis, nowMillis)) {
+            return lastKnown.toProvenance(GpsSource.LAST_KNOWN, nowMillis)
         }
-        return getCurrentLocation() ?: lastKnown
+
+        val current = getCurrentLocation()
+        if (current != null) {
+            return current.toProvenance(GpsSource.CURRENT_FIX, System.currentTimeMillis())
+        }
+
+        if (lastKnown != null) {
+            // Real coordinate, known age, explicitly not fresh.
+            return lastKnown.toProvenance(GpsSource.LAST_KNOWN, System.currentTimeMillis())
+                .let { if (it.isFresh) it.copy(status = GpsStatus.STALE) else it }
+        }
+
+        return GpsProvenance.unavailable(
+            if (!isLocationEnabled()) GpsStatus.LOCATION_OFF else GpsStatus.UNAVAILABLE,
+        )
     }
+
+    private fun GpsLocation.toProvenance(source: GpsSource, nowMillis: Long): GpsProvenance =
+        GpsFreshnessPolicy.forFix(
+            latitude = latitude,
+            longitude = longitude,
+            accuracyM = accuracy.takeIf { it > 0f },
+            fixTimeMillis = timestampMillis,
+            provider = provider,
+            source = source,
+            nowMillis = nowMillis,
+            maxAgeMs = MAX_LAST_KNOWN_AGE_MS,
+        )
 }

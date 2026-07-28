@@ -20,6 +20,17 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    env:
+      # WS-21: same durable signer as release.yml when the secrets exist, so a per-push artifact
+      # can update an installed Release without an uninstall. Unlike release.yml this job does
+      # NOT require them: a fork/PR build has no secrets and must still produce an APK. Gradle
+      # then falls back to the debug signer and renames the artifact `-NOKEY`, which is the
+      # visible marker that the build cannot update anything.
+      PALMANNOTATE_KEYSTORE_BASE64: ${{ secrets.PALMANNOTATE_KEYSTORE_BASE64 }}
+      PALMANNOTATE_KEYSTORE_PASSWORD: ${{ secrets.PALMANNOTATE_KEYSTORE_PASSWORD }}
+      PALMANNOTATE_KEY_ALIAS: ${{ secrets.PALMANNOTATE_KEY_ALIAS }}
+      PALMANNOTATE_KEY_PASSWORD: ${{ secrets.PALMANNOTATE_KEY_PASSWORD }}
+
     steps:
       - name: Checkout (full history)
         uses: actions/checkout@v4

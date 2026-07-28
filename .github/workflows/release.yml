@@ -22,7 +22,43 @@ jobs:
     needs: integrity
     runs-on: ubuntu-latest
 
+    env:
+      # WS-21: the durable distribution signer. Without these, every runner produces a DIFFERENT
+      # certificate and the published APK can only be installed by uninstalling the previous one
+      # — which deletes the operator's app-private dataset. The guard below refuses to publish
+      # rather than shipping an artifact with that trap in it.
+      PALMANNOTATE_KEYSTORE_BASE64: ${{ secrets.PALMANNOTATE_KEYSTORE_BASE64 }}
+      PALMANNOTATE_KEYSTORE_PASSWORD: ${{ secrets.PALMANNOTATE_KEYSTORE_PASSWORD }}
+      PALMANNOTATE_KEY_ALIAS: ${{ secrets.PALMANNOTATE_KEY_ALIAS }}
+      PALMANNOTATE_KEY_PASSWORD: ${{ secrets.PALMANNOTATE_KEY_PASSWORD }}
+      # REQUIRED, not optional: the built APK's certificate SHA-256 must equal this. field and
+      # trace share one signing config, so the field-vs-trace comparison below can never fail —
+      # this pin is the ONLY check that can catch a swapped or regenerated keystore before it
+      # orphans every installed app. Get the value from `keytool -list -v -keystore <jks>`
+      # (SHA256 line) or `apksigner verify --print-certs <apk>`.
+      PALMANNOTATE_SIGNING_CERT_SHA256: ${{ secrets.PALMANNOTATE_SIGNING_CERT_SHA256 }}
+
     steps:
+      # Runs FIRST, before checkout even matters: no point building an APK that must not ship.
+      - name: Require a persistent signing identity
+        run: |
+          MISSING=""
+          for NAME in PALMANNOTATE_KEYSTORE_BASE64 PALMANNOTATE_KEYSTORE_PASSWORD \
+                      PALMANNOTATE_KEY_ALIAS PALMANNOTATE_KEY_PASSWORD \
+                      PALMANNOTATE_SIGNING_CERT_SHA256; do
+            [ -n "${!NAME}" ] || MISSING="$MISSING $NAME"
+          done
+          if [ -n "$MISSING" ]; then
+            echo "::error::Release blocked: missing signing secret(s):$MISSING"
+            echo "::error::A Release signed with a runner-generated debug key cannot update an"
+            echo "::error::installed app; the operator would have to uninstall it and lose the"
+            echo "::error::dataset. Configure the secrets (see CLAUDE.md 'Distribution signing')"
+            echo "::error::or hand over a locally built APK whose signer matches the device."
+            echo "::error::PALMANNOTATE_SIGNING_CERT_SHA256 is required too: without it nothing"
+            echo "::error::in this workflow can detect that the signing key CHANGED."
+            exit 1
+          fi
+
       - name: Checkout (full history)
         uses: actions/checkout@v4
         with:
@@ -52,6 +88,13 @@ jobs:
         run: |
           FIELD_APK=$(find app/build/outputs/apk/field -name '*.apk' | head -1)
           TRACE_APK=$(find app/build/outputs/apk/trace -name '*.apk' | head -1)
+          # Belt and braces: the signing guard above already ran, but a -NOKEY artifact must
+          # never reach the asset upload even if that guard is ever weakened.
+          case "$FIELD_APK$TRACE_APK" in
+            *-NOKEY*)
+              echo "::error::Built APK is marked -NOKEY (ephemeral debug signer). Refusing to publish."
+              exit 1 ;;
+          esac
           VERSION=$(basename "$FIELD_APK" .apk | sed 's/^PalmAnnotate-field-v//')
           DEBUG_APK="$(dirname "$TRACE_APK")/PalmAnnotate-debug-v${VERSION}.apk"
           cp "$TRACE_APK" "$DEBUG_APK"
@@ -72,16 +115,102 @@ jobs:
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
+      # WS-21: versionCode == the commit count, so a rebase/force-push that drops commits ships an
+      # APK Android refuses to install over the previous one ("app not installed" / downgrade).
+      # Compare against what has already been published; re-running the SAME tag is not a downgrade.
+      - name: Reject a non-monotonic versionCode
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          NEW_CODE="${VERSION##*.}"
+          # Read the listing into a variable on its own line so a `gh` failure (rate limit,
+          # missing scope, network) fails the step. Inside a `done <<< "$(...)"` redirection the
+          # exit status is discarded, so an empty result would leave HIGHEST at 0 and let this
+          # guard pass vacuously — precisely when it is needed.
+          if ! PUBLISHED_TAGS=$(gh release list --limit 200 --json tagName --jq '.[].tagName'); then
+            echo "::error::Cannot read the published releases; refusing to publish blind."
+            exit 1
+          fi
+          HIGHEST=0
+          HIGHEST_TAG=""
+          while read -r PUBLISHED; do
+            [ -n "$PUBLISHED" ] || continue
+            case "$PUBLISHED" in
+              v[0-9]*.[0-9]*.[0-9]*) ;;
+              *) continue ;;
+            esac
+            CODE="${PUBLISHED##*.}"
+            case "$CODE" in ''|*[!0-9]*) continue ;; esac
+            if [ "$CODE" -gt "$HIGHEST" ]; then HIGHEST="$CODE"; HIGHEST_TAG="$PUBLISHED"; fi
+          done <<< "$PUBLISHED_TAGS"
+          echo "New versionCode $NEW_CODE; highest published $HIGHEST ($HIGHEST_TAG)."
+          if [ "$HIGHEST_TAG" = "$TAG" ]; then
+            echo "Re-running the existing tag $TAG — identical version, not a downgrade."
+          elif [ "$NEW_CODE" -le "$HIGHEST" ]; then
+            echo "::error::versionCode $NEW_CODE is not greater than the published $HIGHEST ($HIGHEST_TAG)."
+            echo "::error::This APK could not be installed over the released one. History was most"
+            echo "::error::likely rewritten (rebase/force-push); add commits instead of republishing."
+            exit 1
+          fi
+
+      # WS-21: record the certificate the assets are actually signed with, and fail when it
+      # differs from the pinned digest. A signer change is exactly the event that forces an
+      # uninstall, so it must never pass silently.
+      - name: Verify signing certificate
+        id: cert
+        env:
+          FIELD_APK: ${{ steps.version.outputs.field_apk }}
+          DEBUG_APK: ${{ steps.version.outputs.debug_apk }}
+        run: |
+          APKSIGNER=$(find "$ANDROID_SDK_ROOT/build-tools" -name apksigner -type f | sort -r | head -1)
+          if [ -z "$APKSIGNER" ]; then
+            echo "::error::apksigner not found; cannot verify the release signing identity."
+            exit 1
+          fi
+          digest_of() {
+            "$APKSIGNER" verify --print-certs "$1" \
+              | sed -n 's/.*SHA-256 digest: *//p' | head -1 | tr 'A-Z' 'a-z'
+          }
+          FIELD_DIGEST=$(digest_of "$FIELD_APK")
+          DEBUG_DIGEST=$(digest_of "$DEBUG_APK")
+          if [ -z "$FIELD_DIGEST" ] || [ "$FIELD_DIGEST" != "$DEBUG_DIGEST" ]; then
+            echo "::error::field and trace APKs are signed by different certificates."
+            echo "::error::field=$FIELD_DIGEST trace=$DEBUG_DIGEST"
+            exit 1
+          fi
+          # Mandatory (checked in step 1). field and trace share a signing config, so the
+          # comparison above is structurally incapable of failing; this pin is the real guard.
+          EXPECTED=$(echo "$PALMANNOTATE_SIGNING_CERT_SHA256" | tr 'A-Z' 'a-z' | tr -d ' :')
+          if [ "$(echo "$FIELD_DIGEST" | tr -d ' :')" != "$EXPECTED" ]; then
+            echo "::error::Signing certificate changed. Built $FIELD_DIGEST, pinned $EXPECTED."
+            echo "::error::Publishing would orphan every installed app: the operator could only"
+            echo "::error::install it after pm uninstall, which deletes the collected dataset."
+            echo "::error::Restore the original keystore, or update the pin only alongside the"
+            echo "::error::documented key-migration procedure in CLAUDE.md."
+            exit 1
+          fi
+          echo "digest=$FIELD_DIGEST" >> "$GITHUB_OUTPUT"
+
       - name: Write release notes
+        env:
+          CERT_DIGEST: ${{ steps.cert.outputs.digest }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           {
             printf 'This release contains two apps with identical capture and output logic.\n\n'
             printf 'Field: `dev.sawitulm.palmannotate.field`, non-debuggable, for real collection and performance measurement.\n'
             printf 'Debug: `dev.sawitulm.palmannotate.trace`, debuggable, for reproducing and tracing problems without replacing older app data.\n\n'
+            printf 'versionCode: `%s`\n' "${VERSION##*.}"
+            printf 'Signing certificate SHA-256: `%s`\n\n' "$CERT_DIGEST"
+            printf 'Verify before installing over an existing app:\n'
+            printf '```\napksigner verify --print-certs PalmAnnotate-field-v%s.apk\n```\n' "$VERSION"
+            printf 'If the digest differs from the installed app, do NOT uninstall to force the\n'
+            printf 'update — export a dataset ZIP first; uninstalling deletes app-private data.\n\n'
             printf '> Built by CI. **Not a substitute for on-device verification**. The Orbbec\n'
             printf '> live depth preview must still be checked on a physical device before any\n'
-            printf '> field dataset collection. The CI debug signing key is not a durable update\n'
-            printf '> identity unless repository signing secrets are configured.\n'
+            printf '> field dataset collection.\n'
           } > "$RUNNER_TEMP/notes.md"
 
       - name: Create GitHub Release
