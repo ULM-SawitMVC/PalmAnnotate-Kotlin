@@ -582,28 +582,33 @@ $adb='C:\tools\android-sdk\platform-tools\adb.exe'; $d='<serial>'; $p='dev.sawit
 - **Jangan memindahkan mirror SAF kembali ke jalur save yang memblokir** (CLAUDE.md); arah
   perbaikan butir (3) justru kebalikannya.
 
-## 5.7 Status perbaikan per 28 Juli 2026
+## 5.7 Status perbaikan per 29 Juli 2026
 
-Diverifikasi dari kode (baca ulang berkas, penelusuran seluruh pemanggil, 178 uji unit hijau)
-dan sebagian dari perangkat `b98cea56`. Versi: `b99a3c5` = v0.3.43, `9a43483` = v0.3.44,
-`5d7c67b` = v0.3.45 (CI, tanpa tag).
+Diverifikasi melalui penelusuran seluruh pemanggil, **288 uji unit tanpa kegagalan**, CI build +
+instrumentation hijau, serta tablet `b98cea56`. Commit terkini: `e02ce2e` (capture crash-safe dan
+artefak durable), `d986824` (identitas lintas perangkat, GPS, operator), `1c69231` (resume SAF dan
+pembuatan berkas bersarang), dan `a69d3bd` (annot-log mirror byte-identik). APK yang diuji adalah
+`.field` v0.3.55 dengan sertifikat SHA-256 `2430cb54…a1150b5a`.
 
 | Butir | Status | Bukti |
 |---|---|---|
-| §1 crash `USB_DEVICE_ATTACHED` | **Selesai** lewat opsi D, bukan A/B | AAR di-repack; `javap` atas `Enumerator.requireUsbPermission` menunjukkan cabang `SDK_INT >= 33` memanggil `registerReceiver(receiver, filter, 4)`, yaitu `RECEIVER_NOT_EXPORTED`. SHA-256 dikunci `OrbbecVendorPatchTests.kt`. `targetSdk` tetap 34. Pelapis: `onCleared` memanggil `orbbec.close()` (`CaptureFlowScreen.kt:306`) |
-| §4.1 `load()` idempoten | **Selesai** | `CaptureFlowScreen.kt:361-365` |
-| §4.1 draft persistence | **Tidak dikerjakan** | Tidak ada `SavedStateHandle`/`rememberSaveable` di seluruh `app/src/main`. Kematian proses tetap menghapus rujukan foto |
-| §4.2 SAF menahan navigasi | **Selesai sebagian** | `writeAnnotationRevision` memisahkan `verifySaf`/`awaitSaf` (`SessionRepository.kt:559-563`); pemanggil navigasi memakai `awaitSafVerification = false` (`CarouselScreen.kt:303`, `ResultsScreen.kt:105`). Baseline 9,60 detik **belum diukur ulang** |
-| §4.2 status verifikasi per pohon | **Tidak dikerjakan** | `TreeEntity` tanpa kolom verifikasi; kegagalan verifikasi hanya `Log.w` (`SessionRepository.kt:639-651`) sementara `isComplete = true` sudah ditulis (`:848`) |
-| §4.3 preferensi sumber kamera | **Selesai** | `InputCache.lastCaptureUsesOrbbec`, dibaca `CaptureFlowScreen.kt:121-124`, ditulis `:183` |
-| §4.3 flap ladder + tombol Reset | **Sebagian** | `FLAP_RESET_QUIET_MS` tetap 30 detik (`OrbbecManager.kt:72`). Tambahan: `resetFlapLadder()` setelah stream stabil 4 detik (`:440-443`). Tombol Reset masih hanya di cabang "no device" (`CaptureFlowScreen.kt:1520-1531`) |
-| §4.4 buka Orbbec + preview Base64 | **Tidak tersentuh** | `OPEN_RETRIES`, `DEVICE_QUERY_RETRIES`, dan jalur `emitPreview` → Base64 → `BitmapFactory` identik |
-| §4.5 build type `field` | **Selesai** | `app/build.gradle.kts:66-74`; R8 tetap mati |
-| §4.6 ANR `stopPump`/`stateLock` | **Selesai untuk gejala ANR** | `stopPreview` dibungkus `withContext(cameraDispatcher)` (`OrbbecManager.kt:342-345`); `pumpRunning` `@Volatile`, `streamPump` `AtomicReference`; `stopPump`/`joinPump` tidak mengambil `stateLock`. `stateLock` sendiri masih dipegang melintasi panggilan native, tetapi seluruh pengambilnya kini di `cameraExec` |
-| §3.3 GPS last-known tanpa batas umur | **Selesai** | `MAX_LAST_KNOWN_AGE_MS = 60_000L`, `isFresh()` (`GpsProvider.kt:31-34`, `:177-183`) |
-| §3.3 field `operator` | **Tidak dikerjakan** | `SessionRepository.kt:355` masih `put("operator", "")` |
-| §3.1 tabrakan nama antar-tablet | **Tidak dikerjakan** | Tidak ada token perangkat pada penamaan pohon |
-| §3.4 `data.yaml`/`classes.txt`/README di ZIP | **Tidak dikerjakan** | Nol kecocokan di `app/src/main` |
+| §1 crash `USB_DEVICE_ATTACHED` | **Selesai di kode; colok-ulang Orbbec tetap perlu uji fisik** | AAR vendor di-repack dan SHA-256 dikunci `OrbbecVendorPatchTests.kt`; jalur frame callback tidak diubah |
+| §4.1 `load()` idempoten | **Selesai** | Run yang sama tidak lagi membersihkan state capture yang sudah terisi |
+| §4.1 draft persistence | **Selesai** | `capture_drafts` + `capture_draft_sides`, staging durable, recovery saat proses mati, dan commit atomik hadir sejak `e02ce2e` |
+| §4.2 SAF menahan navigasi | **Selesai** | DB + artefak lokal tetap sinkron; mirror SAF berjalan di `mirrorWorkScheduler` serial dan tidak ditunggu navigasi. Pengukuran ulang baseline Next Tree 9,60 detik masih perlu dilakukan pada run percobaan |
+| §4.2 status verifikasi per pohon | **Selesai** | Tabel `mirror_status` menyimpan `PENDING`/`ATTEMPTING`/`VERIFIED`/`FAILED`; status dan galat ditampilkan pada daftar pohon dan Results |
+| Regresi resume SAF >35 menit | **Selesai dan terukur** | `readBytesResult` memakai cache lalu satu refresh saat gagal; resume 151 pohon turun menjadi sekitar 3 menit |
+| Pembuatan berkas baru di direktori SAF bersarang | **Selesai dan terbukti di perangkat** | Handle child directory dikonversi dan divalidasi sebagai tree-capable. Manifest `DAMIMAS_A21B_0090.json` yang semula tidak ada berhasil dibuat pada v0.3.55 |
+| Konsistensi read-back annot-log | **Selesai dan terbukti di perangkat** | Mirror menyalin annot-log lokal, bukan membangunnya ulang dengan `savedAt` baru. Seluruh **23/23** artefak pohon 0090 memiliki SHA-256 lokal = SAF |
+| §4.3 preferensi sumber kamera | **Selesai** | `InputCache.lastCaptureUsesOrbbec` mempertahankan pilihan operator |
+| §4.3 flap ladder + tombol Reset | **Sebagian** | Reset setelah stream stabil sudah ada; cakupan tombol Reset belum berubah |
+| §4.4 buka Orbbec + preview Base64 | **Tidak tersentuh** | Jalur preview live sengaja tidak diubah tanpa verifikasi kamera fisik |
+| §4.5 build type `field` | **Selesai** | `field` non-debuggable, application ID terpisah, R8 dan resource shrinking tetap mati |
+| §4.6 ANR `stopPump`/`stateLock` | **Selesai untuk gejala ANR** | Stop/join pump tidak lagi menunggu kunci native di main thread; verifikasi colok-ulang tetap diperlukan |
+| §3.3 GPS last-known tanpa batas umur | **Selesai** | `GpsProvenance` mencatat status, usia, timestamp, provider, source; freshness diperiksa ulang saat commit |
+| §3.3 field `operator` | **Selesai** | Operator disimpan pada run/tree dan diekspor sebagai `UNKNOWN` ketika tidak diisi |
+| §3.1 tabrakan nama antar-tablet | **Selesai dengan identitas durable; suffix nama opsional** | `captureSetId`, `deviceToken`, `CaptureSetMergePolicy`, sidecar/manifest/Output JSON/ZIP identity; `nameToken` opt-in |
+| §3.4 `data.yaml`/`classes.txt`/README di ZIP | **Tidak dikerjakan** | Tidak ada implementasi pada `app/src/main` |
 
 ### Risiko baru yang lahir dari perbaikan itu sendiri
 
@@ -615,10 +620,11 @@ dan sebagian dari perangkat `b98cea56`. Versi: `b99a3c5` = v0.3.43, `9a43483` = 
    **Sengaja tidak diubah:** menghapus `check()` akan membuat aplikasi menimpa paket kemarin
    secara diam-diam, karena pemeriksaan di `:162` hanya melihat Room. Mitigasi: pakai folder
    ekspor kosong, atau pastikan jumlah pohon hasil resume sama persis dengan isi folder.
-2. **`FolderResumeImporter` melempar pada paket gagal** (`:139`, `:159`). Karena `HomeScreen.kt:206`
-   menangkapnya, `inputCache.resumedFolderUri` tidak pernah disetel, sehingga pemindaian SAF
-   penuh berulang pada setiap cold start. **Sengaja tidak diubah:** mengembalikannya menjadi log
-   membuat impor parsial dianggap sukses dan langsung memicu risiko (1).
+2. **`FolderResumeImporter` melempar pada paket gagal.** Karena `HomeScreen.kt` menangkapnya,
+   `inputCache.resumedFolderUri` tidak pernah disetel, sehingga pemindaian SAF penuh berulang pada
+   setiap cold start. **Sengaja dipertahankan** — impor parsial tidak boleh dianggap sukses — tetapi
+   sejak 29 Juli laporan paket ditolak dipindahkan ke **setelah** seluruh paket yang sah selesai
+   di-commit, supaya satu entri folder yang rusak tidak lagi memblokir pemulihan pohon lain.
 3. **AutoSave carousel tetap tidak berjalan pada ON_STOP.** Menambahkannya tidak aman:
    `autoSave()` menyetel `dirty = false` sinkron lalu meluncurkan coroutine di `viewModelScope`,
    sedangkan `saveSession` menghapus manifest lokal sebelum menulis ulang (`SessionRepository.kt:421`).
@@ -626,15 +632,35 @@ dan sebagian dari perangkat `b98cea56`. Versi: `b99a3c5` = v0.3.43, `9a43483` = 
    pembatalan di tengah meninggalkan pohon tanpa manifest — ditolak resume (`FolderResumeImporter.kt:183`)
    dan ditolak preflight ekspor ZIP. Disiplin operasional lebih aman sampai ada perangkat untuk verifikasi.
 
-### Verifikasi perangkat 28 Juli 2026 (tablet `b98cea56`, sebelum koleksi)
+### Verifikasi perangkat 29 Juli 2026 (tablet `b98cea56`)
 
-`.field` v0.3.44 terpasang. Resume dari `Documents/Dataset` berhasil penuh: nama pohon di SAF
-dan di penyimpanan `.field` cocok **42/42**, tanpa selisih dua arah. `nextId` = 43, sehingga
-risiko (1) di atas laten dan tidak aktif selama folder ekspor tidak diganti. Paket `.debug`
-v0.3.41 masih terpasang dan memegang data 27 Juli; `.trace` tidak terpasang.
+`.field` v0.3.55 lalu v0.3.58–v0.3.60 terpasang melalui `install -r`; signer setiap build cocok
+dengan aplikasi terpasang (`2430cb54…`) sehingga tidak ada uninstall dan data privat tetap utuh.
+Sebelum pemulihan 0089 aplikasi memuat **151 pohon**, `nextId = 153`.
+Pohon 0090 disimpan ulang untuk kasus regresi nyata: manifest baru berhasil dibuat di
+`Documents/Dataset/dataset/manifests`, tidak ada `UnsupportedOperationException`, tidak ada log
+mirror/read-back gagal, dan **23/23** hash artefak lokal sama dengan salinan SAF. Setelah force-stop
+dan start ulang, pekerjaan 0090 tidak diantrikan ulang, konsisten dengan status `VERIFIED`.
+
+**Pemulihan pohon 0089 (selesai, v0.3.60).** 19 artefak 0089 diverifikasi di dalam ZIP
+`DAMIMAS_A21B_20260728-224359.zip` terhadap manifestnya sendiri (18 hash isi + manifest, 0 selisih),
+disalin ke `Documents/Dataset` hanya pada path yang kosong, lalu diverifikasi ulang di tablet
+(**19/19** SHA-256 lokal = perangkat). Resume folder kemudian mengimpor tepat satu pohon. Hasil
+akhir pada perangkat: **152 pohon, 608 foto, `nextId = 0153`**, dan 0089 tampil dengan 4 sisi.
+
+Tiga cacat lain terungkap justru oleh pemulihan ini dan sudah diperbaiki:
+
+1. Deteksi tabrakan identitas menolak seluruh folder ketika sisi remote legacy (tanpa `captureSet`)
+   dipasangkan dengan baris Room yang sudah memiliki identitas — 151 "tabrakan" terhadap paket yang
+   diimpor perangkat itu sendiri. Sekarang hanya tabrakan yang benar-benar terbukti yang memblokir.
+2. Penjaga capture draft menolak impor karena draft aktif menunjuk pohon berikutnya (0153).
+   `commitTreePackage` kini membedakan commit dari draft dan impor resume.
+3. Klaim reservation remote pada jalur hapus dibuat best-effort, karena versi fail-closed-nya
+   menggagalkan dua test instrumentation dan dapat memblokir penghapusan lokal saat SAF tidak dapat
+   dijangkau.
 
 ### Masih harus diverifikasi dengan perangkat keras
 
-Belum berubah dari §5.4: efektivitas tambalan AAR saat colok-ulang, durasi pembukaan Orbbec,
-keselarasan D2C depth. Ditambah: latensi Next Tree yang baru terhadap baseline 9,60 detik, dan
-median frame varian `field` terhadap 19 ms.
+Efektivitas tambalan AAR saat colok-ulang Orbbec, durasi pembukaan Orbbec, keselarasan D2C depth,
+latensi Next Tree terhadap baseline 9,60 detik pada run percobaan, dan median frame varian `field`
+terhadap 19 ms. Jalur live preview Orbbec tidak disentuh dalam rangkaian perbaikan ini.
