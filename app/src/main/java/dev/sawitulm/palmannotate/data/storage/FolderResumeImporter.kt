@@ -309,23 +309,38 @@ class FolderResumeImporter @Inject constructor(
 
     /**
      * WS-12 — state, per colliding tree name, why a scanned package cannot be merged with what
-     * Room already holds. Log-only on purpose: resume must keep importing everything it safely
-     * can, and refusing the whole folder because one name is taken would be a worse failure than
-     * the collision itself.
+     * Room already holds.
+     *
+     * Only a collision that can be *proved* — both sides carry an identity and they disagree, or
+     * they agree yet the committed content differs — blocks the resume. A missing identity is not
+     * evidence of a second device: every legacy package has none, and the trees this very device
+     * imported from such a folder now hold the run's identity locally while their sidecars stay
+     * blank. Treating that pairing as a conflict made resume refuse the whole folder (observed on
+     * tablet b98cea56: 151 "collisions" against packages it had itself imported), so it stays a
+     * warning, exactly as before.
      */
     private suspend fun reportIdentityCollisions(scanned: List<ScannedTree>) {
         val existing = repo.allTreeIdentities()
         if (existing.isEmpty()) return
         val remote = scanned.mapNotNull { tree ->
             val local = existing[tree.treeName] ?: return@mapNotNull null
-            // Legacy packages have no identity and older imports may not retain a local manifest
-            // digest. Keep idempotent resume possible, but never overwrite the existing Room row.
-            if (!local.hasIdentity && tree.identity.captureSetId.isBlank()) return@mapNotNull null
+            if (!local.hasIdentity || tree.identity.captureSetId.isBlank()) {
+                if (local.hasIdentity || tree.identity.captureSetId.isNotBlank()) {
+                    Log.w(
+                        TAG,
+                        "resume: ${tree.treeName} pairs a package with no capture-set identity " +
+                            "against a local row that has one; keeping the committed tree",
+                    )
+                }
+                return@mapNotNull null
+            }
             local to CaptureSetMergePolicy.Entry(
                 treeName = tree.treeName,
                 captureSetId = tree.identity.captureSetId,
                 deviceToken = tree.identity.deviceToken,
-                contentDigest = tree.contentDigest,
+                // An older local import may have no manifest to digest. Falling back to the remote
+                // digest keeps "same identity, unknown local content" out of the conflict path.
+                contentDigest = tree.contentDigest.ifBlank { local.contentDigest },
             )
         }
         if (remote.isEmpty()) return

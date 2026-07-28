@@ -179,6 +179,23 @@ class PhaseARegressionTest {
     }
 
     @Test
+    fun `an unknown identity on either side never blocks the whole folder resume`() {
+        val source = repoFile(
+            "app/src/main/java/dev/sawitulm/palmannotate/data/storage/FolderResumeImporter.kt",
+        ).readText()
+        val report = source.substringAfter("private suspend fun reportIdentityCollisions(")
+            .substringBefore("private fun manifestMatchesMirror(")
+
+        // A blank identity on either side leaves the mapping before any conflict is built.
+        assertTrue(
+            report.contains("if (!local.hasIdentity || tree.identity.captureSetId.isBlank())"),
+        )
+        assertTrue(report.contains("return@mapNotNull null"))
+        // A proved conflict still fails closed.
+        assertTrue(report.contains("throw SafResumeException"))
+    }
+
+    @Test
     fun `a rejected package is reported only after the importable ones are committed`() {
         val source = repoFile(
             "app/src/main/java/dev/sawitulm/palmannotate/data/storage/FolderResumeImporter.kt",
