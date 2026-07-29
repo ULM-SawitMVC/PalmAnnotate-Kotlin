@@ -1,5 +1,9 @@
 # PalmAnnotate Native — Honest Migration Status
 
+> **Arsip status 16 Juni 2026.** Dokumen ini menyimpan bukti migrasi pada waktunya dan bukan
+> ringkasan rilis aktif. Status lapangan terbaru ada di
+> [`FIELD_REPORT_20260727.md` §5.8](FIELD_REPORT_20260727.md#58-addendum-audit-terkini-29-juli-2026).
+
 > **Updated 2026-06-16** — Session 7 + critical on-device hotfix + depth viewer colormap fix.
 > Build state (latest): `:app:assembleDebug` + `:app:testDebugUnitTest` SUCCESSFUL —
 > **39/39 tests green**, APK `app-debug.apk` ~105.6 MB, JDK = `C:\tools\jdk17\jdk-17.0.19+10`.

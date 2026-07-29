@@ -16,6 +16,7 @@ local.properties
 *.dex
 .kotlin/
 example_dataset
+Dataset-*/
 .vscode
 
 # JVM crash dumps (Gradle/Kotlin daemon OOM on the build machine)
@@ -23,6 +24,4 @@ hs_err_pid*.log
 replay_pid*.log
 
 # Internal / agent files
-HANDOFF.md
-TODO.md
 bug.md

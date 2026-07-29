@@ -5,6 +5,8 @@
 Rewrite dari PalmAnnotate (Capacitor WebView hybrid) ke **native Kotlin + Jetpack Compose**.
 
 > **Status migrasi ada di [`docs/MIGRATION_STATUS.md`](docs/MIGRATION_STATUS.md).**
+> Status lapangan terbaru ada di
+> [`docs/FIELD_REPORT_20260727.md` §5.8](docs/FIELD_REPORT_20260727.md#58-addendum-audit-terkini-29-juli-2026).
 
 ## Download APK
 
@@ -81,6 +83,10 @@ app/src/main/java/dev/sawitulm/palmannotate/
 | **CameraX + Orbbec** | Capture foto + depth, D2C alignment, GPS; Orbbec in-app reset + peringatan kalau folder SAF belum dipilih |
 | **Auto-Save** | Silent save saat toggle mode, swipe side, atau back |
 | **Resume** | Folder scan resume dari Output JSON |
+
+> **Status RGB-D:** dukungan Orbbec RGB-D sudah ada di kode, termasuk capture depth dan metadata
+> alignment. Namun colok-ulang Orbbec, waktu buka kamera, alignment D2C, dan metrik performa
+> `field` masih memerlukan pengujian pada perangkat fisik sebelum dipakai sebagai klaim runtime.
 
 ## Dependencies
 

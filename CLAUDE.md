@@ -387,7 +387,9 @@ which deletes the package's app-private storage — i.e. the collected dataset. 
 > ### ⛔ Read before configuring the secrets
 >
 > A tablet in the field already has `dev.sawitulm.palmannotate.field` installed **with a dataset
-> in it** (`docs/FIELD_REPORT_20260727.md` — tablet `b98cea56`, v0.3.44, 42 committed trees).
+> in it** (`docs/FIELD_REPORT_20260727.md` §5.8: tablet `b98cea56`, `.field` v0.3.60,
+> 152 committed trees). The current field status and remaining hardware checks are recorded in
+> that addendum.
 > Introducing a *different* signer is not a packaging detail: `install -r` starts failing with
 > `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, and the only way to install the new build is
 > `pm uninstall`, which deletes that dataset. Generating a fresh key without checking would

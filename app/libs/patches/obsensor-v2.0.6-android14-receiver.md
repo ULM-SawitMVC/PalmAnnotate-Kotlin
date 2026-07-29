@@ -27,3 +27,28 @@ if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU)
 This prevents Android 14+ from throwing `SecurityException` when the SDK requests
 USB permission after an Orbbec device attach. `OrbbecVendorPatchTests` pins the
 reviewed AAR hash so an unreviewed binary change fails the unit-test gate.
+
+## Pemeriksaan bytecode
+
+Uji hash menjaga **identitas biner** AAR yang sudah direview. Uji itu tidak menjelaskan makna
+perubahan bytecode, jadi lakukan pemeriksaan `javap` berikut saat AAR diperbarui:
+
+```powershell
+$aar = (Resolve-Path 'app\libs\obsensor_v2.0.6_2026031801_release.aar').Path
+$audit = Join-Path ([System.IO.Path]::GetTempPath()) "palmannotate-obsensor-audit-$PID"
+$jar = Join-Path $env:JAVA_HOME 'bin\jar.exe'
+$javap = Join-Path $env:JAVA_HOME 'bin\javap.exe'
+
+New-Item -ItemType Directory -Path $audit | Out-Null
+Push-Location $audit
+& $jar xf $aar classes.jar
+& $javap -classpath '.\classes.jar' -c -p com.orbbec.internal.Enumerator |
+    Select-String -Pattern 'requireUsbPermission|SDK_INT|bipush|iconst_4|registerReceiver' -Context 4,6
+Pop-Location
+```
+
+Pada `requireUsbPermission()`, hasil harus memperlihatkan guard API 33, `iconst_4`
+(`Context.RECEIVER_NOT_EXPORTED`), lalu `registerReceiver` dengan tiga argumen. Panggilan dua
+argumen lain di kelas itu hanya mendaftarkan system broadcast dan dikecualikan dari kewajiban flag
+Android 14. Lihat [perubahan perilaku Android 14](https://developer.android.com/about/versions/14/behavior-changes-14).
+Hapus direktori `$audit` setelah pemeriksaan selesai.

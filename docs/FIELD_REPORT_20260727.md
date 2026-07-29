@@ -584,6 +584,9 @@ $adb='C:\tools\android-sdk\platform-tools\adb.exe'; $d='<serial>'; $p='dev.sawit
 
 ## 5.7 Status perbaikan per 29 Juli 2026
 
+> **Catatan historis.** Angka 288 uji unit di bagian ini adalah bukti pada saat snapshot
+> v0.3.55 dibuat. Angka tersebut bukan status HEAD saat ini; lihat addendum §5.8.
+
 Diverifikasi melalui penelusuran seluruh pemanggil, **288 uji unit tanpa kegagalan**, CI build +
 instrumentation hijau, serta tablet `b98cea56`. Commit terkini: `e02ce2e` (capture crash-safe dan
 artefak durable), `d986824` (identitas lintas perangkat, GPS, operator), `1c69231` (resume SAF dan
@@ -664,3 +667,28 @@ Tiga cacat lain terungkap justru oleh pemulihan ini dan sudah diperbaiki:
 Efektivitas tambalan AAR saat colok-ulang Orbbec, durasi pembukaan Orbbec, keselarasan D2C depth,
 latensi Next Tree terhadap baseline 9,60 detik pada run percobaan, dan median frame varian `field`
 terhadap 19 ms. Jalur live preview Orbbec tidak disentuh dalam rangkaian perbaikan ini.
+
+## 5.8 Addendum audit terkini (29 Juli 2026)
+
+Status di bawah ini menggantikan ringkasan operasional yang lebih lama di dokumen ini. Catatan
+sebelumnya tetap dipertahankan sebagai bukti bertanggal.
+
+- **HEAD dan tes:** HEAD `6113074` dihitung Gradle sebagai v0.3.61. Build perangkat terakhir
+  yang diverifikasi tetap `.field` v0.3.60. Uji unit dipaksa ulang dan lulus **298/298**, dengan
+  0 kegagalan, 0 error, dan 0 tes dilewati.
+- **AAR Android 14:** SHA-256 AAR yang diuji tetap
+  `F20073409C3A63011E5158E59829EA8522A68374D59547A6AFFD7614E79330B1`.
+  Inspeksi bytecode `Enumerator.requireUsbPermission()` memperlihatkan guard API 33, flag
+  `RECEIVER_NOT_EXPORTED`, dan overload `registerReceiver` tiga argumen. Pendaftaran dua
+  argumen lain di kelas itu hanya menerima siaran sistem dan termasuk pengecualian aturan flag
+  Android 14. Prosedur pemeriksaannya ada di
+  [`app/libs/patches/obsensor-v2.0.6-android14-receiver.md`](../app/libs/patches/obsensor-v2.0.6-android14-receiver.md).
+- **Pemulihan perangkat:** pemulihan 0089 selesai pada v0.3.60. Sebanyak 19 artefak telah
+  diverifikasi dari ZIP dan di tablet; hasil perangkat menjadi **152 pohon, 608 foto,
+  `nextId = 0153`**.
+- **Manifest USB:** hanya varian `field` yang mendeklarasikan filter manifest
+  `USB_DEVICE_ATTACHED`. Varian `debug` dan `trace` tetap meminta izin melalui runtime
+  `UsbManager`.
+
+Tambalan AAR belum dinyatakan lulus uji perangkat keras. Colok-ulang Orbbec, waktu buka kamera,
+keselarasan D2C, latensi Next Tree, dan median frame `field` tetap memerlukan uji fisik.

@@ -1,5 +1,9 @@
 # Performance Gains
 
+> **Arsip pengukuran.** Angka di dokumen ini adalah hasil pengukuran pada putaran sebelumnya,
+> bukan status performa saat ini. Batas pengukuran lapangan terbaru ada di
+> [`FIELD_REPORT_20260727.md` §5.8](FIELD_REPORT_20260727.md#58-addendum-audit-terkini-29-juli-2026).
+
 > **Verified on:** Xiaomi Pad 8 (Android 16, wireless ADB 192.168.1.7:5555).
 > Every number below is from `adb logcat` on the live device, measured from the
 > **user's perspective** (button tap → UI responds), not from isolated component

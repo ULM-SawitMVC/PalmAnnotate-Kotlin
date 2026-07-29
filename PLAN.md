@@ -1,5 +1,9 @@
 # PLAN — Patch-fixing data-integrity RGB-D + bump 0.2 → 0.3
 
+> **Arsip rencana.** Tahap dalam dokumen ini sudah dijalankan pada snapshot sebelumnya. Gunakan
+> [`docs/FIELD_REPORT_20260727.md` §5.8](docs/FIELD_REPORT_20260727.md#58-addendum-audit-terkini-29-juli-2026)
+> untuk status lapangan dan batas verifikasi perangkat keras saat ini.
+
 > Sumber temuan: `docs/AUDIT_RGBD_DEPTH.md` (audit read-only). File ini adalah rencana eksekusi
 > bertahap untuk menutup temuan prioritas §9. Status per fix ada di tabel paling bawah.
 

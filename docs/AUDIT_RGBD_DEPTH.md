@@ -1,5 +1,9 @@
 # Audit Implementasi PalmAnnotate — Kesiapan untuk Dataset YOLO RGB-D
 
+> **Arsip audit 24 Juli 2026.** Temuan dan rekomendasi di bawah adalah snapshot sebelum rangkaian
+> perbaikan berikutnya. Status terbaru dan batas uji fisik ada di
+> [`FIELD_REPORT_20260727.md` §5.8](FIELD_REPORT_20260727.md#58-addendum-audit-terkini-29-juli-2026).
+
 Tanggal: 2026-07-24. Audit read-only, tidak ada kode yang diubah.
 Basis: enam pass audit spesialis + satu pass verifikasi adversarial. Setiap klaim di bawah ini
 punya cite `file:line` yang sudah dibaca ulang.
