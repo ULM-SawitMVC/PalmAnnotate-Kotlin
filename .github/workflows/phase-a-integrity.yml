@@ -33,7 +33,7 @@ jobs:
           path: |
             ~/.android/avd
             ~/.android/adb*
-          key: avd-api-34-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          key: avd-v2-api-34-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
 
       - name: Run Phase-A instrumentation integrity tests
         uses: reactivecircus/android-emulator-runner@v2
