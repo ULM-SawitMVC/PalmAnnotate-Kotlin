@@ -42,9 +42,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
@@ -1088,7 +1090,33 @@ fun CaptureFlowScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.capture_title, viewModel.currentSide + 1, viewModel.sideCount)) },
+                title = {
+                    Column {
+                        Text(
+                            stringResource(R.string.capture_title, viewModel.currentSide + 1, viewModel.sideCount),
+                            maxLines = 1,
+                        )
+                        run?.let { captureRun ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Default.Lock,
+                                    null,
+                                    Modifier.size(13.dp),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                Spacer(Modifier.width(4.dp))
+                                Text(
+                                    text = "${stringResource(R.string.capture_locked_format, captureRun.variety, captureRun.block)} · " +
+                                        (viewModel.gpsStatus ?: stringResource(R.string.capture_locating)),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                },
                 navigationIcon = {
                     IconButton(onClick = {
                         viewModel.stopOrbbecPreview()
@@ -1122,43 +1150,29 @@ fun CaptureFlowScreen(
                 return@Column
             }
 
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Lock, null, Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.width(6.dp))
-                    Column {
-                        Text(stringResource(R.string.capture_locked_format, run.variety, run.block), style = MaterialTheme.typography.titleSmall)
-                        Text(
-                            viewModel.gpsStatus ?: stringResource(R.string.capture_locating),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        viewModel.draftStatus?.let { status ->
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    "Capture draft $status — review or discard before saving",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.error,
-                                )
-                                TextButton(onClick = viewModel::discardDraft) { Text("Discard") }
-                            }
-                        }
-                    }
-                }
-                if (!run.autoId) {
-                    OutlinedTextField(
-                        value = viewModel.manualId,
-                        onValueChange = { viewModel.manualId = it.filter { c -> c.isDigit() } },
-                        label = { Text(stringResource(R.string.capture_tree_id)) },
-                        singleLine = true,
-                        modifier = Modifier.width(110.dp),
+            viewModel.draftStatus?.let { status ->
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "Capture draft $status — review or discard before saving",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
                     )
+                    TextButton(onClick = viewModel::discardDraft) { Text("Discard") }
                 }
             }
-            Spacer(Modifier.height(6.dp))
+            if (!run.autoId) {
+                OutlinedTextField(
+                    value = viewModel.manualId,
+                    onValueChange = { viewModel.manualId = it.filter { c -> c.isDigit() } },
+                    label = { Text(stringResource(R.string.capture_tree_id)) },
+                    singleLine = true,
+                    modifier = Modifier.width(110.dp).align(Alignment.End),
+                )
+            }
+            if (viewModel.draftStatus != null || !run.autoId) Spacer(Modifier.height(6.dp))
 
             if (hasCameraPermission) {
                 if (viewModel.phase == CapturePhase.REVIEW_ALL) {
@@ -1184,14 +1198,6 @@ fun CaptureFlowScreen(
                             .weight(1f),
                     )
                 } else {
-                    CapturedThumbnails(
-                        sideCount = viewModel.sideCount,
-                        currentSide = viewModel.currentSide,
-                        capturedImages = viewModel.capturedImages,
-                        onSelect = { viewModel.goToSide(it) },
-                    )
-                    Spacer(Modifier.height(4.dp))
-
                     viewModel.saveError?.let { err ->
                         Text(
                             text = stringResource(R.string.capture_save_error, err),
@@ -1215,6 +1221,16 @@ fun CaptureFlowScreen(
                             .clip(RoundedCornerShape(16.dp))
                             .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(16.dp)),
                     ) {
+                        CapturedThumbnails(
+                            sideCount = viewModel.sideCount,
+                            currentSide = viewModel.currentSide,
+                            capturedImages = viewModel.capturedImages,
+                            onSelect = { viewModel.goToSide(it) },
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(12.dp)
+                                .zIndex(1f),
+                        )
                         if (viewModel.captureSource == CaptureSource.ORBBEC) {
                             OrbbecCaptureStage(
                                 isAvailable = viewModel.orbbecAvailable,
@@ -1311,9 +1327,10 @@ private fun CapturedThumbnails(
     currentSide: Int,
     capturedImages: List<Uri?>,
     onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     LazyRow(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         itemsIndexed(List(sideCount) { it }) { index, _ ->
@@ -1321,7 +1338,7 @@ private fun CapturedThumbnails(
             val selected = index == currentSide
             Box(
                 modifier = Modifier
-                    .size(64.dp)
+                    .size(56.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .border(
                         width = if (selected) 3.dp else 1.dp,

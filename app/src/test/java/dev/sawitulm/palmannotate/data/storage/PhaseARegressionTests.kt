@@ -179,6 +179,24 @@ class PhaseARegressionTest {
     }
 
     @Test
+    fun `capture preview owns side navigation while metadata stays in the top bar`() {
+        val capture = repoFile(
+            "app/src/main/java/dev/sawitulm/palmannotate/ui/capture/CaptureFlowScreen.kt",
+        ).readText()
+        val screen = capture.substringAfter("fun CaptureFlowScreen(")
+            .substringBefore("private fun CapturedThumbnails(")
+        val topBarStart = screen.indexOf("TopAppBar(")
+        val contentStart = screen.indexOf(") { padding ->", topBarStart)
+        val previewStart = screen.indexOf("Box(", contentStart)
+        val previewContentStart = screen.indexOf("if (viewModel.captureSource", previewStart)
+        val metadata = screen.indexOf("R.string.capture_locked_format")
+        val sideNavigation = screen.indexOf("CapturedThumbnails(")
+
+        assertTrue(metadata in topBarStart until contentStart)
+        assertTrue(sideNavigation in previewStart until previewContentStart)
+    }
+
+    @Test
     fun `an open capture draft cannot veto or be consumed by a resume import`() {
         val repository = repoFile(
             "app/src/main/java/dev/sawitulm/palmannotate/data/storage/SessionRepository.kt",
