@@ -37,6 +37,7 @@ object ResultsComputer {
                     className = b.className,
                     x1 = b.x1, y1 = b.y1, x2 = b.x2, y2 = b.y2,
                     boxIndex = boxIdx,
+                    measurements = b.measurements,
                 )
             }
         }

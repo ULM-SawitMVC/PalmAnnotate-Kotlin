@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntSize
@@ -156,6 +157,9 @@ enum class CanvasTool {
     VIEW,
 }
 
+internal fun canPanViewport(tool: CanvasTool, touchOnBox: Boolean): Boolean =
+    tool != CanvasTool.VIEW && !touchOnBox
+
 /** Which part of a selected bbox the user grabbed. */
 enum class DragHandle { NONE, BODY, TL, TR, BL, BR, T, B, L, R }
 
@@ -256,7 +260,16 @@ fun AnnotationCanvas(
     val currentOnCanvasTap by rememberUpdatedState(onCanvasTap)
 
     // Fit image on first composition
-    var didFit by remember(imageUriString, imageWidth, imageHeight) { mutableStateOf(false) }
+    // Two fingers on the canvas mean a pinch, not a page swipe. Reported through the same
+    // active-edit channel the box-grab uses, so the carousel pager stops competing for the
+    // gesture — without it the pager claimed the drag first and pinch-zoom did nothing as
+    // soon as a tree had more than one side.
+    var multiTouch by remember { mutableStateOf(false) }
+
+    // The viewport this transform was fitted to. Re-fitting on a size change is what keeps the
+    // photo centred when the measurement panel opens and narrows the canvas: fitting once left
+    // the image positioned for the old width, so it looked shifted and ran under the panel.
+    var fittedTo by remember(imageUriString, imageWidth, imageHeight) { mutableStateOf(Size.Zero) }
 
     // Reused across draw frames — allocating a Paint per frame churned the GC during pan/zoom.
     val labelPaint = remember {
@@ -285,7 +298,8 @@ fun AnnotationCanvas(
     // the body still reads the live touchOnBox via the captured state delegate.
     // Pinch-zoom is unaffected, and on empty canvas (touchOnBox=false) single-finger pan
     // still works.
-    val canPanViewport = remember { { _: Offset -> !touchOnBox } }
+    val currentTool by rememberUpdatedState(tool)
+    val canPan = remember { { _: Offset -> canPanViewport(currentTool, touchOnBox) } }
 
     // Helpers: screen ↔ image coords
     fun screenToImage(sx: Float, sy: Float): Offset =
@@ -314,21 +328,30 @@ fun AnnotationCanvas(
     // Reported to the parent (e.g. carousel HorizontalPager) so it can disable its own
     // swipe gesture while a box-grab/draw is in progress, including the down-to-slop
     // window covered by touchOnBox. Only fires on actual transitions (LaunchedEffect key).
-    val isActiveEdit = touchOnBox || dragState != null || drawStart != null
+    val isActiveEdit = touchOnBox || dragState != null || drawStart != null || multiTouch
     LaunchedEffect(isActiveEdit) { onActiveEditChange?.invoke(isActiveEdit) }
 
     Canvas(
         modifier = modifier
             .fillMaxSize()
-            // No zoom/pan in VIEW mode: it would consume the horizontal drag and block the
-            // carousel's swipe-between-sides. Editing modes keep pinch-zoom/pan.
+            // VIEW keeps pinch-zoom but rejects one-finger pan, leaving that drag to the pager.
             .then(
-                if (bitmap != null && tool != CanvasTool.VIEW) {
-                    Modifier.transformable(state = transformState, canPan = canPanViewport)
+                if (bitmap != null) {
+                    Modifier.transformable(state = transformState, canPan = canPan)
                 } else {
                     Modifier
                 }
             )
+            // Observe-only pointer count on the Initial pass: never consumes, so every
+            // detector below still sees the untouched gesture.
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        multiTouch = event.changes.count { it.pressed } >= 2
+                    }
+                }
+            }
             // Early "down landed on an existing box" signal, observed at ACTION_DOWN
             // before any drag-slop is resolved. Never consumes — purely observes — so the
             // tap/drag detectors below still see every event normally. Closes the race
@@ -463,14 +486,14 @@ fun AnnotationCanvas(
             }
     ) {
         // Auto-fit on first composition
-        if (!didFit && imageWidth > 0 && imageHeight > 0) {
+        if (fittedTo != size && imageWidth > 0 && imageHeight > 0 && size.minDimension > 0f) {
             val fitScale = minOf(size.width / imageWidth, size.height / imageHeight)
             scale = fitScale
             offset = Offset(
                 (size.width - imageWidth * fitScale) / 2f,
                 (size.height - imageHeight * fitScale) / 2f,
             )
-            didFit = true
+            fittedTo = size
         }
 
         // Draw image

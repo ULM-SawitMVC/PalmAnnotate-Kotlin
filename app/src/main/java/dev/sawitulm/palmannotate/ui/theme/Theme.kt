@@ -117,7 +117,7 @@ private val LightColorScheme = lightColorScheme(
     onSurfaceVariant = Color(0xFF4A6A4A),
 
     // Accent (darker green for light theme)
-    primary = Color(0xFF059669),
+    primary = Color(0xFF047857),
     onPrimary = Color.White,
     primaryContainer = Color(0xFFD1FAE5),
     onPrimaryContainer = Color(0xFF065F46),

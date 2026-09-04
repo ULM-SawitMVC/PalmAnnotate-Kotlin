@@ -19,6 +19,7 @@ object OutputSchema {
     data class ParsedBbox(
         val id: String, val classId: Int, val className: String,
         val x1: Float, val y1: Float, val x2: Float, val y2: Float,
+        val measurements: BunchMeasurements = BunchMeasurements(),
     )
 
     data class ParsedSide(
@@ -35,6 +36,7 @@ object OutputSchema {
     data class ParsedOutput(
         val treeName: String, val split: String,
         val sides: List<ParsedSide>, val confirmedLinks: List<ParsedLink>,
+        val datasetType: DatasetType = DatasetType.MULTISIDE,
     )
 
     fun toSessionData(json: JSONObject): ParsedOutput {
@@ -86,6 +88,12 @@ object OutputSchema {
                     ParsedBbox(
                         id = "b$boxIndex", classId = cls.id, className = cls.displayName,
                         x1 = coords[0], y1 = coords[1], x2 = coords[2], y2 = coords[3],
+                        measurements = BunchMeasurements(
+                            weightKg = a.nullableDouble("weight_kg"),
+                            heightCm = a.nullableDouble("height_cm"),
+                            circumferenceCm = a.nullableDouble("circumference_cm"),
+                            notes = a.optString("notes").trim().takeIf(String::isNotEmpty),
+                        ),
                     )
                 )
             }
@@ -107,7 +115,13 @@ object OutputSchema {
         sides.sortBy { it.sideIndex }
 
         val confirmed = parseConfirmedLinks(json, sides)
-        return ParsedOutput(treeName, split, sides, confirmed)
+        return ParsedOutput(
+            treeName,
+            split,
+            sides,
+            confirmed,
+            DatasetType.fromPersisted(json.optString("dataset_type")),
+        )
     }
 
     private fun parseConfirmedLinks(json: JSONObject, sides: List<ParsedSide>): List<ParsedLink> {
@@ -168,4 +182,7 @@ object OutputSchema {
         val a = "$sideA:$idA"; val b = "$sideB:$idB"
         return if (a < b) "$a|$b" else "$b|$a"
     }
+
+    private fun JSONObject.nullableDouble(key: String): Double? =
+        if (!has(key) || isNull(key)) null else optDouble(key).takeIf(Double::isFinite)
 }

@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -38,6 +39,7 @@ import dev.sawitulm.palmannotate.data.storage.RunSummary
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
 import dev.sawitulm.palmannotate.domain.model.CaptureSetIdentity
 import dev.sawitulm.palmannotate.domain.model.CaptureSetPolicy
+import dev.sawitulm.palmannotate.domain.model.DatasetType
 import dev.sawitulm.palmannotate.ui.common.NewSessionDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -108,7 +110,8 @@ class HomeViewModel @Inject constructor(
     }
 
     /** C-01 run key for a variety+block, so the Start Session dialog can find the run it will fold into. */
-    fun groupKeyFor(variety: String, block: String): String = repo.groupKeyFor(variety, block)
+    fun groupKeyFor(variety: String, block: String, datasetType: DatasetType): String =
+        repo.groupKeyFor(variety, block, datasetType)
 
     val stats: StateFlow<HomeStats> = runs.map { list ->
         HomeStats(
@@ -172,12 +175,13 @@ class HomeViewModel @Inject constructor(
         autoId: Boolean,
         operatorName: String = "",
         useNameToken: Boolean = false,
+        datasetType: DatasetType = DatasetType.MULTISIDE,
         onDone: (runId: String, resumedExisting: Boolean, nextTreeName: String) -> Unit,
     ) {
         viewModelScope.launch {
             val result = try {
                 initialFolderResume.await()
-                val existingId = repo.runGroupKeyToId()[repo.groupKeyFor(variety, block)]
+                val existingId = repo.runGroupKeyToId()[repo.groupKeyFor(variety, block, datasetType)]
                 // WS-12: mint the run identity here. createRun applies it to the resolved run —
                 // adopting it onto an existing run only while that run has none, so trees that
                 // are already committed are never re-stamped.
@@ -188,7 +192,7 @@ class HomeViewModel @Inject constructor(
                     nameToken = if (useNameToken) deviceToken else "",
                 )
                 val id = repo.createRun(
-                    variety, block, sideCount, autoId, identity, operatorName,
+                    variety, block, sideCount, autoId, identity, operatorName, datasetType,
                 )
                 // Read the run back and report the name the app will ACTUALLY write. The dialog's
                 // preview is computed from the run list, which can still be catching up with a
@@ -312,14 +316,30 @@ class HomeViewModel @Inject constructor(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
+    datasetType: DatasetType = DatasetType.MULTISIDE,
     onSessionClick: (String) -> Unit,
+    onBack: (() -> Unit)? = null,
     viewModel: HomeViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
     val toasts = LocalToasts.current
-    val runs by viewModel.runs.collectAsState()
-    val stats by viewModel.stats.collectAsState()
-    val groups by viewModel.groups.collectAsState()
+    val allRuns by viewModel.runs.collectAsState()
+    val runs = remember(allRuns, datasetType) { allRuns.filter { it.datasetType == datasetType } }
+    val stats = remember(runs) {
+        HomeStats(runs.size, runs.sumOf { it.treeCount }, runs.map { it.groupKey }.distinct().size)
+    }
+    val groups = remember(runs) {
+        runs.groupBy { it.groupKey }.map { (key, groupedRuns) ->
+            val first = groupedRuns.first()
+            SessionGroup(
+                key,
+                first.variety,
+                first.block,
+                groupedRuns.sortedByDescending { it.updatedAt },
+                groupedRuns.sumOf { it.treeCount },
+            )
+        }.sortedByDescending { group -> group.runs.maxOfOrNull { it.updatedAt } ?: 0 }
+    }
     val folderName by viewModel.folderName.collectAsState()
     val isExportFolderSet by viewModel.isExportFolderSet.collectAsState()
     val isResumingFolder by viewModel.isResumingFolder.collectAsState()
@@ -394,12 +414,31 @@ fun HomeScreen(
             TopAppBar(
                 title = {
                     Column {
-                        Text(stringResource(R.string.app_name), fontWeight = FontWeight.Bold)
-                        Text(stringResource(R.string.app_tagline), style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            stringResource(
+                                if (datasetType == DatasetType.MULTISIDE) R.string.module_multiside_title
+                                else R.string.module_weight_title,
+                            ),
+                            fontWeight = FontWeight.Bold,
+                        )
+                        Text(
+                            stringResource(
+                                if (datasetType == DatasetType.MULTISIDE) R.string.module_multiside_body
+                                else R.string.module_weight_body,
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                },
+                navigationIcon = {
+                    onBack?.let { callback ->
+                        IconButton(onClick = callback) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_back))
+                        }
                     }
                 },
                 actions = {
-                    if (runs.isNotEmpty()) {
+                    if (runs.isNotEmpty() && datasetType == DatasetType.MULTISIDE) {
                         IconButton(onClick = { showExportAllConfirm = true }) {
                             Icon(
                                 Icons.Default.Archive,
@@ -446,7 +485,13 @@ fun HomeScreen(
                     ElevatedCard(Modifier.fillMaxWidth()) {
                         Row(Modifier.padding(16.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                             StatItem(stringResource(R.string.home_stat_sessions), stats.totalSessions)
-                            StatItem(stringResource(R.string.home_stat_trees), stats.totalTrees)
+                            StatItem(
+                                stringResource(
+                                    if (datasetType == DatasetType.MULTISIDE) R.string.home_stat_trees
+                                    else R.string.home_stat_samples,
+                                ),
+                                stats.totalTrees,
+                            )
                             StatItem(stringResource(R.string.home_stat_groups), stats.totalGroups)
                         }
                     }
@@ -469,9 +514,28 @@ fun HomeScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             } else {
-                                Icon(Icons.Default.Forest, null, Modifier.size(48.dp), tint = MaterialTheme.colorScheme.primary)
-                                Text(stringResource(R.string.home_empty_title), style = MaterialTheme.typography.titleMedium)
-                                Text(stringResource(R.string.home_empty_body), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                                Icon(
+                                    if (datasetType == DatasetType.MULTISIDE) Icons.Default.Forest else Icons.Default.Scale,
+                                    null,
+                                    Modifier.size(48.dp),
+                                    tint = MaterialTheme.colorScheme.primary,
+                                )
+                                Text(
+                                    stringResource(
+                                        if (datasetType == DatasetType.MULTISIDE) R.string.home_empty_title
+                                        else R.string.weight_home_empty_title,
+                                    ),
+                                    style = MaterialTheme.typography.titleMedium,
+                                )
+                                Text(
+                                    stringResource(
+                                        if (datasetType == DatasetType.MULTISIDE) R.string.home_empty_body
+                                        else R.string.weight_home_empty_body,
+                                    ),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                )
                             }
                         }
                     }
@@ -509,27 +573,33 @@ fun HomeScreen(
             onDismiss = { showNewDialog = false },
             onCreate = { variety, block, sideCount, autoId, operatorName, useNameToken ->
                 viewModel.createRun(
-                    variety, block, sideCount, autoId, operatorName, useNameToken,
+                    variety, block, sideCount, autoId, operatorName, useNameToken, datasetType,
                 ) { runId, resumedExisting, nextTreeName ->
                     showNewDialog = false
                     if (resumedExisting) {
                         // Name the tree that will actually be written, not just the block: this
                         // is the operator's last chance to notice that a folded run kept its
                         // existing naming instead of the token they just switched on.
-                        toasts.info(
+                        val message = if (datasetType == DatasetType.BUNCH_WEIGHT) {
                             if (nextTreeName.isNotEmpty()) {
-                                context.getString(R.string.home_run_resumed_named, block, nextTreeName)
-                            } else {
-                                context.getString(R.string.home_run_resumed, block)
-                            },
-                        )
+                                context.getString(R.string.weight_home_run_resumed_named, block, nextTreeName)
+                            } else context.getString(R.string.weight_home_run_resumed, block)
+                        } else if (nextTreeName.isNotEmpty()) {
+                            context.getString(R.string.home_run_resumed_named, block, nextTreeName)
+                        } else context.getString(R.string.home_run_resumed, block)
+                        toasts.info(message)
                     }
                     onSessionClick(runId)
                 }
             },
             inputCache = viewModel.inputCache,
             existingRuns = runs,
-            groupKeyOf = viewModel::groupKeyFor,
+            groupKeyOf = { variety, block -> viewModel.groupKeyFor(variety, block, datasetType) },
+            allowedSideCounts = if (datasetType == DatasetType.MULTISIDE) listOf(4, 8) else listOf(2),
+            photoCountDescription = if (datasetType == DatasetType.BUNCH_WEIGHT) {
+                stringResource(R.string.dialog_weight_photos_hint)
+            } else null,
+            datasetType = datasetType,
         )
     }
 
@@ -690,7 +760,13 @@ private fun GroupHeader(group: SessionGroup, isExpanded: Boolean, onToggle: () -
             Column(Modifier.weight(1f)) {
                 Text("${group.variety} · ${group.block}", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSecondaryContainer)
                 Text(
-                    stringResource(R.string.home_group_summary, group.runs.size, group.totalTrees),
+                    stringResource(
+                        if (group.runs.firstOrNull()?.datasetType == DatasetType.BUNCH_WEIGHT) {
+                            R.string.weight_home_group_summary
+                        } else R.string.home_group_summary,
+                        group.runs.size,
+                        group.totalTrees,
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSecondaryContainer,
                 )
@@ -715,7 +791,13 @@ private fun RunCard(run: RunSummary, onClick: () -> Unit, onDelete: () -> Unit, 
         Row(Modifier.padding(start = 14.dp, top = 10.dp, bottom = 10.dp, end = 4.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("${run.variety} · ${run.block}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Medium, maxLines = 1)
-                Text(stringResource(R.string.home_run_summary, run.treeCount, run.sideCount), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    if (run.datasetType == DatasetType.BUNCH_WEIGHT) {
+                        stringResource(R.string.weight_home_run_summary, run.treeCount, run.photoCount)
+                    } else stringResource(R.string.home_run_summary, run.treeCount, run.sideCount),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 Text(dateFormat.format(Date(run.updatedAt)), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             IconButton(onClick = onExport) {
@@ -734,7 +816,16 @@ private fun RunCard(run: RunSummary, onClick: () -> Unit, onDelete: () -> Unit, 
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
             title = { Text(stringResource(R.string.home_delete_session_title)) },
-            text = { Text(stringResource(R.string.home_delete_session_body, "${run.variety} · ${run.block}", run.treeCount)) },
+            text = {
+                Text(
+                    stringResource(
+                        if (run.datasetType == DatasetType.BUNCH_WEIGHT) R.string.weight_home_delete_session_body
+                        else R.string.home_delete_session_body,
+                        "${run.variety} · ${run.block}",
+                        run.treeCount,
+                    ),
+                )
+            },
             confirmButton = { TextButton(onClick = { confirmDelete = false; onDelete() }) { Text(stringResource(R.string.action_delete), color = MaterialTheme.colorScheme.error) } },
             dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text(stringResource(R.string.action_cancel)) } },
         )

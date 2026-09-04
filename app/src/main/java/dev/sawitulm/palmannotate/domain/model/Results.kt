@@ -67,4 +67,5 @@ data class ClusterMember(
     val x1: Float, val y1: Float, val x2: Float, val y2: Float,
     /** Box index on its side (for output JSON stability). */
     val boxIndex: Int,
+    val measurements: BunchMeasurements = BunchMeasurements(),
 )

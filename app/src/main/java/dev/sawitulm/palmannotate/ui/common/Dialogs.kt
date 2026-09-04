@@ -16,6 +16,7 @@ import dev.sawitulm.palmannotate.data.storage.InputCache
 import dev.sawitulm.palmannotate.data.storage.RunSummary
 import dev.sawitulm.palmannotate.domain.model.AnnotationClass
 import dev.sawitulm.palmannotate.domain.model.CaptureSetPolicy
+import dev.sawitulm.palmannotate.domain.model.DatasetType
 import dev.sawitulm.palmannotate.domain.quality.QualityCheck
 import dev.sawitulm.palmannotate.domain.usecase.SessionUseCases.MismatchCluster
 import dev.sawitulm.palmannotate.ui.theme.PalmColors
@@ -45,10 +46,15 @@ fun NewSessionDialog(
     inputCache: InputCache? = null,
     existingRuns: List<RunSummary> = emptyList(),
     groupKeyOf: (variety: String, block: String) -> String = { _, _ -> "" },
+    allowedSideCounts: List<Int> = listOf(4, 8),
+    photoCountDescription: String? = null,
+    datasetType: DatasetType = DatasetType.MULTISIDE,
 ) {
     var variety by remember { mutableStateOf(inputCache?.lastVariety ?: "DAMIMAS") }
     var block by remember { mutableStateOf(inputCache?.lastBlock ?: "") }
-    var sideCount by remember { mutableIntStateOf(inputCache?.lastSideCount ?: 4) }
+    val initialSideCount = inputCache?.lastSideCount?.takeIf { it in allowedSideCounts }
+        ?: allowedSideCounts.first()
+    var sideCount by remember(allowedSideCounts) { mutableIntStateOf(initialSideCount) }
     var autoId by remember { mutableStateOf(inputCache?.lastAutoId ?: true) }
     var operatorName by remember { mutableStateOf(inputCache?.lastOperatorName ?: "") }
     var useNameToken by remember { mutableStateOf(inputCache?.lastUseNameToken ?: false) }
@@ -77,7 +83,14 @@ fun NewSessionDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.dialog_start_session)) },
+        title = {
+            Text(
+                stringResource(
+                    if (datasetType == DatasetType.MULTISIDE) R.string.dialog_start_session
+                    else R.string.weight_dialog_start_session,
+                ),
+            )
+        },
         text = {
             // Scrollable: the dialog is taller than the content area on a landscape tablet once
             // the soft keyboard is up, and a clipped Column would hide the token switch and the
@@ -87,7 +100,10 @@ fun NewSessionDialog(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Text(
-                    stringResource(R.string.dialog_session_lock_hint),
+                    stringResource(
+                        if (datasetType == DatasetType.MULTISIDE) R.string.dialog_session_lock_hint
+                        else R.string.weight_dialog_session_lock_hint,
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -109,20 +125,41 @@ fun NewSessionDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Text(stringResource(R.string.dialog_photos_per_tree), style = MaterialTheme.typography.labelMedium)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    for (n in listOf(4, 8)) {
-                        FilterChip(
-                            selected = sideCount == n,
-                            onClick = { sideCount = n },
-                            label = { Text("$n") },
-                        )
+                Text(
+                    stringResource(
+                        if (datasetType == DatasetType.MULTISIDE) R.string.dialog_photos_per_tree
+                        else R.string.weight_dialog_photos_per_sample,
+                    ),
+                    style = MaterialTheme.typography.labelMedium,
+                )
+                if (photoCountDescription != null) {
+                    Text(
+                        photoCountDescription,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        for (n in allowedSideCounts) {
+                            FilterChip(
+                                selected = sideCount == n,
+                                onClick = { sideCount = n },
+                                label = { Text("$n") },
+                            )
+                        }
                     }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(stringResource(R.string.dialog_auto_id), style = MaterialTheme.typography.bodyMedium)
-                        Text(stringResource(R.string.dialog_auto_id_hint), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            stringResource(
+                                if (datasetType == DatasetType.MULTISIDE) R.string.dialog_auto_id_hint
+                                else R.string.weight_dialog_auto_id_hint,
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                     Switch(checked = autoId, onCheckedChange = { autoId = it })
                 }
@@ -144,12 +181,19 @@ fun NewSessionDialog(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(
-                                stringResource(R.string.dialog_name_token, deviceToken),
+                                stringResource(
+                                    if (datasetType == DatasetType.MULTISIDE) R.string.dialog_name_token
+                                    else R.string.weight_dialog_name_token,
+                                    deviceToken,
+                                ),
                                 style = MaterialTheme.typography.bodyMedium,
                             )
                             Text(
                                 stringResource(
-                                    if (tokenLocked) R.string.dialog_name_token_locked
+                                    if (datasetType == DatasetType.BUNCH_WEIGHT) {
+                                        if (tokenLocked) R.string.weight_dialog_name_token_locked
+                                        else R.string.weight_dialog_name_token_hint
+                                    } else if (tokenLocked) R.string.dialog_name_token_locked
                                     else R.string.dialog_name_token_hint,
                                 ),
                                 style = MaterialTheme.typography.bodySmall,
@@ -165,7 +209,10 @@ fun NewSessionDialog(
                 }
                 Text(
                     stringResource(
-                        if (existingRun != null) R.string.dialog_name_preview_next
+                        if (datasetType == DatasetType.BUNCH_WEIGHT) {
+                            if (existingRun != null) R.string.weight_dialog_name_preview_next
+                            else R.string.weight_dialog_name_preview
+                        } else if (existingRun != null) R.string.dialog_name_preview_next
                         else R.string.dialog_name_preview,
                         namePreview,
                     ),

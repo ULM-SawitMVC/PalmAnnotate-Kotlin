@@ -116,6 +116,48 @@ class DatabaseMigrationTest {
         migrated.close()
     }
 
+    @Test
+    fun migrateV7ToV8AddsDatasetTypeAndNullableBunchMeasurements() {
+        val db = helper.createDatabase("migration-v7", 7)
+        db.execSQL(
+            "INSERT INTO sessions(sessionId, variety, block, groupKey, sideCount, autoId, nextId, createdAt, updatedAt) " +
+                "VALUES ('run', 'V', 'B', 'V__B', 4, 1, 2, 111, 222)",
+        )
+        db.execSQL(
+            "INSERT INTO trees(treeKey, sessionId, treeName, treeId, split, sideCount, isComplete, variety, block, revision, createdAt, updatedAt) " +
+                "VALUES ('tree-key', 'run', 'V_B_0001', 1, 'field', 4, 0, 'V', 'B', 0, 333, 444)",
+        )
+        db.execSQL(
+            "INSERT INTO sides(id, treeKey, sideIndex, label, imageUri, imageWidth, imageHeight, labelUri) " +
+                "VALUES (1, 'tree-key', 0, 'Side 1', 'file:///side.jpg', 10, 10, NULL)",
+        )
+        db.execSQL(
+            "INSERT INTO bboxes(id, sideId, bboxId, classId, className, x1, y1, x2, y2) " +
+                "VALUES (1, 1, 'b0', 0, 'B1', 0, 0, 1, 1)",
+        )
+        db.close()
+
+        val migrated = helper.runMigrationsAndValidate(
+            "migration-v7", 8, true, PalmAnnotateDatabase.MIGRATION_7_8,
+        )
+
+        migrated.query("SELECT datasetType FROM sessions WHERE sessionId='run'").use {
+            assertTrue(it.moveToFirst())
+            assertEquals("MULTISIDE", it.getString(0))
+        }
+        migrated.query("SELECT datasetType FROM trees WHERE treeKey='tree-key'").use {
+            assertTrue(it.moveToFirst())
+            assertEquals("MULTISIDE", it.getString(0))
+        }
+        migrated.query(
+            "SELECT weightKg, heightCm, circumferenceCm, notes FROM bboxes WHERE id=1",
+        ).use {
+            assertTrue(it.moveToFirst())
+            for (column in 0..3) assertTrue("column $column must be NULL", it.isNull(column))
+        }
+        migrated.close()
+    }
+
     @Test(expected = IllegalStateException::class)
     fun duplicateLogicalBboxFailsLoudly() {
         val db = helper.createDatabase("migration-duplicate-bbox", 4)

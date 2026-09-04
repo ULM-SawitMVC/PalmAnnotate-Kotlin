@@ -25,6 +25,7 @@ import dev.sawitulm.palmannotate.data.db.TreeEntity
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
 import dev.sawitulm.palmannotate.data.storage.MirrorStates
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
+import dev.sawitulm.palmannotate.domain.model.DatasetType
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.StateFlow
@@ -98,13 +99,20 @@ fun SessionDetailScreen(
     LaunchedEffect(sessionId) { viewModel.load(sessionId) }
     val run by viewModel.run.collectAsState()
     val trees by viewModel.trees.collectAsState()
+    val isWeightDataset = DatasetType.fromPersisted(run?.datasetType) == DatasetType.BUNCH_WEIGHT
     val mirrorStatuses by viewModel.mirrorStatuses.collectAsState()
     val mirrorByTree = remember(mirrorStatuses) { mirrorStatuses.associateBy { it.treeKey } }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.session_title)) },
+                title = {
+                    Text(
+                        stringResource(
+                            if (isWeightDataset) R.string.weight_session_title else R.string.session_title,
+                        ),
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_back)) }
                 },
@@ -114,7 +122,13 @@ fun SessionDetailScreen(
             ExtendedFloatingActionButton(
                 onClick = onAddTree,
                 icon = { Icon(Icons.Default.Add, null) },
-                text = { Text(stringResource(R.string.session_add_tree)) },
+                text = {
+                    Text(
+                        stringResource(
+                            if (isWeightDataset) R.string.weight_session_add_sample else R.string.session_add_tree,
+                        ),
+                    )
+                },
             )
         },
     ) { padding ->
@@ -129,14 +143,22 @@ fun SessionDetailScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 item { LockBadge(run!!) }
-                item { RunStats(run!!, trees) }
+                item { RunStats(run!!, trees, isWeightDataset) }
                 item {
-                    Text(stringResource(R.string.session_trees_header), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text(
+                        stringResource(
+                            if (isWeightDataset) R.string.weight_session_samples_header else R.string.session_trees_header,
+                        ),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
                 }
                 if (trees.isEmpty()) {
                     item {
                         Text(
-                            stringResource(R.string.session_empty),
+                            stringResource(
+                                if (isWeightDataset) R.string.weight_session_empty else R.string.session_empty,
+                            ),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -150,6 +172,7 @@ fun SessionDetailScreen(
                             onDelete = { viewModel.deleteTree(tree.treeKey) },
                             mirrorStatus = mirrorByTree[tree.treeKey],
                             onRetryMirror = { viewModel.retryMirror(tree.treeKey) },
+                            isWeightDataset = isWeightDataset,
                         )
                     }
                 }
@@ -184,10 +207,14 @@ private fun LockBadge(run: SessionEntity) {
 }
 
 @Composable
-private fun RunStats(run: SessionEntity, trees: List<TreeEntity>) {
+private fun RunStats(run: SessionEntity, trees: List<TreeEntity>, isWeightDataset: Boolean) {
     val photos = trees.sumOf { it.sideCount }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Stat(stringResource(R.string.home_stat_trees), trees.size.toString(), Modifier.weight(1f))
+        Stat(
+            stringResource(if (isWeightDataset) R.string.home_stat_samples else R.string.home_stat_trees),
+            trees.size.toString(),
+            Modifier.weight(1f),
+        )
         Stat(stringResource(R.string.session_stat_photos), photos.toString(), Modifier.weight(1f))
         Stat(stringResource(R.string.session_stat_next_id), if (run.autoId) "%04d".format(run.nextId) else "—", Modifier.weight(1f))
     }
@@ -211,6 +238,7 @@ private fun TreeRow(
     onDelete: () -> Unit,
     mirrorStatus: dev.sawitulm.palmannotate.data.db.MirrorStatusEntity?,
     onRetryMirror: () -> Unit,
+    isWeightDataset: Boolean = false,
 ) {
     var confirm by remember { mutableStateOf(false) }
     ElevatedCard(Modifier.fillMaxWidth()) {
@@ -224,10 +252,17 @@ private fun TreeRow(
             Column(Modifier.weight(1f).clickable(onClick = onAnnotate)) {
                 Text(tree.treeName, fontWeight = FontWeight.Medium, maxLines = 1)
                 Text(
-                    stringResource(
-                        if (tree.isComplete) R.string.session_tree_sides_complete else R.string.session_tree_sides,
-                        tree.sideCount,
-                    ),
+                    if (isWeightDataset) {
+                        stringResource(
+                            if (tree.isComplete) R.string.weight_sample_photos_complete else R.string.weight_sample_photos,
+                            tree.sideCount,
+                        )
+                    } else {
+                        stringResource(
+                            if (tree.isComplete) R.string.session_tree_sides_complete else R.string.session_tree_sides,
+                            tree.sideCount,
+                        )
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -262,8 +297,20 @@ private fun TreeRow(
     if (confirm) {
         AlertDialog(
             onDismissRequest = { confirm = false },
-            title = { Text(stringResource(R.string.session_delete_tree_title)) },
-            text = { Text(stringResource(R.string.session_delete_tree_body, tree.treeName, tree.sideCount)) },
+            title = {
+                Text(
+                    stringResource(
+                        if (isWeightDataset) R.string.weight_delete_sample_title else R.string.session_delete_tree_title,
+                    ),
+                )
+            },
+            text = {
+                Text(
+                    if (isWeightDataset) {
+                        stringResource(R.string.weight_delete_sample_body, tree.treeName, tree.sideCount)
+                    } else stringResource(R.string.session_delete_tree_body, tree.treeName, tree.sideCount),
+                )
+            },
             confirmButton = { TextButton(onClick = { confirm = false; onDelete() }) { Text(stringResource(R.string.action_delete), color = MaterialTheme.colorScheme.error) } },
             dismissButton = { TextButton(onClick = { confirm = false }) { Text(stringResource(R.string.action_cancel)) } },
         )

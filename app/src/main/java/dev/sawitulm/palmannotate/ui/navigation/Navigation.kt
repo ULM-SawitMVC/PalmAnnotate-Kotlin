@@ -12,6 +12,8 @@ import dev.sawitulm.palmannotate.ui.capture.CaptureFlowScreen
 import dev.sawitulm.palmannotate.ui.carousel.CarouselScreen
 import dev.sawitulm.palmannotate.ui.dedup.DeduplicationScreen
 import dev.sawitulm.palmannotate.ui.home.HomeScreen
+import dev.sawitulm.palmannotate.ui.home.ModuleHubScreen
+import dev.sawitulm.palmannotate.domain.model.DatasetType
 import dev.sawitulm.palmannotate.ui.results.ResultsScreen
 import dev.sawitulm.palmannotate.ui.session.SessionDetailScreen
 import dev.sawitulm.palmannotate.ui.viewer.DepthViewerScreen
@@ -22,7 +24,10 @@ import dev.sawitulm.palmannotate.ui.viewer.DepthViewerScreen
  *                                → ANNOTATION(treeKey) → RESULTS/DEDUP(treeKey)
  */
 object Routes {
-    const val HOME = "home"
+    const val MODULES = "modules"
+    const val MULTISIDE_HOME = "home/multiside"
+    const val BUNCH_WEIGHT_HOME = "home/bunch-weight"
+    const val HOME = MULTISIDE_HOME
     const val SESSION_DETAIL = "session/{runId}"
     const val CAPTURE = "capture/{runId}"
     const val ANNOTATION = "annotation/{treeKey}"
@@ -44,10 +49,21 @@ object Routes {
 fun PalmAnnotateNavHost(
     navController: NavHostController = rememberNavController(),
 ) {
-    NavHost(navController = navController, startDestination = Routes.HOME) {
+    NavHost(navController = navController, startDestination = Routes.MODULES) {
 
-        composable(Routes.HOME) {
-            HomeScreen(onSessionClick = { runId -> navController.navigate(Routes.sessionDetail(runId)) })
+        composable(Routes.MODULES) {
+            ModuleHubScreen(
+                onOpenMultiside = { navController.navigate(Routes.MULTISIDE_HOME) },
+                onOpenBunchWeight = { navController.navigate(Routes.BUNCH_WEIGHT_HOME) },
+            )
+        }
+
+        composable(Routes.MULTISIDE_HOME) {
+            HomeScreen(datasetType = DatasetType.MULTISIDE, onSessionClick = { runId -> navController.navigate(Routes.sessionDetail(runId)) }, onBack = { navController.popBackStack() })
+        }
+
+        composable(Routes.BUNCH_WEIGHT_HOME) {
+            HomeScreen(datasetType = DatasetType.BUNCH_WEIGHT, onSessionClick = { runId -> navController.navigate(Routes.sessionDetail(runId)) }, onBack = { navController.popBackStack() })
         }
 
         composable(

@@ -41,6 +41,7 @@ object ExportManager {
         out.put("tree_id", session.treeName)
         out.put("tree_name", session.treeName)
         out.put("split", session.split)
+        out.put("dataset_type", session.datasetType.name)
 
         // metadata: { date, number, generated_at, variety } — matches the curated
         // example_dataset reference. session_id is intentionally omitted (no equivalent in
@@ -89,6 +90,7 @@ object ExportManager {
                     put("class_name", b.className)
                     put("bbox_yolo", yolo(b, side.imageWidth, side.imageHeight))
                     put("bbox_pixel", pixel(b))
+                    putMeasurements(b.measurements)
                 })
             }
             images.put("side_${side.sideIndex + 1}", JSONObject().apply {
@@ -134,6 +136,7 @@ object ExportManager {
                 put("class", dominant)
                 put("class_mismatch", mismatch)
                 put("appearance_count", members.size)
+                putMeasurements(members.first().measurements)
                 put("appearances", appearances)
             })
         }
@@ -160,6 +163,13 @@ object ExportManager {
         })
 
         return out
+    }
+
+    private fun JSONObject.putMeasurements(measurements: BunchMeasurements) {
+        measurements.weightKg?.let { put("weight_kg", it) }
+        measurements.heightCm?.let { put("height_cm", it) }
+        measurements.circumferenceCm?.let { put("circumference_cm", it) }
+        measurements.notes?.trim()?.takeIf(String::isNotEmpty)?.let { put("notes", it) }
     }
 
     /** Persist confirmed links with box-index-stable ids oriented to adjacent pairs. */

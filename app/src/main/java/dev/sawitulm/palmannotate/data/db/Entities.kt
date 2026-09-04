@@ -38,6 +38,7 @@ data class SessionEntity(
     @ColumnInfo(defaultValue = "''") val nameToken: String = "",
     // ── WS-13 operator provenance ─────────────────────────────────────────────
     @ColumnInfo(defaultValue = "''") val operatorName: String = "",
+    @ColumnInfo(defaultValue = "'MULTISIDE'") val datasetType: String = "MULTISIDE",
 )
 
 /** One tree (N side photos) inside a run. */
@@ -88,6 +89,7 @@ data class TreeEntity(
     @ColumnInfo(defaultValue = "''") val gpsProvider: String = "",
     /** GpsSource.name. 'NONE' when no coordinate was recorded at all. */
     @ColumnInfo(defaultValue = "'NONE'") val gpsSource: String = "NONE",
+    @ColumnInfo(defaultValue = "'MULTISIDE'") val datasetType: String = "MULTISIDE",
 )
 
 @Entity(
@@ -138,6 +140,10 @@ data class BboxEntity(
     val className: String,
     val x1: Float, val y1: Float,
     val x2: Float, val y2: Float,
+    val weightKg: Double? = null,
+    val heightCm: Double? = null,
+    val circumferenceCm: Double? = null,
+    val notes: String? = null,
 )
 
 @Entity(

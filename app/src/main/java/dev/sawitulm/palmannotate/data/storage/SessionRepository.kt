@@ -115,8 +115,11 @@ class SessionRepository(
     /** Observe runs with a derived tree count for the home screen. */
     fun observeRuns(): Flow<List<RunSummary>> =
         sessionDao.observeAll().combine(treeDao.observeAll()) { runs, trees ->
-            val counts = trees.groupingBy { it.sessionId }.eachCount()
-            runs.map { it.toSummary(counts[it.sessionId] ?: 0) }
+            val treesByRun = trees.groupBy { it.sessionId }
+            runs.map { run ->
+                val runTrees = treesByRun[run.sessionId].orEmpty()
+                run.toSummary(runTrees.size, runTrees.sumOf { it.sideCount })
+            }
         }
 
     suspend fun getRun(sessionId: String): SessionEntity? = withContext(Dispatchers.IO) {
@@ -126,7 +129,11 @@ class SessionRepository(
     fun observeRun(sessionId: String): Flow<SessionEntity?> = sessionDao.observeById(sessionId)
 
     private fun normToken(s: String) = s.uppercase().replace(Regex("[^A-Z0-9]"), "")
-    fun groupKeyFor(variety: String, block: String) = "${normToken(variety)}__${normToken(block)}"
+    fun groupKeyFor(
+        variety: String,
+        block: String,
+        datasetType: DatasetType = DatasetType.MULTISIDE,
+    ) = datasetType.runGroupKey("${normToken(variety)}__${normToken(block)}")
 
     /**
      * Create (or fold into) a run.
@@ -154,9 +161,10 @@ class SessionRepository(
         autoId: Boolean,
         identity: CaptureSetIdentity = CaptureSetIdentity.UNKNOWN,
         operatorName: String = "",
+        datasetType: DatasetType = DatasetType.MULTISIDE,
     ): String =
         withContext(Dispatchers.IO) {
-            val groupKey = groupKeyFor(variety, block)
+            val groupKey = groupKeyFor(variety, block, datasetType)
             // C-01: one run per variety+block. Re-using the same block must fold into the SAME run
             // (so nextId keeps counting and treeName can never collide across runs), never spawn a
             // parallel run. Mirrors FolderResumeImporter's groupKey reuse. When an existing run is
@@ -182,6 +190,7 @@ class SessionRepository(
                             deviceToken = identity.deviceToken,
                             nameToken = identity.nameToken,
                             operatorName = operatorName.trim(),
+                            datasetType = datasetType.name,
                         )
                     )
                     id
@@ -463,10 +472,11 @@ class SessionRepository(
                 updatedAt = now,
             )
         }
-        val declaredSideCount = maxOf(
-            run.sideCount,
-            (sides.maxOfOrNull { it.sideIndex } ?: -1) + 1,
-        )
+        val declaredSideCount = if (DatasetType.fromPersisted(run.datasetType) == DatasetType.BUNCH_WEIGHT) {
+            sides.size
+        } else {
+            maxOf(run.sideCount, (sides.maxOfOrNull { it.sideIndex } ?: -1) + 1)
+        }
         db.withTransaction {
             treeDao.insert(
                 TreeEntity(
@@ -490,6 +500,7 @@ class SessionRepository(
                     gpsAgeMs = committedGps.ageMs,
                     gpsProvider = committedGps.provider,
                     gpsSource = committedGps.source.name,
+                    datasetType = run.datasetType,
                 )
             )
             persistSidesDb(treeKey, sides)
@@ -708,6 +719,7 @@ class SessionRepository(
                 metadata = tree.toTreeMetadata(),
                 revision = tree.revision,
                 createdAt = tree.createdAt, updatedAt = tree.updatedAt,
+                datasetType = DatasetType.fromPersisted(tree.datasetType),
             )
         }
 
@@ -1972,15 +1984,39 @@ class SessionRepository(
 
 // ─── Mappers + summary types ────────────────────────────────────────────────────
 
-private fun SessionEntity.toSummary(treeCount: Int) = RunSummary(
+private fun SessionEntity.toSummary(treeCount: Int, photoCount: Int) = RunSummary(
     sessionId = sessionId, variety = variety, block = block, groupKey = groupKey,
     sideCount = sideCount, autoId = autoId, nextId = nextId,
     createdAt = createdAt, updatedAt = updatedAt, treeCount = treeCount,
     nameToken = nameToken, operatorName = operatorName,
+    datasetType = DatasetType.fromPersisted(datasetType),
+    photoCount = photoCount,
 )
 
-private fun BboxEntity.toBbox() = Bbox(id = bboxId, classId = classId, className = className, x1 = x1, y1 = y1, x2 = x2, y2 = y2)
-private fun Bbox.toEntity(sideId: Long) = BboxEntity(sideId = sideId, bboxId = id, classId = classId, className = className, x1 = x1, y1 = y1, x2 = x2, y2 = y2)
+private fun BboxEntity.toBbox() = Bbox(
+    id = bboxId,
+    classId = classId,
+    className = className,
+    x1 = x1,
+    y1 = y1,
+    x2 = x2,
+    y2 = y2,
+    measurements = BunchMeasurements(weightKg, heightCm, circumferenceCm, notes),
+)
+private fun Bbox.toEntity(sideId: Long) = BboxEntity(
+    sideId = sideId,
+    bboxId = id,
+    classId = classId,
+    className = className,
+    x1 = x1,
+    y1 = y1,
+    x2 = x2,
+    y2 = y2,
+    weightKg = measurements.weightKg,
+    heightCm = measurements.heightCm,
+    circumferenceCm = measurements.circumferenceCm,
+    notes = measurements.notes,
+)
 
 /** Home-screen summary of one run (with derived tree count). */
 data class RunSummary(
@@ -1998,4 +2034,6 @@ data class RunSummary(
     val nameToken: String = "",
     /** WS-13: operator recorded on the run; blank until one is entered. */
     val operatorName: String = "",
+    val datasetType: DatasetType = DatasetType.MULTISIDE,
+    val photoCount: Int = 0,
 )

@@ -178,9 +178,52 @@ class DatabaseSchemaV7ContractTest {
             source.contains("fallbackToDestructiveMigration"),
         )
         // Every new column must arrive via ADD COLUMN — a table rebuild would risk the rows.
-        val migration = source.substringAfter("val MIGRATION_6_7").substringBefore("val ALL_MIGRATIONS")
+        val migration = source.substringAfter("val MIGRATION_6_7").substringBefore("val MIGRATION_7_8")
         assertFalse(migration.contains("DROP TABLE"))
         assertFalse(migration.contains("CREATE TABLE"))
         assertEquals(17, Regex("ADD COLUMN").findAll(migration).count())
+    }
+}
+
+class DatabaseSchemaV8ContractTest {
+    private fun schemaV8(): JSONObject {
+        val relative = "app/schemas/dev.sawitulm.palmannotate.data.db.PalmAnnotateDatabase/8.json"
+        val schema = generateSequence(File(requireNotNull(System.getProperty("user.dir"))).absoluteFile) {
+            it.parentFile
+        }.map { File(it, relative) }.firstOrNull(File::isFile)
+        assertNotNull("Room schema v8 must be committed at $relative", schema)
+        return JSONObject(schema!!.readText())
+    }
+
+    private fun fields(table: String): Map<String, JSONObject> {
+        val entities = schemaV8().getJSONObject("database").getJSONArray("entities")
+        val entity = (0 until entities.length())
+            .map { entities.getJSONObject(it) }
+            .first { it.getString("tableName") == table }
+        val fields = entity.getJSONArray("fields")
+        return (0 until fields.length()).map(fields::getJSONObject)
+            .associateBy { it.getString("columnName") }
+    }
+
+    @Test
+    fun `v8 keeps old rows multiside and measurements nullable`() {
+        assertEquals(8, schemaV8().getJSONObject("database").getInt("version"))
+        assertEquals("'MULTISIDE'", fields("sessions").getValue("datasetType").getString("defaultValue"))
+        assertEquals("'MULTISIDE'", fields("trees").getValue("datasetType").getString("defaultValue"))
+        for (column in listOf("weightKg", "heightCm", "circumferenceCm", "notes")) {
+            assertFalse(fields("bboxes").getValue(column).getBoolean("notNull"))
+        }
+    }
+
+    @Test
+    fun `v8 migration is additive and registered`() {
+        val source = repoFile(
+            "app/src/main/java/dev/sawitulm/palmannotate/data/db/PalmAnnotateDatabase.kt",
+        ).readText()
+        val migration = source.substringAfter("val MIGRATION_7_8").substringBefore("val ALL_MIGRATIONS")
+        assertEquals(6, Regex("ADD COLUMN").findAll(migration).count())
+        assertFalse(migration.contains("DROP TABLE"))
+        assertFalse(migration.contains("CREATE TABLE"))
+        assertTrue(source.substringAfter("ALL_MIGRATIONS").contains("MIGRATION_7_8"))
     }
 }

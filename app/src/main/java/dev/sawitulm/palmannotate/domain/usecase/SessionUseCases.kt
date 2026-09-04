@@ -153,6 +153,27 @@ object SessionUseCases {
         return result
     }
 
+    fun setBboxMeasurements(
+        session: ActiveSession,
+        sideIndex: Int,
+        bboxId: String,
+        measurements: BunchMeasurements,
+        propagate: Boolean = true,
+    ): ActiveSession {
+        val normalized = measurements.normalized()
+        val members = if (propagate) getClusterMembers(session, sideIndex, bboxId) else emptyList()
+        val targets = if (members.isEmpty()) setOf(sideIndex to bboxId)
+        else members.mapTo(mutableSetOf()) { it.first to it.third.id }
+        val updatedSides = session.sides.map { side ->
+            side.copy(
+                bboxes = side.bboxes.map { bbox ->
+                    if ((side.sideIndex to bbox.id) in targets) bbox.copy(measurements = normalized) else bbox
+                },
+            )
+        }
+        return session.copy(sides = updatedSides, dirty = true)
+    }
+
     // ─── Mismatch Detection ───────────────────────────────────────────────────
 
     data class MismatchCluster(
@@ -272,7 +293,26 @@ object SessionUseCases {
 
         val linkId = "lnk-${System.nanoTime()}"
         val newLink = CrossSideLink.create(linkId, sA, bA, sB, bB)
-        return session.copy(confirmedLinks = filtered + newLink, dirty = true)
+        var result = session.copy(confirmedLinks = filtered + newLink, dirty = true)
+        if (session.datasetType == DatasetType.BUNCH_WEIGHT) {
+            val source = session.sides.firstOrNull { it.sideIndex == sideA }
+                ?.bboxes?.firstOrNull { it.id == bboxIdA }
+            val target = session.sides.firstOrNull { it.sideIndex == sideB }
+                ?.bboxes?.firstOrNull { it.id == bboxIdB }
+            val chosenMeasurements = when {
+                source?.measurements?.hasAnyValue == true -> source.measurements
+                target?.measurements?.hasAnyValue == true -> target.measurements
+                else -> BunchMeasurements()
+            }
+            result = setBboxMeasurements(result, sideA, bboxIdA, chosenMeasurements)
+            val chosenClass = when {
+                source?.isAssigned == true -> AnnotationClass.fromId(source.classId)
+                target?.isAssigned == true -> AnnotationClass.fromId(target.classId)
+                else -> AnnotationClass.UNASSIGNED
+            }
+            result = setBboxClass(result, sideA, bboxIdA, chosenClass)
+        }
+        return result
     }
 
     /**

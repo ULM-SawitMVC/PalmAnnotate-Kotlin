@@ -7,6 +7,9 @@ import androidx.compose.animation.core.spring
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.PagerDefaults
@@ -23,8 +26,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -40,6 +48,7 @@ import dev.sawitulm.palmannotate.data.storage.SaveResult
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
 import dev.sawitulm.palmannotate.domain.model.*
 import dev.sawitulm.palmannotate.domain.usecase.SessionUseCases
+import dev.sawitulm.palmannotate.domain.usecase.WeightDatasetPolicy
 import dev.sawitulm.palmannotate.domain.util.OperationQueue
 import dev.sawitulm.palmannotate.ui.common.AnnotationCanvas
 import dev.sawitulm.palmannotate.ui.common.CanvasTool
@@ -106,6 +115,9 @@ class CarouselViewModel @Inject constructor(
 
     val currentSide: TreeSide?
         get() = session?.sides?.getOrNull(currentSideIndex)
+
+    val selectedBbox: Bbox?
+        get() = currentSide?.bboxes?.firstOrNull { it.id == selectedBboxId }
 
     val totalSides: Int get() = session?.sides?.size ?: 0
 
@@ -235,6 +247,12 @@ class CarouselViewModel @Inject constructor(
         markDirty()
     }
 
+    fun changeBboxMeasurements(bboxId: String, measurements: BunchMeasurements) {
+        val s = session ?: return
+        session = SessionUseCases.setBboxMeasurements(s, currentSideIndex, bboxId, measurements)
+        markDirty()
+    }
+
     fun deleteBbox(bboxId: String) {
         val s = session ?: return
         session = SessionUseCases.deleteBbox(s, currentSideIndex, bboxId)
@@ -315,7 +333,7 @@ class CarouselViewModel @Inject constructor(
             val ra = root(a); val rb = root(b)
             if (ra != rb) parent[ra] = rb
         }
-        fun key(side: Int, b: String) = "$side $b"
+        fun key(side: Int, b: String) = "$side\u0000$b"
         s.confirmedLinks.forEach { l -> union(key(l.sideA, l.bboxIdA), key(l.sideB, l.bboxIdB)) }
         // Stable numbering: number each cluster by the order its FIRST link appears in
         // confirmedLinks (insertion order). The old "sort by union-find root" scheme reshuffled
@@ -329,7 +347,7 @@ class CarouselViewModel @Inject constructor(
         }
         val result = HashMap<String, Int>()
         parent.keys.forEach { k ->
-            val sep = k.indexOf(' ')
+            val sep = k.indexOf('\u0000')
             val side = k.substring(0, sep).toInt()
             val boxId = k.substring(sep + 1)
             if (side == sideIndex) result[boxId] = groupNum.getValue(root(k))
@@ -350,7 +368,20 @@ class CarouselViewModel @Inject constructor(
         }
     }
 
-    fun saveAndExit(onDone: () -> Unit) {
+    fun saveAndExit(onDone: () -> Unit) = persistAndExit(markComplete = true, onDone)
+
+    fun saveDraftAndExit(onDone: () -> Unit) = persistAndExit(markComplete = false, onDone)
+
+    fun completeWeightSample(onDone: () -> Unit) {
+        val current = session ?: return
+        WeightDatasetPolicy.completionError(current)?.let { error ->
+            saveErrorMessage = error
+            return
+        }
+        persistAndExit(markComplete = true, onDone)
+    }
+
+    private fun persistAndExit(markComplete: Boolean, onDone: () -> Unit) {
         if (session == null) {
             onDone()
             return
@@ -363,9 +394,7 @@ class CarouselViewModel @Inject constructor(
         isSaving = true
         opq.enqueue("save-carousel") {
             try {
-                // One revision commit both persists the latest snapshot and marks the tree complete.
-                // Calling saveSession first made this second commit use a stale revision forever.
-                when (val result = autoSaveMutex.withLock { persistLatest(markComplete = true) }) {
+                when (val result = autoSaveMutex.withLock { persistLatest(markComplete) }) {
                     is SaveResult.Success -> withContext(Dispatchers.Main.immediate) { onDone() }
                     else -> reportSaveFailure(result)
                 }
@@ -466,6 +495,7 @@ fun CarouselScreen(
     LaunchedEffect(sessionId) { viewModel.load(sessionId) }
 
     val session = viewModel.session
+    val isWeightDataset = session?.datasetType == DatasetType.BUNCH_WEIGHT
     val totalSides = viewModel.totalSides
     val sidesCount = totalSides.coerceAtLeast(1)
     // Infinite/looping pager: a huge virtual page count (only when there is more than one
@@ -512,7 +542,10 @@ fun CarouselScreen(
     LaunchedEffect(viewModel.mode, viewModel.currentSideIndex) { isEditingBox = false }
 
     // While no session exists there is nothing to save, so let NavHost handle Back normally.
-    BackHandler(enabled = session != null) { viewModel.saveAndExit { onBack() } }
+    BackHandler(enabled = session != null) {
+        if (isWeightDataset) viewModel.saveDraftAndExit { onBack() }
+        else viewModel.saveAndExit { onBack() }
+    }
 
     val toasts = LocalToasts.current
     LaunchedEffect(viewModel.saveErrorMessage) {
@@ -548,7 +581,10 @@ fun CarouselScreen(
                 navigationIcon = {
                     // Save-then-leave so edits are never lost by tapping Back.
                     IconButton(
-                        onClick = { viewModel.saveAndExit { onBack() } },
+                        onClick = {
+                            if (isWeightDataset) viewModel.saveDraftAndExit { onBack() }
+                            else viewModel.saveAndExit { onBack() }
+                        },
                         enabled = !viewModel.isSaving && !viewModel.isDetecting,
                     ) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_back))
@@ -578,11 +614,12 @@ fun CarouselScreen(
                         },
                         modifier = Modifier.heightIn(min = 40.dp).padding(horizontal = 2.dp),
                     )
-                    // More menu
-                    IconButton(onClick = { showMoreMenu = true }) {
-                        Icon(Icons.Default.MoreVert, stringResource(R.string.cd_more))
+                    if (!isWeightDataset) {
+                        IconButton(onClick = { showMoreMenu = true }) {
+                            Icon(Icons.Default.MoreVert, stringResource(R.string.cd_more))
+                        }
                     }
-                    DropdownMenu(expanded = showMoreMenu, onDismissRequest = { showMoreMenu = false }) {
+                    DropdownMenu(expanded = showMoreMenu && !isWeightDataset, onDismissRequest = { showMoreMenu = false }) {
                         // H-07: these are sub-screens, not completion actions. Persist edits first,
                         // but do not generate final output / mark the tree complete.
                         DropdownMenuItem(
@@ -624,10 +661,20 @@ fun CarouselScreen(
                 onToggleSwipe = { viewModel.toggleSwipeDirection() },
                 onArmLink = { viewModel.armLink() },
                 onCancelLink = { viewModel.cancelLink() },
-                onSaveExit = { viewModel.saveAndExit { onBack() } },
+                saveExitLabel = stringResource(
+                    if (isWeightDataset) R.string.weight_save_draft_exit else R.string.carousel_save_exit,
+                ),
+                nextTreeLabel = stringResource(
+                    if (isWeightDataset) R.string.weight_save_next else R.string.carousel_next_tree,
+                ),
+                onSaveExit = {
+                    if (isWeightDataset) viewModel.saveDraftAndExit { onBack() }
+                    else viewModel.saveAndExit { onBack() }
+                },
                 onNextTree = {
                     viewModel.runId?.let { rid ->
-                        viewModel.saveAndExit { onNextTree(rid) }
+                        if (isWeightDataset) viewModel.completeWeightSample { onNextTree(rid) }
+                        else viewModel.saveAndExit { onNextTree(rid) }
                     }
                 },
             )
@@ -638,6 +685,16 @@ fun CarouselScreen(
                 CircularProgressIndicator()
             }
         } else {
+            BoxWithConstraints(Modifier.fillMaxSize().padding(padding)) {
+            val selectedBbox = viewModel.selectedBbox
+            val showMeasurements = isWeightDataset && selectedBbox != null
+            val expandedInspector = maxWidth >= 720.dp
+            val inspectorWidth = if (showMeasurements && expandedInspector) 340.dp else 0.dp
+            // Compact layout puts the panel over the bottom of the photo. Inset the pager by
+            // the same amount so the canvas re-fits into what is actually visible, instead of
+            // drawing the bunch under the sheet.
+            val sheetHeight = (maxHeight * 0.7f).coerceAtMost(480.dp)
+            val inspectorHeight = if (showMeasurements && !expandedInspector) sheetHeight else 0.dp
             HorizontalPager(
                 state = pagerState,
                 reverseLayout = !viewModel.reverseSwipe,
@@ -646,7 +703,7 @@ fun CarouselScreen(
                 // (and the moment Edit closes) swiping is always enabled, so a stuck flag can
                 // never strand the pager.
                 userScrollEnabled = !(isEditingBox && viewModel.mode == CarouselMode.EDIT),
-                modifier = Modifier.fillMaxSize().padding(padding),
+                modifier = Modifier.fillMaxSize().padding(end = inspectorWidth, bottom = inspectorHeight),
             ) { page ->
                 val sideIdx = page % sidesCount
                 val side = session!!.sides.getOrNull(sideIdx) ?: return@HorizontalPager
@@ -735,6 +792,7 @@ fun CarouselScreen(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .padding(end = inspectorWidth, bottom = inspectorHeight)
                         .padding(top = 56.dp)
                         .padding(horizontal = 8.dp),
                     horizontalArrangement = Arrangement.Center,
@@ -768,7 +826,10 @@ fun CarouselScreen(
 
             // Auto-save confirmation pulse (brief, non-interactive).
             if (showSaved) {
-                Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.BottomCenter) {
+                Box(
+                    Modifier.fillMaxSize().padding(end = inspectorWidth),
+                    contentAlignment = Alignment.BottomCenter,
+                ) {
                     Surface(
                         modifier = Modifier.padding(bottom = 16.dp),
                         shape = RoundedCornerShape(20.dp),
@@ -790,8 +851,189 @@ fun CarouselScreen(
                     }
                 }
             }
+
+            if (showMeasurements && selectedBbox != null) {
+                BunchMeasurementPanel(
+                    bbox = selectedBbox,
+                    onApply = { viewModel.changeBboxMeasurements(selectedBbox.id, it) },
+                    onClose = { viewModel.selectBbox(null) },
+                    modifier = if (expandedInspector) {
+                        Modifier.align(Alignment.CenterEnd).width(340.dp).fillMaxHeight()
+                    } else {
+                        // A sheet at 88% left the photo as a black strip in portrait — the box
+                        // being measured has to stay visible. Capped so a tall screen does not
+                        // stretch the fields, and proportional so a short one still fits.
+                        Modifier
+                            .align(Alignment.BottomCenter)
+                            .fillMaxWidth()
+                            .height(sheetHeight)
+                    },
+                )
+            }
+            }
         }
     }
+}
+
+@Composable
+private fun BunchMeasurementPanel(
+    bbox: Bbox,
+    onApply: (BunchMeasurements) -> Unit,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var weight by remember(bbox.id, bbox.measurements) {
+        mutableStateOf(bbox.measurements.weightKg?.toString().orEmpty())
+    }
+    var height by remember(bbox.id, bbox.measurements) {
+        mutableStateOf(bbox.measurements.heightCm?.toString().orEmpty())
+    }
+    var circumference by remember(bbox.id, bbox.measurements) {
+        mutableStateOf(bbox.measurements.circumferenceCm?.toString().orEmpty())
+    }
+    var notes by remember(bbox.id, bbox.measurements) {
+        mutableStateOf(bbox.measurements.notes.orEmpty())
+    }
+    var error by remember(bbox.id) { mutableStateOf<String?>(null) }
+    val fieldColors = OutlinedTextFieldDefaults.colors(
+        unfocusedBorderColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
+    )
+
+    // Modifier.imePadding() subtracts the keyboard height measured from the WINDOW bottom, but
+    // this panel already ends above the bottom bar. That over-subtracted the panel by the bar's
+    // height and collapsed the field area to zero, so nothing but the header stayed on screen
+    // while typing. Subtract only the part of the keyboard that actually overlaps the panel.
+    val density = LocalDensity.current
+    val rootHeightPx = LocalView.current.rootView.height
+    var panelBottomPx by remember { mutableIntStateOf(0) }
+    val imeBottomPx = WindowInsets.ime.getBottom(density)
+    val imeOverlapPx = if (rootHeightPx > 0 && panelBottomPx > 0) {
+        // Measured on the Pad 6: root=1800, panel bottom=1320, keyboard=922 → overlap 442,
+        // not the 922 that imePadding() removed. Both clamps keep a surprising measurement
+        // (panel reported below the window, keyboard smaller than the gap) at zero padding.
+        val gapBelowPanel = (rootHeightPx - panelBottomPx).coerceAtLeast(0)
+        (imeBottomPx - gapBelowPanel).coerceAtLeast(0)
+    } else {
+        0
+    }
+    val imeVisible = imeOverlapPx > 0
+
+    Surface(
+        modifier = modifier.onGloballyPositioned { coords ->
+            panelBottomPx = (coords.positionInWindow().y + coords.size.height).toInt()
+        },
+        tonalElevation = 6.dp,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(bottom = with(density) { imeOverlapPx.toDp() })
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        stringResource(R.string.weight_panel_title),
+                        // The keyboard leaves roughly a third of a landscape screen for this
+                        // panel, so the header gives its space back to the fields while typing.
+                        style = if (imeVisible) MaterialTheme.typography.titleMedium
+                        else MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    if (!imeVisible) {
+                        Text(
+                            stringResource(R.string.weight_panel_hint),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                IconButton(onClick = onClose, modifier = Modifier.size(48.dp)) {
+                    Icon(Icons.Default.Close, stringResource(R.string.weight_close_panel))
+                }
+            }
+
+            Column(
+                modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    bbox.className,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                MeasurementNumberField(
+                    value = weight,
+                    onValueChange = { weight = it; error = null },
+                    label = stringResource(R.string.weight_required_label),
+                    colors = fieldColors,
+                )
+                MeasurementNumberField(
+                    value = height,
+                    onValueChange = { height = it; error = null },
+                    label = stringResource(R.string.height_optional_label),
+                    colors = fieldColors,
+                )
+                MeasurementNumberField(
+                    value = circumference,
+                    onValueChange = { circumference = it; error = null },
+                    label = stringResource(R.string.circumference_optional_label),
+                    colors = fieldColors,
+                )
+                OutlinedTextField(
+                    value = notes,
+                    onValueChange = { notes = it; error = null },
+                    label = { Text(stringResource(R.string.notes_optional_label)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    minLines = 2,
+                    maxLines = 4,
+                    colors = fieldColors,
+                )
+                error?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+            Button(
+                onClick = {
+                    BunchMeasurements.parseInput(weight, height, circumference, notes)
+                        .onSuccess { measurements ->
+                            onApply(measurements)
+                            error = null
+                        }
+                        .onFailure { failure -> error = failure.message }
+                },
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+            ) {
+                Text(stringResource(R.string.weight_apply))
+            }
+        }
+    }
+}
+
+@Composable
+private fun MeasurementNumberField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    colors: TextFieldColors,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+        colors = colors,
+    )
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -817,6 +1059,8 @@ private fun CarouselBottomBar(
     onToggleSwipe: () -> Unit,
     onArmLink: () -> Unit,
     onCancelLink: () -> Unit,
+    saveExitLabel: String,
+    nextTreeLabel: String,
     onSaveExit: () -> Unit,
     onNextTree: () -> Unit,
 ) {
@@ -946,12 +1190,12 @@ private fun CarouselBottomBar(
                     onClick = onSaveExit,
                     enabled = !isSaving,
                     modifier = Modifier.weight(1f).height(48.dp),
-                ) { Text(stringResource(R.string.carousel_save_exit), style = MaterialTheme.typography.labelLarge) }
+                ) { Text(saveExitLabel, style = MaterialTheme.typography.labelLarge) }
                 Button(
                     onClick = onNextTree,
                     enabled = !isSaving && nextTreeEnabled,
                     modifier = Modifier.weight(1f).height(48.dp),
-                ) { Text(stringResource(R.string.carousel_next_tree), style = MaterialTheme.typography.labelLarge) }
+                ) { Text(nextTreeLabel, style = MaterialTheme.typography.labelLarge) }
             }
         }
     }

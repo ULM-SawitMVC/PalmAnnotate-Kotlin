@@ -18,6 +18,7 @@ data class Bbox(
     val y1: Float,
     val x2: Float,
     val y2: Float,
+    val measurements: BunchMeasurements = BunchMeasurements(),
 ) {
     /** Width in pixels. */
     val width: Float get() = x2 - x1

@@ -68,11 +68,13 @@ app/src/main/java/dev/sawitulm/palmannotate/
 ├── MainActivity.kt             ← Compose entry point (@AndroidEntryPoint)
 ├── di/AppModule.kt             ← Hilt DI module (singleton bindings)
 ├── domain/
-│   ├── model/                   ← Data classes (Bbox, ActiveSession, TreeSide, etc.)
+│   ├── model/                   ← Data classes (Bbox, ActiveSession, TreeSide, DatasetType,
+│   │                              BunchMeasurements, etc.)
 │   ├── dedup/                   ← UnionFind + SuggestionEngine
 │   ├── results/                 ← ResultsComputer
 │   ├── quality/                 ← QualityCheck (capture QA validation)
-│   ├── usecase/                 ← SessionUseCases (bbox CRUD, link mgmt, mismatch resolve)
+│   ├── usecase/                 ← SessionUseCases (bbox CRUD, link mgmt, mismatch resolve),
+│   │                              WeightDatasetPolicy (bunch-weight completion gate)
 │   └── util/                    ← DepthUtil, ColorUtil, OperationQueue
 ├── data/
 │   ├── db/                      ← Room entities + DAOs + PalmAnnotateDatabase
@@ -85,8 +87,9 @@ app/src/main/java/dev/sawitulm/palmannotate/
 │   └── export/                  ← ExportManager (Output JSON / YOLO / CSV / Identity)
 ├── ui/
 │   ├── theme/                   ← Material 3 theming (PalmColors, OnMediaColors)
-│   ├── navigation/              ← NavHost + routes
-│   ├── home/                    ← HomeScreen + HomeViewModel
+│   ├── navigation/              ← NavHost + routes (start destination = ModuleHubScreen)
+│   ├── home/                    ← ModuleHubScreen (dataset picker) + HomeScreen/HomeViewModel
+│   │                              (one instance per DatasetType)
 │   ├── session/                 ← SessionDetailScreen
 │   ├── capture/                 ← CaptureFlowScreen (CameraX + Orbbec toggle)
 │   ├── carousel/                ← CarouselScreen (PRIMARY annotation editor: swipe sides, draw/select/link, auto-save)
@@ -109,6 +112,45 @@ app/src/main/java/dev/sawitulm/palmannotate/
 - **Image loading:** `BitmapFactory` with downsampling, LRU `BitmapCache` (8 entries)
 
 ## Key Technical Decisions
+
+### Dataset modules (module hub + bunch weight)
+
+The app opens on `ModuleHubScreen`, not on the session list. `DatasetType` (`MULTISIDE`,
+`BUNCH_WEIGHT`) routes everything below it; `Routes.HOME` is an alias for
+`Routes.MULTISIDE_HOME`, so existing navigation code keeps working.
+
+**Multiside is unchanged.** Every new parameter defaults to `MULTISIDE`, and
+`DatasetType.runGroupKey` returns the legacy `VARIETY__BLOCK` key untouched for it — only
+`BUNCH_WEIGHT` gets the `BUNCH_WEIGHT__` prefix. That prefix is what keeps the two modules'
+runs apart when the same variety+block is collected in both.
+
+Bunch weight: photo 1 required, photo 2 optional (`sideCount = 2`, and
+`DatasetType.allowsEarlyFinish` unlocks the "Use 1 photo" button after the first shot). The
+QA gate compares against the photos actually taken, not the configured count, so stopping at
+one photo is not a warning. Measurements live on the bbox
+(`BboxEntity.weightKg/heightCm/circumferenceCm/notes`, all nullable) and are propagated to
+every member of a cross-side link cluster, so one physical bunch carries one set of values.
+Weight is required and must be > 0; height/circumference are optional but must be > 0 when
+present; an empty optional is stored as `null`, never `0`.
+`WeightDatasetPolicy.completionError` is the single completion gate — a weight sample can only
+be marked complete through it. Full contract in `docs/BUNCH-WEIGHT-MODULE.md`.
+
+**DB is at version 8.** `MIGRATION_7_8` adds `sessions.datasetType`, `trees.datasetType`
+(both `TEXT NOT NULL DEFAULT 'MULTISIDE'`) and the four nullable bbox measurement columns.
+Every addition is additive: existing rows read back as multiside with no measurements, and
+`ExportManager` only emits the new keys when a value exists, so already-delivered packages
+still parse.
+
+### AnnotationCanvas viewport invariants
+
+- **The auto-fit is keyed on the canvas size, not on a one-shot flag.** The measurement panel
+  narrows the canvas at runtime; fitting once left the photo positioned for the old width, so
+  it looked shifted and ran under the panel. `fittedTo != size` re-centres it.
+- **Two fingers on the canvas report `isActiveEdit`.** The carousel pager and `transformable`
+  both want a multi-finger drag; without the signal the pager won the arbitration and
+  pinch-zoom did nothing on any tree with more than one side.
+- **Review mode still installs no zoom/pan, deliberately.** It would consume the horizontal
+  drag and block swiping between sides.
 
 ### Depth Viewer (Jet Colormap)
 
@@ -234,7 +276,8 @@ See `docs/PERF_GAIN.md`. **Do not move the SAF mirror back onto the blocking sav
 
 ### Xiaomi Pad 6 (Secondary Test Device)
 
-- **ADB:** Wireless at `192.168.1.3:43451` (port is random — changes each time wireless debugging restarts; re-check the port in Developer options if connect fails)
+- **ADB:** Wireless at `192.168.1.2:45227` (both the address and the port change when wireless
+  debugging restarts; re-check them in Developer options if connect fails)
 - **Model:** `23043RP34G` (`device:pipa`)
 - **Package:** `dev.sawitulm.palmannotate.debug`
 
@@ -492,6 +535,8 @@ on-device checklist before field use. See the 0% error tolerance block below.
 | File | Content |
 |------|---------|
 | `docs/MIGRATION_STATUS.md` | Migration progress (Done / Partial / Missing) |
+| `docs/BUNCH-WEIGHT-MODULE.md` | Bunch-weight module: flow, data contract, acceptance criteria |
+| `PRODUCT.md` | Product scope shared by both dataset modules |
 | `docs/PERF_GAIN.md` | Dedup performance optimization analysis |
 | `.github/workflows/` | CI: `android-build.yml` (APK per push) + `release.yml` (tagged Release) |
 | `HANDOFF.md` | Session handoff notes |

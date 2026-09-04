@@ -22,6 +22,7 @@ data class ActiveSession(
     val dirty: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
+    val datasetType: DatasetType = DatasetType.MULTISIDE,
 ) {
     val totalSides: Int get() = sides.size
     val totalBboxes: Int get() = sides.sumOf { it.bboxes.size }

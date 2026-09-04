@@ -9,6 +9,7 @@ import dev.sawitulm.palmannotate.domain.model.Bbox
 import dev.sawitulm.palmannotate.domain.model.CaptureOrigin
 import dev.sawitulm.palmannotate.domain.model.CaptureSetIdentity
 import dev.sawitulm.palmannotate.domain.model.CrossSideLink
+import dev.sawitulm.palmannotate.domain.model.DatasetType
 import dev.sawitulm.palmannotate.domain.model.GpsProvenance
 import dev.sawitulm.palmannotate.domain.model.OutputSchema
 import dev.sawitulm.palmannotate.domain.model.TreeMetadata
@@ -73,7 +74,7 @@ class FolderResumeImporter @Inject constructor(
                 .map { trees ->
                     val first = trees.first()
                     val sideCount = (trees.maxOfOrNull { it.sides.size } ?: 2).coerceAtLeast(2)
-                    RunPlan(first.variety, first.block, first.groupKey, sideCount, trees)
+                    RunPlan(first.variety, first.block, first.groupKey, sideCount, trees, first.datasetType)
                 }
         }
     }
@@ -100,6 +101,7 @@ class FolderResumeImporter @Inject constructor(
         val captureDate: String = "",
         val capturedAtMillis: Long? = null,
         val gps: GpsProvenance = GpsProvenance.UNKNOWN,
+        val datasetType: DatasetType = DatasetType.MULTISIDE,
     )
 
     data class ParsedSidePlan(
@@ -124,6 +126,7 @@ class FolderResumeImporter @Inject constructor(
         val groupKey: String,
         val sideCount: Int,
         val trees: List<ScannedTree>,
+        val datasetType: DatasetType = DatasetType.MULTISIDE,
     )
 
     /**
@@ -205,6 +208,7 @@ class FolderResumeImporter @Inject constructor(
                 plan.sideCount,
                 autoId = true,
                 identity = continuingIdentity,
+                datasetType = plan.datasetType,
             )
             for (tree in plan.trees) {
                 val ok = ingestTree(safTreeUri, runId, tree, imageNames)
@@ -280,7 +284,9 @@ class FolderResumeImporter @Inject constructor(
                 sideIndex = s.sideIndex,
                 imageWidth = s.imageWidth,
                 imageHeight = s.imageHeight,
-                bboxes = s.bboxes.map { Bbox(it.id, it.classId, it.className, it.x1, it.y1, it.x2, it.y2) },
+                bboxes = s.bboxes.map {
+                    Bbox(it.id, it.classId, it.className, it.x1, it.y1, it.x2, it.y2, it.measurements)
+                },
                 rgbSha256 = s.rgbSha256,
                 captureOrigin = s.captureOrigin,
                 depthRequired = s.depthRequired,
@@ -294,7 +300,9 @@ class FolderResumeImporter @Inject constructor(
         }
         return ScannedTree(
             treeName = parsed.treeName, treeId = treeId, split = parsed.split,
-            variety = variety, block = block, groupKey = repo.groupKeyFor(variety, block),
+            variety = variety,
+            block = block,
+            groupKey = repo.groupKeyFor(variety, block, parsed.datasetType),
             sides = sides, confirmedLinks = links,
             identity = PackageProvenanceCodec.readIdentity(metaJson),
             contentDigest = manifestText?.let {
@@ -304,6 +312,7 @@ class FolderResumeImporter @Inject constructor(
             captureDate = PackageProvenanceCodec.readCaptureDate(metaJson),
             capturedAtMillis = PackageProvenanceCodec.readCapturedAtMillis(metaJson),
             gps = PackageProvenanceCodec.readGps(metaJson),
+            datasetType = parsed.datasetType,
         )
     }
 

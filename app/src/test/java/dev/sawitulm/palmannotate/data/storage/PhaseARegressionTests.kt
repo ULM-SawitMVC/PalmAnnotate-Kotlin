@@ -120,7 +120,8 @@ class PhaseARegressionTest {
             .substringBefore("/** Save before opening another editor/viewer")
 
         assertFalse(saveAndExit.contains("repo.saveSession("))
-        assertTrue(saveAndExit.contains("persistLatest(markComplete = true)"))
+        assertTrue(saveAndExit.contains("persistAndExit(markComplete = true"))
+        assertTrue(saveAndExit.contains("persistLatest(markComplete)"))
         assertTrue(saveAndExit.contains("is SaveResult.Success"))
     }
 
@@ -194,6 +195,18 @@ class PhaseARegressionTest {
 
         assertTrue(metadata in topBarStart until contentStart)
         assertTrue(sideNavigation in previewStart until previewContentStart)
+    }
+
+    @Test
+    fun `application starts at the dataset module chooser`() {
+        val navigation = repoFile(
+            "app/src/main/java/dev/sawitulm/palmannotate/ui/navigation/Navigation.kt",
+        ).readText()
+
+        assertTrue(navigation.contains("startDestination = Routes.MODULES"))
+        assertTrue(navigation.contains("ModuleHubScreen("))
+        assertTrue(navigation.contains("HomeScreen(datasetType = DatasetType.MULTISIDE"))
+        assertTrue(navigation.contains("HomeScreen(datasetType = DatasetType.BUNCH_WEIGHT"))
     }
 
     @Test

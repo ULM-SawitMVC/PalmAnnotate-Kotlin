@@ -516,9 +516,11 @@ class CaptureFlowViewModel @Inject constructor(
                 // information the sidecar's gps.status does not already carry.
                 val judgedGps = rejudgeGps()
                 val hasGps = judgedGps.recordedCoordinates != null
+                val datasetType = DatasetType.fromPersisted(r.datasetType)
+                val expectedSides = if (datasetType == DatasetType.BUNCH_WEIGHT) capturedCount else sideCount
                 val report = QualityCheck.analyzeCaptureShots(
                     capturedSides = capturedCount,
-                    expectedSides = sideCount,
+                    expectedSides = expectedSides,
                     depthSides = depthSides,
                     requiredDepthSides = orbbecSides,
                     hasGps = hasGps,
@@ -775,6 +777,16 @@ class CaptureFlowViewModel @Inject constructor(
         }
         persistDraftCursor()
         return result
+    }
+
+    fun finishWithCapturedSides(): Boolean {
+        val datasetType = DatasetType.fromPersisted(run?.datasetType)
+        val capturedCount = capturedImages.count { it != null }
+        if (!datasetType.allowsEarlyFinish(capturedCount, sideCount)) return false
+        phase = CapturePhase.REVIEW_ALL
+        currentStep = SideStep.REVIEW
+        persistDraftCursor()
+        return true
     }
 
     fun retakeSide(index: Int) {
@@ -1185,9 +1197,12 @@ fun CaptureFlowScreen(
                         )
                         Spacer(Modifier.height(8.dp))
                     }
+                    val reviewImages = if (DatasetType.fromPersisted(run.datasetType) == DatasetType.BUNCH_WEIGHT) {
+                        viewModel.capturedImages.filterNotNull()
+                    } else viewModel.capturedImages
                     ReviewAllPager(
-                        sideCount = viewModel.sideCount,
-                        capturedImages = viewModel.capturedImages,
+                        sideCount = reviewImages.size,
+                        capturedImages = reviewImages,
                         isSaving = viewModel.isSaving,
                         isDraftPersisting = viewModel.pendingDraftWrites > 0,
                         isDraftValidating = viewModel.isDraftValidating,
@@ -1213,6 +1228,11 @@ fun CaptureFlowScreen(
                         else viewModel.continueFromReview()
                     }
                     val sideContinueLabel = if (viewModel.retakingFromReview) stringResource(R.string.action_done) else null
+                    val finishEarlyLabel = if (
+                        DatasetType.fromPersisted(run.datasetType) == DatasetType.BUNCH_WEIGHT &&
+                        viewModel.currentSide == 0 &&
+                        viewModel.capturedImages.count { it != null } == 1
+                    ) stringResource(R.string.capture_finish_one_photo) else null
 
                     Box(
                         modifier = Modifier
@@ -1246,12 +1266,14 @@ fun CaptureFlowScreen(
                                 allCaptured = viewModel.allCaptured,
                                 isSaving = viewModel.isSaving,
                                 continueLabel = sideContinueLabel,
+                                finishEarlyLabel = finishEarlyLabel,
                                 onRequestPermission = { viewModel.requestOrbbecPermissionAndStart() },
                                 onRefresh = { viewModel.refreshOrbbec() },
                                 onReset = { viewModel.resetOrbbec() },
                                 onCapture = { viewModel.captureOrbbecFrame(context) },
                                 onRetake = { viewModel.retakeCurrent() },
                                 onContinue = onSideContinue,
+                                onFinishEarly = viewModel::finishWithCapturedSides,
                             )
                         } else {
                             when (viewModel.currentStep) {
@@ -1272,8 +1294,10 @@ fun CaptureFlowScreen(
                                         allCaptured = viewModel.allCaptured,
                                         isSaving = viewModel.isSaving,
                                         continueLabel = sideContinueLabel,
+                                        finishEarlyLabel = finishEarlyLabel,
                                         onRetake = { viewModel.retakeCurrent() },
                                         onContinue = onSideContinue,
+                                        onFinishEarly = viewModel::finishWithCapturedSides,
                                     )
                                 }
                             }
@@ -1375,8 +1399,10 @@ private fun CapturedReviewStage(
     allCaptured: Boolean,
     isSaving: Boolean,
     continueLabel: String? = null,
+    finishEarlyLabel: String? = null,
     onRetake: () -> Unit,
     onContinue: () -> Unit,
+    onFinishEarly: () -> Unit = {},
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
         if (uri != null) {
@@ -1407,6 +1433,15 @@ private fun CapturedReviewStage(
                 modifier = Modifier.weight(1f).height(48.dp),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
             ) { Text(stringResource(R.string.action_retake)) }
+
+            if (finishEarlyLabel != null) {
+                OutlinedButton(
+                    onClick = onFinishEarly,
+                    modifier = Modifier.weight(1f).height(48.dp),
+                    enabled = !isSaving,
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                ) { Text(finishEarlyLabel) }
+            }
 
             Button(
                 onClick = onContinue,
@@ -1737,12 +1772,14 @@ private fun OrbbecCaptureStage(
     allCaptured: Boolean,
     isSaving: Boolean,
     continueLabel: String?,
+    finishEarlyLabel: String?,
     onRequestPermission: () -> Unit,
     onRefresh: () -> Unit,
     onReset: () -> Unit,
     onCapture: () -> Unit,
     onRetake: () -> Unit,
     onContinue: () -> Unit,
+    onFinishEarly: () -> Unit,
 ) {
     if (currentStep == SideStep.REVIEW && capturedUri != null) {
         CapturedReviewStage(
@@ -1751,8 +1788,10 @@ private fun OrbbecCaptureStage(
             allCaptured = allCaptured,
             isSaving = isSaving,
             continueLabel = continueLabel,
+            finishEarlyLabel = finishEarlyLabel,
             onRetake = onRetake,
             onContinue = onContinue,
+            onFinishEarly = onFinishEarly,
         )
         return
     }
