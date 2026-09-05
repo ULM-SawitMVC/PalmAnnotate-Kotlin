@@ -55,6 +55,39 @@ object CaptureSetPolicy {
     private val tokenPattern = Regex("^[0-9A-HJKMNP-TV-Z]{$TOKEN_LENGTH}$")
 
     /**
+     * Filename marker that keeps a bunch-weight sample out of the multiside name namespace.
+     *
+     * `treeName` is a FLAT namespace: `images/`, `labels/`, `depth/`, `manifests/`, `metadata/`,
+     * `Output JSON/` and the revision journal are all keyed by it alone. Separating the two
+     * modules' RUNS was therefore not enough: both counters start at 1, so the same
+     * variety+block produced `DAMIMAS_QA0905_0001` in each module and the second module's commit
+     * was rejected by the "already exists" guard.
+     *
+     * The marker sits after the block and before the optional naming token, so all three
+     * existing derivations still hold: variety = leading token, block = segment 1, tree number =
+     * trailing digits. [DatasetType.MULTISIDE] adds nothing, so every already-collected multiside
+     * name stays byte-identical.
+     */
+    const val WEIGHT_NAME_MARKER = "BW"
+
+    /**
+     * null when [block] may be used, else why it was rejected.
+     *
+     * The marker is a reserved block token in BOTH modules. Without the reservation the marker is
+     * only positionally distinct, not textually: a bunch-weight run with no block writes
+     * `DAMIMAS_BW_0001`, and so would a multiside run whose block really is `BW`. Reserving one
+     * token is a far smaller price than a name format ugly enough to be unambiguous, and it also
+     * makes the resume-side block derivation exact: `parts[1] == BW` on a bunch-weight name can
+     * then only mean "this sample has no block".
+     */
+    fun blockError(block: String): String? = when {
+        block.isBlank() -> "Block is required"
+        sanitizeBlock(block) == WEIGHT_NAME_MARKER ->
+            "$WEIGHT_NAME_MARKER is reserved for bunch-weight sample names"
+        else -> null
+    }
+
+    /**
      * Derive the public device token from the private install id.
      *
      * Deterministic (same install id → same token, so the token survives a process restart with
@@ -89,8 +122,19 @@ object CaptureSetPolicy {
      *   `DAMIMAS_A21B_K7Q2M1_0001`
      * The token is inserted BEFORE the sequence so that all three existing derivations still
      * hold: variety = leading letters, block = segment 1, tree number = trailing digits.
+     * A [DatasetType.BUNCH_WEIGHT] sample additionally carries [WEIGHT_NAME_MARKER] before the
+     * token, which is what keeps the two modules out of each other's artifact namespace:
+     *   `DAMIMAS_A21B_BW_0001`
+     * The marker is only positionally distinct from a block segment, so [blockError] reserves it
+     * as a block token; that is what makes the separation total rather than near-total.
      */
-    fun treeName(variety: String, block: String, nameToken: String, treeId: Int): String {
+    fun treeName(
+        variety: String,
+        block: String,
+        nameToken: String,
+        treeId: Int,
+        datasetType: DatasetType = DatasetType.MULTISIDE,
+    ): String {
         val v = sanitizeVariety(variety)
         val b = sanitizeBlock(block)
         val t = sanitizeToken(nameToken)
@@ -98,6 +142,7 @@ object CaptureSetPolicy {
         return buildString {
             append(v)
             if (b.isNotEmpty()) { append('_'); append(b) }
+            if (datasetType == DatasetType.BUNCH_WEIGHT) { append('_'); append(WEIGHT_NAME_MARKER) }
             if (t.isNotEmpty()) { append('_'); append(t) }
             append('_'); append(seq)
         }

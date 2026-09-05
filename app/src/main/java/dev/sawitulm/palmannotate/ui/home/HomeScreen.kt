@@ -200,7 +200,10 @@ class HomeViewModel @Inject constructor(
                 // row, so it is the one the operator should believe.
                 val resolved = repo.getRun(id)
                 val nextTreeName = resolved?.let {
-                    CaptureSetPolicy.treeName(it.variety, it.block, it.nameToken, it.nextId)
+                    CaptureSetPolicy.treeName(
+                        it.variety, it.block, it.nameToken, it.nextId,
+                        DatasetType.fromPersisted(it.datasetType),
+                    )
                 }.orEmpty()
                 Triple(id, existingId == id, nextTreeName)
             } catch (e: Exception) {

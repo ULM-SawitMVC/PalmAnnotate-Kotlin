@@ -559,7 +559,9 @@ class CaptureFlowViewModel @Inject constructor(
             capturedImages.clear(); capturedDepths.clear(); capturedSources.clear()
             repeat(sideCount) { capturedImages.add(null); capturedDepths.add(null); capturedSources.add(null) }
             currentSide = 0; currentStep = SideStep.PREVIEW; phase = CapturePhase.SIDES
-            val expectedName = CaptureSetPolicy.treeName(r.variety, r.block, r.nameToken, r.nextId)
+            val expectedName = CaptureSetPolicy.treeName(
+                r.variety, r.block, r.nameToken, r.nextId, DatasetType.fromPersisted(r.datasetType),
+            )
             repo.recoverIncomingPhoneCaptures(runId)
             val draft = repo.ensureCaptureDraft(runId, sideCount, expectedName, r.nextId)
             if (!r.autoId && draft.expectedTreeId > 0) manualId = draft.expectedTreeId.toString()
@@ -779,10 +781,13 @@ class CaptureFlowViewModel @Inject constructor(
         return result
     }
 
+    /** True when the dataset lets this sample finish with fewer photos than configured. */
+    private val canFinishEarly: Boolean
+        get() = DatasetType.fromPersisted(run?.datasetType)
+            .allowsEarlyFinish(capturedImages.count { it != null }, sideCount)
+
     fun finishWithCapturedSides(): Boolean {
-        val datasetType = DatasetType.fromPersisted(run?.datasetType)
-        val capturedCount = capturedImages.count { it != null }
-        if (!datasetType.allowsEarlyFinish(capturedCount, sideCount)) return false
+        if (!canFinishEarly) return false
         phase = CapturePhase.REVIEW_ALL
         currentStep = SideStep.REVIEW
         persistDraftCursor()
@@ -807,7 +812,14 @@ class CaptureFlowViewModel @Inject constructor(
 
     fun returnToReviewAll() {
         retakingFromReview = false
-        if (allCaptured) { phase = CapturePhase.REVIEW_ALL; currentStep = SideStep.REVIEW }
+        // `allCaptured` alone strands a bunch-weight sample that was deliberately finished with
+        // one photo: its second slot is null by design, so Done left the operator on the single
+        // side review with no way back. The dataset's own photo-count rule is the same one
+        // `finishWithCapturedSides` uses, so retake returns exactly where Use-1-photo did.
+        if (allCaptured || canFinishEarly) {
+            phase = CapturePhase.REVIEW_ALL
+            currentStep = SideStep.REVIEW
+        }
         persistDraftCursor()
     }
 
@@ -848,7 +860,9 @@ class CaptureFlowViewModel @Inject constructor(
                     return@launch
                 }
                 val treeId = if (r.autoId) r.nextId else (manualId.toIntOrNull() ?: r.nextId).coerceAtLeast(1)
-                val treeName = CaptureSetPolicy.treeName(r.variety, r.block, r.nameToken, treeId)
+                val treeName = CaptureSetPolicy.treeName(
+                    r.variety, r.block, r.nameToken, treeId, DatasetType.fromPersisted(r.datasetType),
+                )
                 repo.updateCaptureDraftCursor(runId, currentSide, phase.name, currentStep.name, treeName, treeId)
 
                 // Never overwrite a committed tree in-place. The operator must explicitly delete
@@ -1197,12 +1211,17 @@ fun CaptureFlowScreen(
                         )
                         Spacer(Modifier.height(8.dp))
                     }
-                    val reviewImages = if (DatasetType.fromPersisted(run.datasetType) == DatasetType.BUNCH_WEIGHT) {
-                        viewModel.capturedImages.filterNotNull()
-                    } else viewModel.capturedImages
+                    // A bunch-weight sample legitimately has an empty slot, so the pager shows the
+                    // photos it actually has. Carry the REAL side index per page: the page number
+                    // and the side index only coincide while every hole is in the tail, and
+                    // retakeSide takes a side index, not a page.
+                    val reviewSides = if (DatasetType.fromPersisted(run.datasetType) == DatasetType.BUNCH_WEIGHT) {
+                        viewModel.capturedImages.indices.filter { viewModel.capturedImages[it] != null }
+                    } else viewModel.capturedImages.indices.toList()
                     ReviewAllPager(
-                        sideCount = reviewImages.size,
-                        capturedImages = reviewImages,
+                        sideCount = reviewSides.size,
+                        capturedImages = reviewSides.map { viewModel.capturedImages[it] },
+                        sideIndices = reviewSides,
                         isSaving = viewModel.isSaving,
                         isDraftPersisting = viewModel.pendingDraftWrites > 0,
                         isDraftValidating = viewModel.isDraftValidating,
@@ -1483,6 +1502,8 @@ private fun CapturedBadge(modifier: Modifier = Modifier) {
 private fun ReviewAllPager(
     sideCount: Int,
     capturedImages: List<Uri?>,
+    /** Real side index for each page. Identical to the page number unless a slot is empty. */
+    sideIndices: List<Int>,
     isSaving: Boolean,
     isDraftPersisting: Boolean,
     isDraftValidating: Boolean,
@@ -1548,15 +1569,16 @@ private fun ReviewAllPager(
                             .padding(16.dp),
                         contentAlignment = Alignment.Center,
                     ) {
+                        val sideIndex = sideIndices.getOrElse(page) { page }
                         OutlinedButton(
-                            onClick = { onRetake(page) },
+                            onClick = { onRetake(sideIndex) },
                             enabled = !isSaving && !isDraftPersisting && !isDraftValidating,
                             modifier = Modifier.height(48.dp),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
                         ) {
                             Icon(Icons.Default.CameraAlt, null, Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
-                            Text(stringResource(R.string.capture_retake_side, page + 1))
+                            Text(stringResource(R.string.capture_retake_side, sideIndex + 1))
                         }
                     }
                 }

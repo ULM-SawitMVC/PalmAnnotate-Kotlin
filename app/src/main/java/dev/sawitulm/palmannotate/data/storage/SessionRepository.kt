@@ -9,6 +9,7 @@ import dev.sawitulm.palmannotate.data.export.CaptureSetMergePolicy
 import dev.sawitulm.palmannotate.data.export.ExportManager
 import dev.sawitulm.palmannotate.data.yolo.YoloParser
 import dev.sawitulm.palmannotate.domain.model.*
+import dev.sawitulm.palmannotate.domain.usecase.WeightDatasetPolicy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -796,7 +797,12 @@ class SessionRepository(
                     treeDao.update(
                         current.copy(
                             revision = newRevision,
-                            isComplete = if (markComplete) true else current.isComplete,
+                            // Completeness is a property of the revision being written, not a
+                            // sticky flag: a draft/auto-save that (re)introduces an unassigned or
+                            // unweighed bunch revokes it. One gate for every save path.
+                            isComplete = WeightDatasetPolicy.resolveCompletion(
+                                verifiedSession, markComplete, current.isComplete,
+                            ),
                             updatedAt = now,
                             sideCount = maxOf(current.sideCount, (verifiedSession.sides.maxOfOrNull { it.sideIndex } ?: -1) + 1),
                         ),

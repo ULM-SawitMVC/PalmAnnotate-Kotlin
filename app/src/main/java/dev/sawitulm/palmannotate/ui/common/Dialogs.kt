@@ -59,7 +59,7 @@ fun NewSessionDialog(
     var operatorName by remember { mutableStateOf(inputCache?.lastOperatorName ?: "") }
     var useNameToken by remember { mutableStateOf(inputCache?.lastUseNameToken ?: false) }
     var varietyError by remember { mutableStateOf(false) }
-    var blockError by remember { mutableStateOf(false) }
+    var blockError by remember { mutableStateOf<String?>(null) }
     // WS-12: the device token has to be visible BEFORE the first photo, because from the first
     // commit onwards it is baked into every filename in the run and cannot be changed.
     val deviceToken = remember(inputCache) {
@@ -79,7 +79,7 @@ fun NewSessionDialog(
         requestedToken = if (useNameToken) deviceToken else "",
     )
     val nextSeq = existingRun?.nextId ?: 1
-    val namePreview = CaptureSetPolicy.treeName(variety, block, effectiveToken, nextSeq)
+    val namePreview = CaptureSetPolicy.treeName(variety, block, effectiveToken, nextSeq, datasetType)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -118,10 +118,13 @@ fun NewSessionDialog(
                 )
                 OutlinedTextField(
                     value = block,
-                    onValueChange = { block = it; blockError = false },
+                    onValueChange = { block = it; blockError = null },
                     label = { Text(stringResource(R.string.dialog_block_label)) },
                     placeholder = { Text(stringResource(R.string.dialog_block_placeholder)) },
-                    isError = blockError,
+                    isError = blockError != null,
+                    // Shown only for the reserved-token rejection: a blank field explains itself,
+                    // but "BW is taken" cannot be guessed from a red outline.
+                    supportingText = blockError?.takeIf { block.isNotBlank() }?.let { { Text(it) } },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -225,8 +228,8 @@ fun NewSessionDialog(
             TextButton(
                 onClick = {
                     varietyError = variety.isBlank()
-                    blockError = block.isBlank()
-                    if (!varietyError && !blockError) {
+                    blockError = CaptureSetPolicy.blockError(block)
+                    if (!varietyError && blockError == null) {
                         inputCache?.let { cache ->
                             cache.lastVariety = variety.trim()
                             cache.lastBlock = block.trim()

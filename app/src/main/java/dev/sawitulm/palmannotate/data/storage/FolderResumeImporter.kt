@@ -8,6 +8,7 @@ import dev.sawitulm.palmannotate.domain.model.AnnotationClass
 import dev.sawitulm.palmannotate.domain.model.Bbox
 import dev.sawitulm.palmannotate.domain.model.CaptureOrigin
 import dev.sawitulm.palmannotate.domain.model.CaptureSetIdentity
+import dev.sawitulm.palmannotate.domain.model.CaptureSetPolicy
 import dev.sawitulm.palmannotate.domain.model.CrossSideLink
 import dev.sawitulm.palmannotate.domain.model.DatasetType
 import dev.sawitulm.palmannotate.domain.model.GpsProvenance
@@ -276,7 +277,7 @@ class FolderResumeImporter @Inject constructor(
         // fresh set of blanks on the next export.
         val metaJson = readTextForResume(safTreeUri, "$METADATA_DIR/${parsed.treeName}.json")
             ?.let { runCatching { JSONObject(it) }.getOrNull() }
-        val block = resolveBlock(metaJson, parsed.treeName)
+        val block = resolveBlock(metaJson, parsed.treeName, parsed.datasetType)
 
         val treeId = parseTreeId(parsed.treeName)
         val sides = parsed.sides.map { s ->
@@ -534,12 +535,16 @@ class FolderResumeImporter @Inject constructor(
     }
 
     /** Read block from the metadata sidecar ("blok"), else parse it from the tree name. */
-    private fun resolveBlock(metaJson: JSONObject?, treeName: String): String {
+    private fun resolveBlock(
+        metaJson: JSONObject?,
+        treeName: String,
+        datasetType: DatasetType,
+    ): String {
         if (metaJson != null) {
             val blok = metaJson.optString("blok").ifBlank { metaJson.optString("block") }
             if (blok.isNotBlank()) return blok
         }
-        return deriveBlock(treeName)
+        return deriveBlock(treeName, datasetType)
     }
 
     /**
@@ -763,9 +768,17 @@ class FolderResumeImporter @Inject constructor(
         Regex("^([A-Za-z0-9]+)_").find(treeName)?.groupValues?.get(1)?.uppercase() ?: "UNKNOWN"
 
     /** Block = the middle token of {VARIETY}_{BLOCK}_{ID}; empty when no clear middle. */
-    private fun deriveBlock(treeName: String): String {
+    private fun deriveBlock(treeName: String, datasetType: DatasetType): String {
         val parts = treeName.split('_')
-        return if (parts.size >= 3) parts[1] else ""
+        if (parts.size < 3) return ""
+        // A bunch-weight sample with no block is {VARIETY}_BW_{ID}: segment 1 is the dataset
+        // marker, not a block. Exact rather than a guess, because CaptureSetPolicy.blockError
+        // reserves the marker as a block token, so no weight sample can carry the block "BW".
+        // Only reached when the metadata sidecar carries no "blok".
+        if (datasetType == DatasetType.BUNCH_WEIGHT &&
+            parts[1] == CaptureSetPolicy.WEIGHT_NAME_MARKER
+        ) return ""
+        return parts[1]
     }
 
     /** Tree id = trailing numeric token, else 0. */

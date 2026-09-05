@@ -125,6 +125,30 @@ class PhaseARegressionTest {
         assertTrue(saveAndExit.contains("is SaveResult.Success"))
     }
 
+    /**
+     * BUG-001: `returnToReviewAll` gated the phase switch on `allCaptured`, so a bunch-weight
+     * sample deliberately finished with one photo had a permanently null second slot and Done
+     * stranded the operator on the single-side review. Retake must use the same dataset photo
+     * rule the Use-1-photo button uses.
+     */
+    @Test
+    fun `retake returns to review all through the dataset photo count rule`() {
+        val source = repoFile(
+            "app/src/main/java/dev/sawitulm/palmannotate/ui/capture/CaptureFlowScreen.kt",
+        ).readText()
+        val returnToReviewAll = source.substringAfter("fun returnToReviewAll()")
+            .substringBefore("private fun persistDraftCursor(")
+        val finishEarly = source.substringAfter("private val canFinishEarly: Boolean")
+            .substringBefore("fun retakeSide(")
+
+        assertTrue(returnToReviewAll.contains("allCaptured || canFinishEarly"))
+        assertTrue(returnToReviewAll.contains("CapturePhase.REVIEW_ALL"))
+        assertTrue(returnToReviewAll.contains("SideStep.REVIEW"))
+        // One rule, one implementation: Done and Use-1-photo cannot drift apart.
+        assertTrue(finishEarly.contains("allowsEarlyFinish("))
+        assertTrue(finishEarly.contains("if (!canFinishEarly) return false"))
+    }
+
     @Test
     fun `predictive back is enabled and dedup canvas does not steal pager drags`() {
         val manifest = repoFile("app/src/main/AndroidManifest.xml").readText()
