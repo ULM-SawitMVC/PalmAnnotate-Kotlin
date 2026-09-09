@@ -13,6 +13,25 @@ import java.util.concurrent.CopyOnWriteArraySet
 
 class PhaseARegressionTest {
     @Test
+    fun `new export folder needs no output directory but resume still rejects storage failures`() {
+        assertTrue(SafResumeOutcomePolicy.requireListing(
+            SafListingResult.Absent, "Output JSON", allowMissing = true,
+        ).isEmpty())
+        assertTrue(SafResumeOutcomePolicy.requireListing(
+            SafListingResult.Success(listOf("tree.json")), "Output JSON", allowMissing = true,
+        ) == listOf("tree.json"))
+        assertTrue(runCatching {
+            SafResumeOutcomePolicy.requireListing(
+                SafListingResult.Inaccessible(IllegalStateException("revoked")),
+                "Output JSON", allowMissing = true,
+            )
+        }.exceptionOrNull() is SafResumeException)
+        assertTrue(runCatching {
+            SafResumeOutcomePolicy.requireListing(SafListingResult.Absent, "dataset/images/field")
+        }.exceptionOrNull() is SafResumeException)
+    }
+
+    @Test
     fun `provider access failure cannot verify a remote delete`() {
         val result = SafDeleteVerifier.verify(
             paths = listOf("dataset/metadata/tree.json"),

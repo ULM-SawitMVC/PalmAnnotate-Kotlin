@@ -49,11 +49,13 @@
     <string name="weight_save_draft_exit">Save draft &amp; exit</string>
     <string name="weight_save_next">Save &amp; next sample</string>
     <string name="weight_panel_title">Bunch measurements</string>
-    <string name="weight_panel_hint">Select the class below, then record the measurements for this bunch.</string>
+    <string name="weight_link_replaced">Linked. Measurements from the other photo replaced the values on this bunch.</string>
     <string name="weight_required_label">Weight (kg) *</string>
     <string name="height_optional_label">Height (cm), optional</string>
     <string name="circumference_optional_label">Circumference (cm), optional</string>
     <string name="notes_optional_label">Additional notes, optional</string>
+    <string name="weight_optional_details">Optional details</string>
+    <string name="weight_optional_filled">%1$d filled</string>
     <string name="weight_apply">Apply to bunch</string>
     <string name="weight_close_panel">Close measurements</string>
     <string name="weight_session_title">Bunch Weight Session</string>
@@ -200,6 +202,7 @@
     <string name="carousel_cancel_link">Cancel Link</string>
     <string name="carousel_saved">Saved</string>
     <string name="carousel_link_hint">← Swipe to the adjacent side, then tap the matching bunch</string>
+    <string name="carousel_link_hint_weight">Tap the matching bunch on this photo</string>
     <string name="carousel_boxes_count">%1$d boxes</string>
     <string name="carousel_boxes_unassigned">%1$d unassigned</string>
     <string name="carousel_boxes_linked">%1$d linked</string>

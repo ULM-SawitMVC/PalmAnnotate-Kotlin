@@ -449,7 +449,12 @@ class SessionRepository(
             atMillis = capturedAtMillis,
         ).toString(2)
         storage.writeText(storage.metadataFile(treeName), metaJson)
-        writeLocalArtifacts(treeName, split, sides)
+        writeLocalArtifacts(
+            treeName,
+            split,
+            sides,
+            datasetType = DatasetType.fromPersisted(run.datasetType),
+        )
 
         // Tree row + its sides in ONE transaction so a concurrent reader can never observe
         // a tree that has no sides yet (which a racing save could then persist as the truth).
@@ -859,7 +864,13 @@ class SessionRepository(
 
     /** Stage all local text artifacts; RGB/depth remain the already-validated capture set. */
     private fun prepareRevisionStage(session: ActiveSession, tree: TreeEntity, stage: File) {
-        writeLocalArtifacts(session.treeName, session.split, session.sides, stage)
+        writeLocalArtifacts(
+            session.treeName,
+            session.split,
+            session.sides,
+            stage,
+            session.datasetType,
+        )
         val outputText = ExportManager.generateOutputJson(session).toString(2)
         storage.writeText(File(stage, "Output JSON/${session.treeName}.json"), outputText)
         // The committed sidecar is the capture-time record; re-saving annotations must never
@@ -930,17 +941,23 @@ class SessionRepository(
         split: String,
         sides: List<TreeSide>,
         root: File = storage.rootDir,
+        datasetType: DatasetType = DatasetType.MULTISIDE,
     ) {
         for (side in sides) {
             if (side.imageWidth > 0 && side.imageHeight > 0) {
-                val yoloText = YoloParser.serialize(side.bboxes, side.imageWidth, side.imageHeight)
+                val yoloText = YoloParser.serialize(
+                    side.bboxes,
+                    side.imageWidth,
+                    side.imageHeight,
+                    classIdOverride = if (datasetType == DatasetType.BUNCH_WEIGHT) 0 else null,
+                )
                 val label = if (root == storage.rootDir) storage.labelFile(treeName, side.sideIndex)
                 else File(root, "labels/field/${treeName}_${side.sideIndex + 1}.txt")
                 storage.writeText(label, yoloText)
             }
             val annotLog = if (root == storage.rootDir) storage.annotLogFile(treeName, side.sideIndex)
             else File(root, "annotlog/field/${treeName}_${side.sideIndex + 1}.json")
-            storage.writeText(annotLog, buildAnnotLog(treeName, split, side))
+            storage.writeText(annotLog, buildAnnotLog(treeName, split, side, datasetType))
         }
     }
 
@@ -1078,6 +1095,7 @@ class SessionRepository(
         sides: List<TreeSide>,
         safTreeUri: Uri,
         forceMediaOverwrite: Boolean,
+        datasetType: DatasetType = DatasetType.MULTISIDE,
     ): Boolean {
         var packageFilesOk = true
 
@@ -1097,6 +1115,7 @@ class SessionRepository(
                     side.bboxes,
                     side.imageWidth,
                     side.imageHeight,
+                    classIdOverride = if (datasetType == DatasetType.BUNCH_WEIGHT) 0 else null,
                 )
                 val labelOk = runCatching {
                     saf.writeText(
@@ -1787,7 +1806,15 @@ class SessionRepository(
             check(ensureRemoteReservation(tree, session, uri)) {
                 "Remote tree path is owned by another capture"
             }
-            check(mirrorSafArtifacts(requested.treeName, sides, uri, forceMediaOverwrite = true)) {
+            check(
+                mirrorSafArtifacts(
+                    requested.treeName,
+                    sides,
+                    uri,
+                    forceMediaOverwrite = true,
+                    datasetType = session.datasetType,
+                ),
+            ) {
                 "Initial package mirror incomplete"
             }
             check(saf.writeText(uri, "dataset/metadata/${requested.treeName}.json", metadataText)) {
@@ -1820,7 +1847,15 @@ class SessionRepository(
                 check(ensureRemoteReservation(tree, session, uri)) {
                     "Remote tree path is owned by another capture"
                 }
-                check(mirrorSafArtifacts(session.treeName, session.sides, uri, forceMediaOverwrite = true)) {
+                check(
+                    mirrorSafArtifacts(
+                        session.treeName,
+                        session.sides,
+                        uri,
+                        forceMediaOverwrite = true,
+                        datasetType = session.datasetType,
+                    ),
+                ) {
                     "Initial package mirror incomplete"
                 }
                 check(metadata != null && saf.writeText(uri, "dataset/metadata/${session.treeName}.json", metadata)) {
@@ -1859,7 +1894,15 @@ class SessionRepository(
                             saf.exists(uri, remoteManifest, forceRefresh = true) == SafPathState.Absent
                 }
             ) { "Could not invalidate remote manifest" }
-            check(mirrorSafArtifacts(session.treeName, session.sides, uri, forceMediaOverwrite = true)) {
+            check(
+                mirrorSafArtifacts(
+                    session.treeName,
+                    session.sides,
+                    uri,
+                    forceMediaOverwrite = true,
+                    datasetType = session.datasetType,
+                ),
+            ) {
                 "SAF package mirror incomplete"
             }
             check(saf.writeText(uri, "dataset/metadata/${session.treeName}.json", metadata)) { "SAF metadata write failed" }
@@ -1968,19 +2011,30 @@ class SessionRepository(
     }
 
     /** Build the annot-log JSON text for a side (written to both local + SAF). */
-    private fun buildAnnotLog(treeName: String, split: String, side: TreeSide): String {
+    private fun buildAnnotLog(
+        treeName: String,
+        split: String,
+        side: TreeSide,
+        datasetType: DatasetType,
+    ): String {
+        val includeRipenessClass = datasetType != DatasetType.BUNCH_WEIGHT
         val log = JSONObject().apply {
             put("treeName", treeName); put("sideIndex", side.sideIndex); put("split", split)
+            if (!includeRipenessClass) put("datasetType", datasetType.name)
             put("savedAt", System.currentTimeMillis())
-            put("suggestions", annotLogArray(side.originalBboxes))
-            put("final", annotLogArray(side.bboxes))
+            put("suggestions", annotLogArray(side.originalBboxes, includeRipenessClass))
+            put("final", annotLogArray(side.bboxes, includeRipenessClass))
         }
         return log.toString(2)
     }
 
-    private fun annotLogArray(boxes: List<Bbox>): JSONArray = JSONArray().apply {
+    private fun annotLogArray(boxes: List<Bbox>, includeRipenessClass: Boolean): JSONArray = JSONArray().apply {
         for (b in boxes) put(JSONObject().apply {
-            put("id", b.id); put("classId", b.classId); put("className", b.className)
+            put("id", b.id)
+            if (includeRipenessClass) {
+                put("classId", b.classId)
+                put("className", b.className)
+            }
             put("bbox_pixel", JSONArray().apply {
                 put(Math.round(b.x1)); put(Math.round(b.y1)); put(Math.round(b.x2)); put(Math.round(b.y2))
             })

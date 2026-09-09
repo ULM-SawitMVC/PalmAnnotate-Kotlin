@@ -167,6 +167,9 @@ one photo is not a warning. Measurements live on the bbox
 every member of a cross-side link cluster, so one physical bunch carries one set of values.
 Weight is required and must be > 0; height/circumference are optional but must be > 0 when
 present; an empty optional is stored as `null`, never `0`.
+Ripeness classes B1/B2/B3/B4 do not apply to Bunch Weight. Its UI and JSON/CSV/identity/annot-log
+exports omit them; YOLO uses the required single object class `0`. The internal bbox class stays
+unassigned for backward-compatible Room and Output JSON resume without a schema migration.
 `WeightDatasetPolicy.completionError` is the single completion gate - a weight sample can only
 be marked complete through it. Full contract in `docs/BUNCH-WEIGHT-MODULE.md`.
 
@@ -186,6 +189,27 @@ still parse.
   pinch-zoom did nothing on any tree with more than one side.
 - **Review mode still installs no zoom/pan, deliberately.** It would consume the horizontal
   drag and block swiping between sides.
+
+### Bunch-weight carousel invariants
+
+Verified on the moto g45 5G (720x1600) with `field` v0.3.67. Changing any of these means
+re-testing on a phone, not just in unit tests.
+
+- **The compact measurement sheet is LIFTED above the keyboard, never padded from inside.**
+  It is bottom-anchored with a fixed height, so inner padding consumes the sheet itself and
+  leaves only the header, hiding the weight field the moment it is tapped. The IME overlap is
+  measured on the wrapping `BoxWithConstraints`, not on the sheet, or the sheet's new position
+  feeds back into its own calculation. The full-height inspector on a wide screen cannot move,
+  so that one keeps the inner padding.
+- **`completeLink` and `changeBboxMeasurements` call `autoSave()` themselves.** A weighed bunch
+  cannot be re-weighed once the harvest moves on; holding those values in memory until the
+  operator happens to swipe means one process kill erases them. Both are a single deliberate
+  tap, not a drag, so they cannot spam the save path.
+- **A link applies the SOURCE box's measurements and says so when that discards something.**
+  `linkReplacedMeasurements` drives the `weight_link_replaced` toast. Silently replacing a
+  weight the operator typed is the failure mode this guards.
+- **The panel's validation error lives outside the scrolling column.** Inside it, the collapsed
+  sheet pushes the message below the fold and it renders as a clipped half-line.
 
 ### Depth Viewer (Jet Colormap)
 

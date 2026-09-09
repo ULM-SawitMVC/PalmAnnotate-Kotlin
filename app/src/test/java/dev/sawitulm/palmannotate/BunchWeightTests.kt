@@ -1,6 +1,7 @@
 package dev.sawitulm.palmannotate
 
 import dev.sawitulm.palmannotate.data.export.ExportManager
+import dev.sawitulm.palmannotate.data.yolo.YoloParser
 import dev.sawitulm.palmannotate.domain.model.ActiveSession
 import dev.sawitulm.palmannotate.domain.model.AnnotationClass
 import dev.sawitulm.palmannotate.domain.model.Bbox
@@ -11,6 +12,7 @@ import dev.sawitulm.palmannotate.domain.model.CrossSideLink
 import dev.sawitulm.palmannotate.domain.model.DatasetType
 import dev.sawitulm.palmannotate.domain.model.OutputSchema
 import dev.sawitulm.palmannotate.domain.model.TreeSide
+import dev.sawitulm.palmannotate.domain.results.ResultsComputer
 import dev.sawitulm.palmannotate.domain.usecase.SessionUseCases
 import dev.sawitulm.palmannotate.domain.usecase.WeightDatasetPolicy
 import org.junit.Assert.assertEquals
@@ -24,7 +26,7 @@ import org.junit.Test
 class BunchWeightTests {
     private fun bbox(
         id: String,
-        classId: Int = AnnotationClass.B1.id,
+        classId: Int = AnnotationClass.UNASSIGNED.id,
         measurements: BunchMeasurements = BunchMeasurements(),
     ) = Bbox(
         id = id,
@@ -119,22 +121,36 @@ class BunchWeightTests {
         val initial = session(
             sides = listOf(
                 side(0, listOf(bbox("b0", measurements = measurements))),
-                side(1, listOf(bbox("b1"))),
+                side(1, listOf(bbox("b0"))),
             ),
         )
 
-        val linked = SessionUseCases.addManualLink(initial, 0, "b0", 1, "b1")
+        val linked = SessionUseCases.addManualLink(initial, 0, "b0", 1, "b0")
 
         assertEquals(measurements, linked.sides[0].bboxes[0].measurements)
         assertEquals(measurements, linked.sides[1].bboxes[0].measurements)
+        assertEquals(1, linked.confirmedLinks.size)
     }
 
     @Test
-    fun `completion requires a class and weight for every physical bunch`() {
+    fun `completion requires weight but does not require a ripeness class`() {
         assertNotNull(WeightDatasetPolicy.completionError(session(emptyList())))
-        assertNotNull(
+        assertNull(
             WeightDatasetPolicy.completionError(
-                session(listOf(side(0, listOf(bbox("b0", classId = AnnotationClass.UNASSIGNED.id))))),
+                session(
+                    listOf(
+                        side(
+                            0,
+                            listOf(
+                                bbox(
+                                    "b0",
+                                    classId = AnnotationClass.UNASSIGNED.id,
+                                    measurements = BunchMeasurements(11.2),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
             ),
         )
         assertNotNull(
@@ -163,10 +179,52 @@ class BunchWeightTests {
         assertEquals(1, bunches.length())
         assertEquals(12.4, bunches.getJSONObject(0).getDouble("weight_kg"), 0.0001)
         assertEquals(2, bunches.getJSONObject(0).getJSONArray("appearances").length())
+        assertFalse(json.getJSONObject("images").getJSONObject("side_1")
+            .getJSONArray("annotations").getJSONObject(0).has("class_id"))
+        assertFalse(bunches.getJSONObject(0).has("class"))
+        assertFalse(bunches.getJSONObject(0).getJSONArray("appearances").getJSONObject(0).has("class_name"))
+        assertFalse(json.getJSONObject("summary").has("by_class"))
 
         val parsed = OutputSchema.toSessionData(json)
         assertEquals(measurements, parsed.sides[0].bboxes[0].measurements)
         assertEquals(measurements, parsed.sides[1].bboxes[0].measurements)
+        assertEquals(AnnotationClass.UNASSIGNED.id, parsed.sides[0].bboxes[0].classId)
+        assertEquals(1, parsed.confirmedLinks.size)
+    }
+
+    @Test
+    fun `weight exports use measurements and one implicit YOLO object class`() {
+        val measurements = BunchMeasurements(9.75, 60.0, null, "uji, tertaut")
+        val original = session(
+            sides = listOf(
+                side(0, listOf(bbox("b0", measurements = measurements))),
+                side(1, listOf(bbox("b0", measurements = measurements))),
+            ),
+            links = listOf(CrossSideLink.create("L0", 0, "b0", 1, "b0")),
+        )
+        val results = ResultsComputer.compute(original)
+
+        val yolo = YoloParser.serialize(
+            original.sides[0].bboxes,
+            original.sides[0].imageWidth,
+            original.sides[0].imageHeight,
+            classIdOverride = 0,
+        )
+        assertTrue(yolo.startsWith("0 "))
+        assertEquals(yolo, ExportManager.generateYoloTxt(original.sides[0], DatasetType.BUNCH_WEIGHT))
+
+        val csv = ExportManager.generateCsv(original, results)
+        assertTrue(csv.startsWith("sample_name,split,bunch_id,appearance_count,weight_kg"))
+        assertTrue(csv.contains("9.75,60.0,,\"uji, tertaut\""))
+        assertFalse(csv.contains(",B1,"))
+
+        val identity = ExportManager.generateIdentityJson(original, results)
+        val identityBunch = identity.getJSONArray("bunches").getJSONObject(0)
+        assertEquals(DatasetType.BUNCH_WEIGHT.name, identity.getString("dataset_type"))
+        assertEquals(9.75, identityBunch.getDouble("weight_kg"), 0.0001)
+        assertFalse(identity.has("classMismatchCount"))
+        assertFalse(identityBunch.has("classMismatch"))
+        assertFalse(identityBunch.getJSONArray("detections").getJSONObject(0).has("class"))
     }
 
     @Test
@@ -233,7 +291,7 @@ class BunchWeightTests {
         assertTrue(WeightDatasetPolicy.resolveCompletion(complete, markComplete = true, wasComplete = false))
         assertTrue(WeightDatasetPolicy.resolveCompletion(complete, markComplete = false, wasComplete = true))
 
-        // Complete sample, then an extra box left unassigned and unweighed, saved as a draft.
+        // Complete sample, then an extra box left unweighed, saved as a draft.
         val revised = session(
             listOf(
                 side(
@@ -250,8 +308,8 @@ class BunchWeightTests {
         assertFalse(WeightDatasetPolicy.resolveCompletion(revised, markComplete = true, wasComplete = true))
 
         // Revocation must be two-way. The silent auto-save on a side swipe sees the freshly drawn,
-        // still-unassigned bunch and clears the flag; once the operator assigns a class and a
-        // weight, the very next save must be able to restore it. A one-way gate would strand a
+        // unweighed bunch and clears the flag; once the operator enters a weight, the very next
+        // save must be able to restore it. A one-way gate would strand a
         // finished sample as Draft, because only "Save & next sample" ever passes markComplete.
         assertTrue(WeightDatasetPolicy.resolveCompletion(complete, markComplete = false, wasComplete = false))
 

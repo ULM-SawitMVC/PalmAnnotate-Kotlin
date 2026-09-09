@@ -305,12 +305,6 @@ object SessionUseCases {
                 else -> BunchMeasurements()
             }
             result = setBboxMeasurements(result, sideA, bboxIdA, chosenMeasurements)
-            val chosenClass = when {
-                source?.isAssigned == true -> AnnotationClass.fromId(source.classId)
-                target?.isAssigned == true -> AnnotationClass.fromId(target.classId)
-                else -> AnnotationClass.UNASSIGNED
-            }
-            result = setBboxClass(result, sideA, bboxIdA, chosenClass)
         }
         return result
     }

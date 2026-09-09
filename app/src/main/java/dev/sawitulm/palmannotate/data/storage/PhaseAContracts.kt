@@ -50,9 +50,10 @@ object SafDocumentTypePolicy {
 }
 
 object SafResumeOutcomePolicy {
-    fun requireListing(result: SafListingResult, path: String): List<String> = when (result) {
+    fun requireListing(result: SafListingResult, path: String, allowMissing: Boolean = false): List<String> = when (result) {
         is SafListingResult.Success -> result.names
-        SafListingResult.Absent -> throw SafResumeException("SAF resume directory is missing: $path")
+        SafListingResult.Absent -> if (allowMissing) emptyList()
+            else throw SafResumeException("SAF resume directory is missing: $path")
         is SafListingResult.Inaccessible -> throw SafResumeException(
             "SAF resume directory is inaccessible: $path",
             result.cause,

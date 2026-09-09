@@ -1459,7 +1459,17 @@ private fun CapturedReviewStage(
                     modifier = Modifier.weight(1f).height(48.dp),
                     enabled = !isSaving,
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
-                ) { Text(finishEarlyLabel) }
+                    // Third equal-weight button: the default content padding leaves ~77dp of
+                    // text width on a 360dp phone, which wrapped this label onto a second line
+                    // and clipped it inside the fixed 48dp height.
+                    contentPadding = PaddingValues(horizontal = 4.dp),
+                ) {
+                    Text(
+                        finishEarlyLabel,
+                        style = MaterialTheme.typography.labelMedium,
+                        maxLines = 1,
+                    )
+                }
             }
 
             Button(

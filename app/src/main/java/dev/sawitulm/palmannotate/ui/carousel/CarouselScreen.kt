@@ -34,6 +34,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -99,6 +101,9 @@ class CarouselViewModel @Inject constructor(
     var pendingLinkSide by mutableIntStateOf(-1)
         private set
     var isDetecting by mutableStateOf(false)
+        private set
+    /** Set by [completeLink] when the link discarded values the target bunch already had. */
+    var linkReplacedMeasurements by mutableStateOf(false)
         private set
 
     // Active sub-tool while in EDIT mode (REVIEW mode is always read-only / CanvasTool.VIEW).
@@ -222,6 +227,10 @@ class CarouselViewModel @Inject constructor(
         saveErrorMessage = null
     }
 
+    fun consumeLinkReplacedNotice() {
+        linkReplacedMeasurements = false
+    }
+
     /**
      * Silent persistence (no busy overlay). A failed/conflicting save stays dirty and never emits
      * the saved pulse; a successful save publishes the returned revision into the live snapshot.
@@ -254,6 +263,10 @@ class CarouselViewModel @Inject constructor(
         val s = session ?: return
         session = SessionUseCases.setBboxMeasurements(s, currentSideIndex, bboxId, measurements)
         markDirty()
+        // A weighed bunch cannot be re-measured once the harvest moves on, so it must not sit
+        // in memory until the operator happens to swipe. This is one deliberate tap, not a
+        // drag, so it cannot spam the save path (DB + labels ~15ms; SAF stays off it).
+        autoSave()
     }
 
     fun deleteBbox(bboxId: String) {
@@ -304,8 +317,17 @@ class CarouselViewModel @Inject constructor(
         val srcSide = pendingLinkSide
         val tgtSide = currentSideIndex
         if (srcSide == tgtSide) return           // must be different sides
+        // A link makes one cluster carry one set of values, so the source's win. When the
+        // target already held DIFFERENT values, that is a weight the operator typed and is
+        // now gone — silently, since the panel simply re-renders with the new number.
+        val targetBefore = s.sides.firstOrNull { it.sideIndex == tgtSide }
+            ?.bboxes?.firstOrNull { it.id == targetBboxId }?.measurements?.normalized()
         // Note: srcId == targetBboxId is OK — IDs like "b0" repeat across sides.
         session = SessionUseCases.addManualLink(s, srcSide, srcId, tgtSide, targetBboxId)
+        val targetAfter = session?.sides?.firstOrNull { it.sideIndex == tgtSide }
+            ?.bboxes?.firstOrNull { it.id == targetBboxId }?.measurements?.normalized()
+        linkReplacedMeasurements =
+            targetBefore != null && targetBefore.hasAnyValue && targetAfter != targetBefore
         linkArmed = false
         pendingLinkBboxId = null
         pendingLinkSide = -1
@@ -314,6 +336,9 @@ class CarouselViewModel @Inject constructor(
         // after linking"). Changing it now propagates to the whole cluster and auto-saves.
         selectedBboxId = targetBboxId
         markDirty()
+        // Same reason as changeBboxMeasurements: a link decides which appearances share one
+        // weight, and re-deriving it later means re-identifying the bunch across two photos.
+        autoSave()
     }
 
     /**
@@ -563,6 +588,14 @@ fun CarouselScreen(
         }
     }
 
+    val linkReplacedText = stringResource(R.string.weight_link_replaced)
+    LaunchedEffect(viewModel.linkReplacedMeasurements) {
+        if (viewModel.linkReplacedMeasurements) {
+            toasts.info(linkReplacedText)
+            viewModel.consumeLinkReplacedNotice()
+        }
+    }
+
     // Brief "Tersimpan ✓" pulse whenever an auto-save completes.
     var showSaved by remember { mutableStateOf(false) }
     LaunchedEffect(viewModel.savedTick) {
@@ -573,12 +606,19 @@ fun CarouselScreen(
         }
     }
 
+    val weightMeasurementOpen = isWeightDataset && viewModel.selectedBbox != null
+
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
                     Column {
-                        Text(session?.treeName ?: stringResource(R.string.carousel_title_fallback), maxLines = 1, style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            session?.treeName ?: stringResource(R.string.carousel_title_fallback),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.titleMedium,
+                        )
                         Text(
                             "${(pagerState.currentPage % sidesCount) + 1} / $totalSides",
                             style = MaterialTheme.typography.bodySmall,
@@ -662,12 +702,27 @@ fun CarouselScreen(
                 nextTreeEnabled = viewModel.runId != null,
                 editMode = viewModel.mode == CarouselMode.EDIT,
                 editTool = viewModel.editTool,
+                showClassPicker = !isWeightDataset,
+                showPrimaryActions = !weightMeasurementOpen,
+                showSwipeDirection = !isWeightDataset,
+                linkEnabled = totalSides > 1,
                 onToggleDraw = { viewModel.toggleDrawTool() },
                 onClassChange = { id, cls -> viewModel.changeBboxClass(id, cls) },
                 onDelete = { viewModel.deleteBbox(it) },
                 onToggleBoxes = { viewModel.toggleBoxes() },
                 onToggleSwipe = { viewModel.toggleSwipeDirection() },
-                onArmLink = { viewModel.armLink() },
+                onArmLink = {
+                    viewModel.armLink()
+                    if (isWeightDataset && totalSides == 2) {
+                        coroutineScope.launch {
+                            val currentPage = pagerState.currentPage
+                            val currentSide = currentPage % sidesCount
+                            val targetSide = if (currentSide == 0) 1 else 0
+                            val targetPage = if (loop) currentPage + targetSide - currentSide else targetSide
+                            pagerState.animateScrollToPage(targetPage)
+                        }
+                    }
+                },
                 onCancelLink = { viewModel.cancelLink() },
                 saveExitLabel = stringResource(
                     if (isWeightDataset) R.string.weight_save_draft_exit else R.string.carousel_save_exit,
@@ -693,15 +748,43 @@ fun CarouselScreen(
                 CircularProgressIndicator()
             }
         } else {
-            BoxWithConstraints(Modifier.fillMaxSize().padding(padding)) {
+            // Window-relative bottom of the content area. Measured on the CONTAINER, not on the
+            // panel: the panel is what the keyboard correction moves, so measuring the panel
+            // would feed its own new position back into the calculation.
+            var containerBottomPx by remember { mutableIntStateOf(0) }
+            BoxWithConstraints(
+                Modifier.fillMaxSize().padding(padding).onGloballyPositioned { coords ->
+                    containerBottomPx = (coords.positionInWindow().y + coords.size.height).toInt()
+                },
+            ) {
             val selectedBbox = viewModel.selectedBbox
             val showMeasurements = isWeightDataset && selectedBbox != null
             val expandedInspector = maxWidth >= 720.dp
             val inspectorWidth = if (showMeasurements && expandedInspector) 340.dp else 0.dp
+            // WindowInsets.ime measures from the WINDOW bottom, but this content area already
+            // ends above the bottom bar. Subtract that gap so only the part of the keyboard that
+            // actually overlaps the content is corrected for.
+            val density = LocalDensity.current
+            val rootHeightPx = LocalView.current.rootView.height
+            val imeBottomPx = WindowInsets.ime.getBottom(density)
+            val imeOverlapPx = if (rootHeightPx > 0 && containerBottomPx > 0) {
+                (imeBottomPx - (rootHeightPx - containerBottomPx).coerceAtLeast(0)).coerceAtLeast(0)
+            } else {
+                0
+            }
+            val imeOverlap = with(density) { imeOverlapPx.toDp() }
+            // Hoisted so the sheet can size itself to what is actually shown; reset per bbox.
+            val measurementKey = "${viewModel.currentSideIndex}:${selectedBbox?.id}"
+            var optionalDetailsOpen by remember(measurementKey) { mutableStateOf(false) }
             // Compact layout puts the panel over the bottom of the photo. Inset the pager by
             // the same amount so the canvas re-fits into what is actually visible, instead of
-            // drawing the bunch under the sheet.
-            val sheetHeight = (maxHeight * 0.7f).coerceAtMost(480.dp)
+            // drawing the bunch under the sheet. Collapsed the sheet only carries the weight
+            // field, the optional toggle and Apply, so it gives the rest of the height back to
+            // the photo and only grows when the optional fields are open.
+            val sheetHeight = (if (optionalDetailsOpen) (maxHeight * 0.68f).coerceAtMost(380.dp)
+            else (maxHeight * 0.5f).coerceAtMost(285.dp))
+                // The sheet is lifted clear of the keyboard, so it has to fit in what is left.
+                .coerceAtMost((maxHeight - imeOverlap).coerceAtLeast(180.dp))
             val inspectorHeight = if (showMeasurements && !expandedInspector) sheetHeight else 0.dp
             HorizontalPager(
                 state = pagerState,
@@ -728,6 +811,8 @@ fun CarouselScreen(
                         imageHeight = side.imageHeight.coerceAtLeast(1),
                         tool = viewModel.canvasTool,
                         showBoxes = viewModel.showBoxes,
+                        showClassLabels = !isWeightDataset,
+                        boxColorOverride = if (isWeightDataset) PalmColors.Accent else null,
                         linkedBoxes = linkMap,
                         onBboxTap = { id ->
                             if (sideIdx != viewModel.currentSideIndex) {
@@ -761,7 +846,7 @@ fun CarouselScreen(
 
                     // Bbox count overlay
                     val countText = stringResource(R.string.carousel_boxes_count, side.bboxes.size)
-                    val unassignedText = if (side.hasUnassigned) " · " + stringResource(R.string.carousel_boxes_unassigned, side.unassignedBboxCount) else ""
+                    val unassignedText = if (!isWeightDataset && side.hasUnassigned) " · " + stringResource(R.string.carousel_boxes_unassigned, side.unassignedBboxCount) else ""
                     val linkedText = if (linkMap.isNotEmpty()) " · " + stringResource(R.string.carousel_boxes_linked, linkMap.size) else ""
                     Surface(
                         modifier = Modifier.align(Alignment.TopStart).padding(8.dp),
@@ -772,7 +857,7 @@ fun CarouselScreen(
                             countText + unassignedText + linkedText,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                             style = MaterialTheme.typography.labelMedium,
-                            color = if (side.hasUnassigned) PalmColors.Warning else Color.White,
+                            color = if (!isWeightDataset && side.hasUnassigned) PalmColors.Warning else Color.White,
                         )
                     }
 
@@ -784,7 +869,10 @@ fun CarouselScreen(
                             color = PalmColors.LinkHighlight.copy(alpha = 0.92f),
                         ) {
                             Text(
-                                stringResource(R.string.carousel_link_hint),
+                                stringResource(
+                                    if (isWeightDataset) R.string.carousel_link_hint_weight
+                                    else R.string.carousel_link_hint,
+                                ),
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                                 style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.Bold,
@@ -810,6 +898,7 @@ fun CarouselScreen(
                         val isCurrent = raw == i
                         Box(
                             modifier = Modifier
+                                .size(40.dp)
                                 .clickable {
                                     coroutineScope.launch {
                                         // Dot i = side i (page = side via page % sidesCount). Jump to
@@ -819,15 +908,19 @@ fun CarouselScreen(
                                         val target = if (loop) cur + (i - curRaw) else i
                                         pagerState.animateScrollToPage(target)
                                     }
-                                }
-                                .padding(3.dp)
-                                .size(if (isCurrent) 8.dp else 6.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    if (isCurrent) PalmColors.Accent
-                                    else Color.White.copy(alpha = 0.4f)
-                                ),
-                        )
+                                },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Box(
+                                Modifier
+                                    .size(if (isCurrent) 8.dp else 6.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (isCurrent) PalmColors.Accent
+                                        else Color.White.copy(alpha = 0.4f),
+                                    ),
+                            )
+                        }
                     }
                 }
             }
@@ -863,6 +956,13 @@ fun CarouselScreen(
             if (showMeasurements && selectedBbox != null) {
                 BunchMeasurementPanel(
                     bbox = selectedBbox,
+                    bboxKey = measurementKey,
+                    showOptional = optionalDetailsOpen,
+                    imeVisible = imeOverlapPx > 0,
+                    // The full-height side inspector cannot move, so it pads its own content.
+                    // The compact sheet is lifted instead (below) and must not pad twice.
+                    imeInnerPadding = if (expandedInspector) imeOverlap else 0.dp,
+                    onToggleOptional = { optionalDetailsOpen = !optionalDetailsOpen },
                     onApply = { viewModel.changeBboxMeasurements(selectedBbox.id, it) },
                     onClose = { viewModel.selectBbox(null) },
                     modifier = if (expandedInspector) {
@@ -871,9 +971,13 @@ fun CarouselScreen(
                         // A sheet at 88% left the photo as a black strip in portrait — the box
                         // being measured has to stay visible. Capped so a tall screen does not
                         // stretch the fields, and proportional so a short one still fits.
+                        // The bottom padding LIFTS the sheet clear of the keyboard. Padding its
+                        // content instead only shrank it in place, which hid the weight field
+                        // behind the keyboard the moment it was tapped.
                         Modifier
                             .align(Alignment.BottomCenter)
                             .fillMaxWidth()
+                            .padding(bottom = imeOverlap)
                             .height(sheetHeight)
                     },
                 )
@@ -886,56 +990,40 @@ fun CarouselScreen(
 @Composable
 private fun BunchMeasurementPanel(
     bbox: Bbox,
+    bboxKey: String,
+    showOptional: Boolean,
+    imeVisible: Boolean,
+    imeInnerPadding: Dp,
+    onToggleOptional: () -> Unit,
     onApply: (BunchMeasurements) -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var weight by remember(bbox.id, bbox.measurements) {
+    var weight by remember(bboxKey, bbox.measurements) {
         mutableStateOf(bbox.measurements.weightKg?.toString().orEmpty())
     }
-    var height by remember(bbox.id, bbox.measurements) {
+    var height by remember(bboxKey, bbox.measurements) {
         mutableStateOf(bbox.measurements.heightCm?.toString().orEmpty())
     }
-    var circumference by remember(bbox.id, bbox.measurements) {
+    var circumference by remember(bboxKey, bbox.measurements) {
         mutableStateOf(bbox.measurements.circumferenceCm?.toString().orEmpty())
     }
-    var notes by remember(bbox.id, bbox.measurements) {
+    var notes by remember(bboxKey, bbox.measurements) {
         mutableStateOf(bbox.measurements.notes.orEmpty())
     }
-    var error by remember(bbox.id) { mutableStateOf<String?>(null) }
+    var error by remember(bboxKey) { mutableStateOf<String?>(null) }
     val fieldColors = OutlinedTextFieldDefaults.colors(
         unfocusedBorderColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f),
     )
 
-    // Modifier.imePadding() subtracts the keyboard height measured from the WINDOW bottom, but
-    // this panel already ends above the bottom bar. That over-subtracted the panel by the bar's
-    // height and collapsed the field area to zero, so nothing but the header stayed on screen
-    // while typing. Subtract only the part of the keyboard that actually overlaps the panel.
-    val density = LocalDensity.current
-    val rootHeightPx = LocalView.current.rootView.height
-    var panelBottomPx by remember { mutableIntStateOf(0) }
-    val imeBottomPx = WindowInsets.ime.getBottom(density)
-    val imeOverlapPx = if (rootHeightPx > 0 && panelBottomPx > 0) {
-        // Measured on the Pad 6: root=1800, panel bottom=1320, keyboard=922 → overlap 442,
-        // not the 922 that imePadding() removed. Both clamps keep a surprising measurement
-        // (panel reported below the window, keyboard smaller than the gap) at zero padding.
-        val gapBelowPanel = (rootHeightPx - panelBottomPx).coerceAtLeast(0)
-        (imeBottomPx - gapBelowPanel).coerceAtLeast(0)
-    } else {
-        0
-    }
-    val imeVisible = imeOverlapPx > 0
-
     Surface(
-        modifier = modifier.onGloballyPositioned { coords ->
-            panelBottomPx = (coords.positionInWindow().y + coords.size.height).toInt()
-        },
+        modifier = modifier,
         tonalElevation = 6.dp,
     ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(bottom = with(density) { imeOverlapPx.toDp() })
+                .padding(bottom = imeInnerPadding)
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
@@ -943,23 +1031,15 @@ private fun BunchMeasurementPanel(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        stringResource(R.string.weight_panel_title),
-                        // The keyboard leaves roughly a third of a landscape screen for this
-                        // panel, so the header gives its space back to the fields while typing.
-                        style = if (imeVisible) MaterialTheme.typography.titleMedium
-                        else MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    if (!imeVisible) {
-                        Text(
-                            stringResource(R.string.weight_panel_hint),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
+                Text(
+                    stringResource(R.string.weight_panel_title),
+                    modifier = Modifier.weight(1f),
+                    // The keyboard leaves roughly a third of a landscape screen for this
+                    // panel, so the header gives its space back to the fields while typing.
+                    style = if (imeVisible) MaterialTheme.typography.titleMedium
+                    else MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                )
                 IconButton(onClick = onClose, modifier = Modifier.size(48.dp)) {
                     Icon(Icons.Default.Close, stringResource(R.string.weight_close_panel))
                 }
@@ -969,45 +1049,66 @@ private fun BunchMeasurementPanel(
                 modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                Text(
-                    bbox.className,
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary,
-                )
                 MeasurementNumberField(
                     value = weight,
                     onValueChange = { weight = it; error = null },
                     label = stringResource(R.string.weight_required_label),
                     colors = fieldColors,
                 )
-                MeasurementNumberField(
-                    value = height,
-                    onValueChange = { height = it; error = null },
-                    label = stringResource(R.string.height_optional_label),
-                    colors = fieldColors,
-                )
-                MeasurementNumberField(
-                    value = circumference,
-                    onValueChange = { circumference = it; error = null },
-                    label = stringResource(R.string.circumference_optional_label),
-                    colors = fieldColors,
-                )
-                OutlinedTextField(
-                    value = notes,
-                    onValueChange = { notes = it; error = null },
-                    label = { Text(stringResource(R.string.notes_optional_label)) },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 2,
-                    maxLines = 4,
-                    colors = fieldColors,
-                )
-                error?.let {
-                    Text(
-                        it,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
+                TextButton(
+                    onClick = onToggleOptional,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                ) {
+                    Icon(
+                        if (showOptional) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = null,
                     )
+                    Spacer(Modifier.width(8.dp))
+                    Text(stringResource(R.string.weight_optional_details))
+                    Spacer(Modifier.weight(1f))
+                    val filledCount = listOf(height, circumference, notes).count(String::isNotBlank)
+                    if (filledCount > 0) {
+                        Text(
+                            stringResource(R.string.weight_optional_filled, filledCount),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
+                AnimatedVisibility(visible = showOptional) {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        MeasurementNumberField(
+                            value = height,
+                            onValueChange = { height = it; error = null },
+                            label = stringResource(R.string.height_optional_label),
+                            colors = fieldColors,
+                        )
+                        MeasurementNumberField(
+                            value = circumference,
+                            onValueChange = { circumference = it; error = null },
+                            label = stringResource(R.string.circumference_optional_label),
+                            colors = fieldColors,
+                        )
+                        OutlinedTextField(
+                            value = notes,
+                            onValueChange = { notes = it; error = null },
+                            label = { Text(stringResource(R.string.notes_optional_label)) },
+                            modifier = Modifier.fillMaxWidth(),
+                            minLines = 2,
+                            maxLines = 4,
+                            colors = fieldColors,
+                        )
+                    }
+                }
+            }
+            // Outside the scrolling column: inside it the collapsed sheet pushed the message
+            // below the fold, where it rendered as a half-line clipped by the Apply button.
+            error?.let {
+                Text(
+                    it,
+                    modifier = Modifier.fillMaxWidth(),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
             Button(
                 onClick = {
@@ -1060,6 +1161,10 @@ private fun CarouselBottomBar(
     nextTreeEnabled: Boolean,
     editMode: Boolean,
     editTool: CanvasTool,
+    showClassPicker: Boolean,
+    showPrimaryActions: Boolean,
+    showSwipeDirection: Boolean,
+    linkEnabled: Boolean,
     onToggleDraw: () -> Unit,
     onClassChange: (String, AnnotationClass) -> Unit,
     onDelete: (String) -> Unit,
@@ -1084,42 +1189,38 @@ private fun CarouselBottomBar(
         ) {
             val hasSelection = selectedBboxId != null
 
-            // Row 1 — class buttons share the full width (weight) so all four always fit,
-            // even on a narrow phone, instead of overflowing off the right edge.
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                for (cls in AnnotationClass.assignableEntries) {
-                    val isSelected = selectedBboxId?.let { id ->
-                        session?.sides?.getOrNull(currentSideIndex)?.bboxes?.find { it.id == id }?.classId == cls.id
-                    } == true
-                    // Dim when no box is selected (tapping a class is a no-op then). When a box
-                    // IS selected, show the full class colour and ring the box's current class.
-                    val container = if (hasSelection) cls.composeColor else cls.composeColor.copy(alpha = 0.4f)
-                    // Pick black/white by the class colour's luminance so the label always reads
-                    // (white on amber B3 failed contrast before).
-                    val labelColor = if (cls.composeColor.luminance() > 0.5f) Color.Black else Color.White
-                    Surface(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(48.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable(enabled = hasSelection) {
-                                selectedBboxId?.let { onClassChange(it, cls) }
-                            },
-                        color = container,
-                        shape = RoundedCornerShape(8.dp),
-                        border = if (isSelected) ButtonDefaults.outlinedButtonBorder(enabled = true) else null,
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Text(
-                                cls.displayName,
-                                color = labelColor,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 15.sp,
-                                textAlign = TextAlign.Center,
-                            )
+            if (showClassPicker) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    for (cls in AnnotationClass.assignableEntries) {
+                        val isSelected = selectedBboxId?.let { id ->
+                            session?.sides?.getOrNull(currentSideIndex)?.bboxes?.find { it.id == id }?.classId == cls.id
+                        } == true
+                        val container = if (hasSelection) cls.composeColor else cls.composeColor.copy(alpha = 0.4f)
+                        val labelColor = if (cls.composeColor.luminance() > 0.5f) Color.Black else Color.White
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(enabled = hasSelection) {
+                                    selectedBboxId?.let { onClassChange(it, cls) }
+                                },
+                            color = container,
+                            shape = RoundedCornerShape(8.dp),
+                            border = if (isSelected) ButtonDefaults.outlinedButtonBorder(enabled = true) else null,
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    cls.displayName,
+                                    color = labelColor,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 15.sp,
+                                    textAlign = TextAlign.Center,
+                                )
+                            }
                         }
                     }
                 }
@@ -1146,7 +1247,7 @@ private fun CarouselBottomBar(
                 } else {
                     IconButton(
                         onClick = onArmLink,
-                        enabled = selectedBboxId != null,
+                        enabled = selectedBboxId != null && linkEnabled,
                         modifier = Modifier.size(48.dp),
                     ) {
                         Icon(Icons.Default.Link, stringResource(R.string.cd_link), modifier = Modifier.size(26.dp))
@@ -1170,14 +1271,16 @@ private fun CarouselBottomBar(
 
                 // Flip swipe direction / side order (per-screen, not persisted). Mirrors the
                 // dedup direction toggle but visual-only here. Sits just left of the eye toggle.
-                IconButton(onClick = onToggleSwipe, modifier = Modifier.size(48.dp)) {
-                    Icon(
-                        if (reverseSwipe) Icons.Default.RotateLeft else Icons.Default.RotateRight,
-                        contentDescription = stringResource(
-                            if (reverseSwipe) R.string.cd_capture_counter_clockwise else R.string.cd_capture_clockwise
-                        ),
-                        modifier = Modifier.size(26.dp),
-                    )
+                if (showSwipeDirection) {
+                    IconButton(onClick = onToggleSwipe, modifier = Modifier.size(48.dp)) {
+                        Icon(
+                            if (reverseSwipe) Icons.Default.RotateLeft else Icons.Default.RotateRight,
+                            contentDescription = stringResource(
+                                if (reverseSwipe) R.string.cd_capture_counter_clockwise else R.string.cd_capture_clockwise
+                            ),
+                            modifier = Modifier.size(26.dp),
+                        )
+                    }
                 }
 
                 IconButton(onClick = onToggleBoxes, modifier = Modifier.size(48.dp)) {
@@ -1189,21 +1292,22 @@ private fun CarouselBottomBar(
                 }
             }
 
-            // Row 3 — primary actions: full-width split buttons.
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                OutlinedButton(
-                    onClick = onSaveExit,
-                    enabled = !isSaving,
-                    modifier = Modifier.weight(1f).height(48.dp),
-                ) { Text(saveExitLabel, style = MaterialTheme.typography.labelLarge) }
-                Button(
-                    onClick = onNextTree,
-                    enabled = !isSaving && nextTreeEnabled,
-                    modifier = Modifier.weight(1f).height(48.dp),
-                ) { Text(nextTreeLabel, style = MaterialTheme.typography.labelLarge) }
+            if (showPrimaryActions) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    OutlinedButton(
+                        onClick = onSaveExit,
+                        enabled = !isSaving,
+                        modifier = Modifier.weight(1f).height(48.dp),
+                    ) { Text(saveExitLabel, style = MaterialTheme.typography.labelLarge) }
+                    Button(
+                        onClick = onNextTree,
+                        enabled = !isSaving && nextTreeEnabled,
+                        modifier = Modifier.weight(1f).height(48.dp),
+                    ) { Text(nextTreeLabel, style = MaterialTheme.typography.labelLarge) }
+                }
             }
         }
     }

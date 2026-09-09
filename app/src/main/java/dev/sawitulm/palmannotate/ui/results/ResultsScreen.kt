@@ -298,7 +298,13 @@ fun ResultsScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(session?.treeName ?: stringResource(R.string.results_title)) },
+                title = {
+                    Text(
+                        session?.treeName ?: stringResource(R.string.results_title),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = onBack, enabled = !viewModel.isFinishing) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, stringResource(R.string.action_back))
@@ -314,6 +320,7 @@ fun ResultsScreen(
         } else {
             val r = results            // smart-cast non-null inside this branch
             val sess = session
+            val isWeightDataset = sess.datasetType == DatasetType.BUNCH_WEIGHT
             val classOrder = listOf(
                 AnnotationClass.B1, AnnotationClass.B2, AnnotationClass.B3,
                 AnnotationClass.B4, AnnotationClass.UNASSIGNED,
@@ -343,13 +350,15 @@ fun ResultsScreen(
                 }
 
                 // ─── By-Class breakdown ─────────────────────────────────
-                item {
-                    SectionCard(stringResource(R.string.results_by_class)) {
-                        val otherLabel = stringResource(R.string.results_other)
-                        classOrder.forEach { cls ->
-                            val count = r.classCounts[cls] ?: 0
-                            val label = if (cls == AnnotationClass.UNASSIGNED) otherLabel else cls.displayName
-                            CountBarRow(cls.composeColor, label, count, count.toFloat() / classMax)
+                if (!isWeightDataset) {
+                    item {
+                        SectionCard(stringResource(R.string.results_by_class)) {
+                            val otherLabel = stringResource(R.string.results_other)
+                            classOrder.forEach { cls ->
+                                val count = r.classCounts[cls] ?: 0
+                                val label = if (cls == AnnotationClass.UNASSIGNED) otherLabel else cls.displayName
+                                CountBarRow(cls.composeColor, label, count, count.toFloat() / classMax)
+                            }
                         }
                     }
                 }

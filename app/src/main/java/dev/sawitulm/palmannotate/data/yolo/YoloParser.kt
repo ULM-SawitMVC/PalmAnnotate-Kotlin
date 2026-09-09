@@ -60,13 +60,19 @@ object YoloParser {
     }
 
     /**
-     * Serialize bboxes to YOLO normalized .txt format.
-     * UNASSIGNED boxes are excluded (YOLO needs integer class 0–3).
+     * Serialize bboxes to YOLO normalized .txt format. [classIdOverride] supports a
+     * single-class dataset such as Bunch Weight, where every box is a harvested bunch.
      */
-    fun serialize(bboxes: List<Bbox>, imgW: Int, imgH: Int): String {
+    fun serialize(
+        bboxes: List<Bbox>,
+        imgW: Int,
+        imgH: Int,
+        classIdOverride: Int? = null,
+    ): String {
         if (imgW <= 0 || imgH <= 0) return ""
+        require(classIdOverride == null || classIdOverride in 0..3) { "Invalid YOLO class override" }
         return bboxes
-            .filter { it.classId in 0..3 }
+            .filter { classIdOverride != null || it.classId in 0..3 }
             .joinToString("\n") { b ->
                 // D4-11: clamp to [0,1]. No-op for in-bounds producers, but guards resume/import
                 // (FolderResumeImporter feeds Bbox straight from JSON) so a stray value can never
@@ -75,7 +81,7 @@ object YoloParser {
                 val cy = (((b.y1 + b.y2) / 2f) / imgH).coerceIn(0f, 1f)
                 val w  = ((b.x2 - b.x1) / imgW).coerceIn(0f, 1f)
                 val h  = ((b.y2 - b.y1) / imgH).coerceIn(0f, 1f)
-                "${b.classId} ${cx.f6()} ${cy.f6()} ${w.f6()} ${h.f6()}"
+                "${classIdOverride ?: b.classId} ${cx.f6()} ${cy.f6()} ${w.f6()} ${h.f6()}"
             }
     }
 

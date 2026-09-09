@@ -180,6 +180,8 @@ fun AnnotationCanvas(
     imageHeight: Int,
     tool: CanvasTool = CanvasTool.SELECT,
     showBoxes: Boolean = true,
+    showClassLabels: Boolean = true,
+    boxColorOverride: Color? = null,
     /** bboxId → stable 1-based link-group number; drawn as a dashed group-coloured ring +
      *  matching numbered badge so a connected bunch reads at a glance and keeps the same
      *  colour/number on both sides of a link. */
@@ -522,7 +524,7 @@ fun AnnotationCanvas(
 
         for (bbox in bboxes) {
             val cls = AnnotationClass.fromId(bbox.classId)
-            val color = cls.composeColor
+            val color = boxColorOverride ?: cls.composeColor
             val isSelected = bbox.id == selectedBboxId
             val strokeW = if (isSelected) 3.dp.toPx() else 1.5.dp.toPx()
 
@@ -563,25 +565,25 @@ fun AnnotationCanvas(
                 )
             }
 
-            // Label background
-            val labelText = bbox.className
-            paint.textSize = (11 * scale).coerceIn(9f, 18f)
-            val textW = paint.measureText(labelText)
-            val labelH = paint.textSize + 4.dp.toPx()
-            val labelY = tl.y - labelH
-            drawRoundRect(
-                color = color,
-                topLeft = Offset(tl.x, labelY.coerceIn(0f, size.height)),
-                size = Size(textW + 8.dp.toPx(), labelH),
-                cornerRadius = CornerRadius(2.dp.toPx()),
-            )
-            // Label text
-            drawContext.canvas.nativeCanvas.drawText(
-                labelText,
-                tl.x + 4.dp.toPx(),
-                labelY + labelH - 3.dp.toPx(),
-                paint.apply { this.color = android.graphics.Color.WHITE },
-            )
+            if (showClassLabels) {
+                val labelText = bbox.className
+                paint.textSize = (11 * scale).coerceIn(9f, 18f)
+                val textW = paint.measureText(labelText)
+                val labelH = paint.textSize + 4.dp.toPx()
+                val labelY = tl.y - labelH
+                drawRoundRect(
+                    color = color,
+                    topLeft = Offset(tl.x, labelY.coerceIn(0f, size.height)),
+                    size = Size(textW + 8.dp.toPx(), labelH),
+                    cornerRadius = CornerRadius(2.dp.toPx()),
+                )
+                drawContext.canvas.nativeCanvas.drawText(
+                    labelText,
+                    tl.x + 4.dp.toPx(),
+                    labelY + labelH - 3.dp.toPx(),
+                    paint.apply { this.color = android.graphics.Color.WHITE },
+                )
+            }
 
             // Link badge: a chip in the group colour with the stable link-group number at the
             // box's top-right corner. The same colour + number appears on the matching bunch on

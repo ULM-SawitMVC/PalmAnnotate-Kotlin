@@ -137,7 +137,13 @@ class FolderResumeImporter @Inject constructor(
      * interrupted import can be retried on the next launch.
      */
     suspend fun resumeFromFolder(safTreeUri: Uri): Int = withContext(Dispatchers.IO) {
-        val jsonNames = listFilesForResume(safTreeUri, OUTPUT_JSON_DIR, ".json")
+        // A new export folder has no Output JSON yet. Access errors still fail, and
+        // once packages exist their image directory remains required below.
+        val jsonNames = SafResumeOutcomePolicy.requireListing(
+            saf.listFilesResult(safTreeUri, OUTPUT_JSON_DIR, ".json"),
+            OUTPUT_JSON_DIR,
+            allowMissing = true,
+        )
         if (jsonNames.isEmpty()) return@withContext 0
 
         val imageNames = listFilesForResume(safTreeUri, IMAGES_DIR, ".jpg").toHashSet()

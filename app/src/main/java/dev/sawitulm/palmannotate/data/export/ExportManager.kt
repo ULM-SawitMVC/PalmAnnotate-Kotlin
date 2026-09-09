@@ -35,6 +35,7 @@ object ExportManager {
     fun generateOutputJson(session: ActiveSession, results: TreeResults? = null): JSONObject {
         val r = results ?: ResultsComputer.compute(session)
         val totalSides = session.sides.size
+        val isWeightDataset = session.datasetType == DatasetType.BUNCH_WEIGHT
         val out = JSONObject()
 
         out.put("version", 4)
@@ -86,8 +87,10 @@ object ExportManager {
             side.bboxes.forEachIndexed { boxIdx, b ->
                 annotations.put(JSONObject().apply {
                     put("box_index", boxIdx)
-                    put("class_id", b.classId)
-                    put("class_name", b.className)
+                    if (!isWeightDataset) {
+                        put("class_id", b.classId)
+                        put("class_name", b.className)
+                    }
                     put("bbox_yolo", yolo(b, side.imageWidth, side.imageHeight))
                     put("bbox_pixel", pixel(b))
                     putMeasurements(b.measurements)
@@ -125,7 +128,7 @@ object ExportManager {
                     put("side", "side_${m.sideIndex + 1}")
                     put("side_index", m.sideIndex)
                     put("box_index", m.boxIndex)
-                    put("class_name", m.className)
+                    if (!isWeightDataset) put("class_name", m.className)
                     put("bbox_pixel", JSONArray().apply {
                         put(Math.round(m.x1)); put(Math.round(m.y1)); put(Math.round(m.x2)); put(Math.round(m.y2))
                     })
@@ -133,8 +136,10 @@ object ExportManager {
             }
             bunches.put(JSONObject().apply {
                 put("bunch_id", bunchId++)
-                put("class", dominant)
-                put("class_mismatch", mismatch)
+                if (!isWeightDataset) {
+                    put("class", dominant)
+                    put("class_mismatch", mismatch)
+                }
                 put("appearance_count", members.size)
                 putMeasurements(members.first().measurements)
                 put("appearances", appearances)
@@ -150,13 +155,15 @@ object ExportManager {
             put("total_unique_bunches", r.uniqueCount)
             put("total_detections", r.rawCount)
             put("duplicates_linked", r.linkedCount)
-            put("by_class", JSONObject().apply {
-                put("B1", r.classCounts[AnnotationClass.B1] ?: 0)
-                put("B2", r.classCounts[AnnotationClass.B2] ?: 0)
-                put("B3", r.classCounts[AnnotationClass.B3] ?: 0)
-                put("B4", r.classCounts[AnnotationClass.B4] ?: 0)
-                put("other", r.classCounts[AnnotationClass.UNASSIGNED] ?: 0)
-            })
+            if (!isWeightDataset) {
+                put("by_class", JSONObject().apply {
+                    put("B1", r.classCounts[AnnotationClass.B1] ?: 0)
+                    put("B2", r.classCounts[AnnotationClass.B2] ?: 0)
+                    put("B3", r.classCounts[AnnotationClass.B3] ?: 0)
+                    put("B4", r.classCounts[AnnotationClass.B4] ?: 0)
+                    put("other", r.classCounts[AnnotationClass.UNASSIGNED] ?: 0)
+                })
+            }
             put("by_side", JSONObject().apply {
                 for (side in session.sides) put("side_${side.sideIndex + 1}", side.bboxes.size)
             })
@@ -278,10 +285,11 @@ object ExportManager {
      *  Empty when the side has no valid pixel dimensions: dividing by a 0 width/height
      *  yields Infinity, which `f6()` would emit as the literal token "Infinity" and
      *  corrupt the label file (the JSON path is already guarded by `f6n()`). */
-    fun generateYoloTxt(side: TreeSide): String {
+    fun generateYoloTxt(side: TreeSide, datasetType: DatasetType = DatasetType.MULTISIDE): String {
         if (side.imageWidth <= 0 || side.imageHeight <= 0) return ""
-        return side.bboxes.filter { it.isAssigned }
-            .joinToString("\n") { yoloLine(it, side.imageWidth, side.imageHeight) }
+        val classIdOverride = if (datasetType == DatasetType.BUNCH_WEIGHT) 0 else null
+        return side.bboxes.filter { classIdOverride != null || it.isAssigned }
+            .joinToString("\n") { yoloLine(it, side.imageWidth, side.imageHeight, classIdOverride) }
     }
 
     /** Mismatch YOLO label content — assigned boxes whose id is in [mismatchBboxIds]. */
@@ -291,17 +299,36 @@ object ExportManager {
             .joinToString("\n") { yoloLine(it, side.imageWidth, side.imageHeight) }
     }
 
-    private fun yoloLine(b: Bbox, w: Int, h: Int): String {
+    private fun yoloLine(b: Bbox, w: Int, h: Int, classIdOverride: Int? = null): String {
         val cx = ((b.x1 + b.x2) / 2f) / w
         val cy = ((b.y1 + b.y2) / 2f) / h
         val bw = (b.x2 - b.x1) / w
         val bh = (b.y2 - b.y1) / h
-        return "${b.classId} ${cx.f6()} ${cy.f6()} ${bw.f6()} ${bh.f6()}"
+        return "${classIdOverride ?: b.classId} ${cx.f6()} ${cy.f6()} ${bw.f6()} ${bh.f6()}"
     }
 
     // ─── CSV ────────────────────────────────────────────────────────────────────
 
     fun generateCsv(session: ActiveSession, results: TreeResults): String {
+        if (session.datasetType == DatasetType.BUNCH_WEIGHT) {
+            val rows = mutableListOf(
+                "sample_name,split,bunch_id,appearance_count,weight_kg,height_cm,circumference_cm,notes",
+            )
+            results.clusters.values.filter { it.isNotEmpty() }.forEachIndexed { index, members ->
+                val measurements = members.first().measurements.normalized()
+                rows += listOf(
+                    session.treeName,
+                    session.split,
+                    (index + 1).toString(),
+                    members.size.toString(),
+                    measurements.weightKg?.toString().orEmpty(),
+                    measurements.heightCm?.toString().orEmpty(),
+                    measurements.circumferenceCm?.toString().orEmpty(),
+                    measurements.notes.orEmpty(),
+                ).joinToString(",", transform = ::csvField)
+            }
+            return rows.joinToString("\n")
+        }
         val b1 = results.classCounts[AnnotationClass.B1] ?: 0
         val b2 = results.classCounts[AnnotationClass.B2] ?: 0
         val b3 = results.classCounts[AnnotationClass.B3] ?: 0
@@ -319,8 +346,10 @@ object ExportManager {
     // ─── Identity JSON ──────────────────────────────────────────────────────────
 
     fun generateIdentityJson(session: ActiveSession, results: TreeResults): JSONObject {
+        val isWeightDataset = session.datasetType == DatasetType.BUNCH_WEIGHT
         val out = JSONObject()
         out.put("tree_name", session.treeName)
+        if (isWeightDataset) out.put("dataset_type", session.datasetType.name)
         out.put("totalUniqueBunches", results.uniqueCount)
         var mismatchCount = 0
         val bunches = JSONArray()
@@ -332,18 +361,19 @@ object ExportManager {
             if (hasMismatch) mismatchCount++
             bunches.put(JSONObject().apply {
                 put("id", bunchId++)
-                put("classMismatch", hasMismatch)
+                if (!isWeightDataset) put("classMismatch", hasMismatch)
+                if (isWeightDataset) putMeasurements(members.first().measurements)
                 put("detections", JSONArray().apply {
                     for (m in members) put(JSONObject().apply {
                         put("side", m.sideIndex)
                         put("bboxId", m.bboxId)
-                        put("class", m.className)
+                        if (!isWeightDataset) put("class", m.className)
                         put("coords", JSONArray().apply { put(m.x1); put(m.y1); put(m.x2); put(m.y2) })
                     })
                 })
             })
         }
-        out.put("classMismatchCount", mismatchCount)
+        if (!isWeightDataset) out.put("classMismatchCount", mismatchCount)
         out.put("bunches", bunches)
         return out
     }

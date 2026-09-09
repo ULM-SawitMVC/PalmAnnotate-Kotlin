@@ -1,7 +1,6 @@
 package dev.sawitulm.palmannotate.domain.usecase
 
 import dev.sawitulm.palmannotate.domain.model.ActiveSession
-import dev.sawitulm.palmannotate.domain.model.AnnotationClass
 import dev.sawitulm.palmannotate.domain.model.DatasetType
 import dev.sawitulm.palmannotate.domain.results.ResultsComputer
 
@@ -11,9 +10,6 @@ object WeightDatasetPolicy {
         if (session.totalBboxes == 0) return "Add at least one bunch bounding box."
 
         for ((index, members) in ResultsComputer.compute(session).clusters.values.withIndex()) {
-            if (members.any { it.className == AnnotationClass.UNASSIGNED.displayName }) {
-                return "Choose a class for bunch ${index + 1}."
-            }
             val measurements = members.map { it.measurements.normalized() }.distinct()
             if (measurements.size != 1) {
                 return "Linked appearances for bunch ${index + 1} have different measurements."
@@ -29,7 +25,7 @@ object WeightDatasetPolicy {
      * The `isComplete` flag a saved revision may carry.
      *
      * For [DatasetType.BUNCH_WEIGHT] the flag is DERIVED from the revision, not declared by the
-     * caller: a weight sample is finished exactly when every bunch has a class and a valid weight,
+     * caller: a weight sample is finished exactly when every bunch has a valid weight,
      * which is what [completionError] already decides. Deriving it is what makes the flag
      * two-way. A gate of the form `(markComplete || wasComplete) && valid` only ever revokes: the
      * silent auto-save that fires on a side swipe or an Edit/Review toggle sees the freshly drawn,
@@ -49,4 +45,3 @@ object WeightDatasetPolicy {
         if (session.datasetType == DatasetType.BUNCH_WEIGHT) completionError(session) == null
         else markComplete || wasComplete
 }
-
