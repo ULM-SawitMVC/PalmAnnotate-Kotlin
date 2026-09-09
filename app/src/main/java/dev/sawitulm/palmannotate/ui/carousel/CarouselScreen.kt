@@ -61,6 +61,9 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
+internal fun needsPagerSettle(canvasGestureActive: Boolean, pageOffsetFraction: Float): Boolean =
+    !canvasGestureActive && pageOffsetFraction != 0f
+
 // ═══════════════════════════════════════════════════════════════════════
 // ViewModel
 // ═══════════════════════════════════════════════════════════════════════
@@ -540,6 +543,11 @@ fun CarouselScreen(
     // swiping died after editing). Combined with the mode==EDIT guard on userScrollEnabled
     // below, leaving Edit always re-enables swiping.
     LaunchedEffect(viewModel.mode, viewModel.currentSideIndex) { isEditingBox = false }
+    LaunchedEffect(isEditingBox) {
+        if (needsPagerSettle(isEditingBox, pagerState.currentPageOffsetFraction)) {
+            pagerState.scrollToPage(pagerState.currentPage)
+        }
+    }
 
     // While no session exists there is nothing to save, so let NavHost handle Back normally.
     BackHandler(enabled = session != null) {
