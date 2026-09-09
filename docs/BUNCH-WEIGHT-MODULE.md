@@ -38,6 +38,10 @@ menguji ulang di ponsel, bukan hanya di uji unit.
 - **Tinggi panel mengikuti isinya.** Tertutup hanya memuat kolom berat, sakelar rincian
   opsional, dan tombol Apply, sehingga foto memperoleh sisa ruangnya; terbuka baru meninggi.
   Nilainya juga dibatasi oleh sisa ruang setelah papan ketik.
+- **Konfirmasi simpan diberi inset bawah setinggi panel.** Pil "Saved" digambar di dasar area
+  konten, yaitu tepat di tempat panel berada, dan panel disusun sesudahnya. Tanpa inset itu
+  "Apply to bunch" menyimpan tanpa tanda apa pun dan operator tidak dapat memastikan
+  ketukannya terbaca. Ini juga yang menjawab pertanyaan apakah tombol itu menyimpan.
 - **Pesan galat validasi berada di luar area gulir.** Di dalam area gulir, panel yang tertutup
   mendorong pesan itu ke bawah lipatan dan pesan tampil terpotong separuh baris.
 
@@ -65,6 +69,7 @@ menguji ulang di ponsel, bukan hanya di uji unit.
 - AC-009: menaut kotak yang sudah berisi nilai berbeda menampilkan pemberitahuan bahwa nilai kotak itu diganti.
 - AC-010: menaut dan menerapkan atribut bertahan setelah proses aplikasi dimatikan tanpa berganti foto atau keluar.
 - AC-011: seluruh isi panel pengukuran tetap terlihat ketika papan ketik terbuka, termasuk kolom berat dan pesan galat validasi.
+- AC-012: menekan "Apply to bunch" memunculkan konfirmasi tersimpan yang terlihat, tidak tertutup panel.
 
 ## Batas yang Diketahui
 

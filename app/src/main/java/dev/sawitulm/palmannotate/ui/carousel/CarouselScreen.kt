@@ -925,10 +925,14 @@ fun CarouselScreen(
                 }
             }
 
-            // Auto-save confirmation pulse (brief, non-interactive).
+            // Auto-save confirmation pulse (brief, non-interactive). The bottom inset matters:
+            // the pulse sits at the bottom of the content area, which is exactly where the
+            // measurement sheet is, and the sheet is composed after it. Without the inset,
+            // "Apply to bunch" saved silently under the sheet and operators could not tell
+            // whether their tap had registered at all.
             if (showSaved) {
                 Box(
-                    Modifier.fillMaxSize().padding(end = inspectorWidth),
+                    Modifier.fillMaxSize().padding(end = inspectorWidth, bottom = inspectorHeight),
                     contentAlignment = Alignment.BottomCenter,
                 ) {
                     Surface(

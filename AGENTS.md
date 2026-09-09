@@ -208,6 +208,10 @@ re-testing on a phone, not just in unit tests.
 - **A link applies the SOURCE box's measurements and says so when that discards something.**
   `linkReplacedMeasurements` drives the `weight_link_replaced` toast. Silently replacing a
   weight the operator typed is the failure mode this guards.
+- **The "Saved" pulse carries the sheet's height as a bottom inset.** It is drawn at the bottom
+  of the content area, which is exactly where the sheet sits, and the sheet is composed after
+  it. Without the inset, "Apply to bunch" saved with no visible response at all and operators
+  could not tell whether the tap had registered. Reported from the field, not caught in tests.
 - **The panel's validation error lives outside the scrolling column.** Inside it, the collapsed
   sheet pushes the message below the fold and it renders as a clipped half-line.
 
