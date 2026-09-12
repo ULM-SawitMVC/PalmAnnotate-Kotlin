@@ -5,7 +5,9 @@
 
 ## Status terkini
 
-- Build perangkat terakhir yang diverifikasi adalah `.field` v0.3.67 pada Motorola moto g45 5G.
+- Build perangkat terakhir yang diverifikasi adalah `.field` v0.3.71 pada Xiaomi Pad 6, diuji
+  dari tangkap sampai isi ekspor. Bukti lapangan sebelumnya memakai `.field` v0.3.67 pada
+  Motorola moto g45 5G.
 - Uji unit lulus **318/318**, dengan 0 kegagalan, 0 error, dan 0 tes dilewati.
 - Modul berat tandan diuji ujung ke ujung di perangkat: pemilih modul, dialog sesi, tangkap dua
   foto, anotasi, tautan lintas foto, gerbang penyelesaian, cermin SAF, dan isi ZIP ekspor.
@@ -38,6 +40,59 @@ sidik sertifikat penanda tangan dicocokkan dengan paket yang sudah terpasang.
 
 Verifikasi perangkat mencakup pemasangan ulang, pelepasan tautan, penomoran ulang setelah
 tautan dilepas, dan ekspor CSV. Perangkat keras Orbbec tetap belum diuji.
+
+## Uji menyeluruh field v0.3.71 (12 September, Xiaomi Pad 6)
+
+Seluruh alur dijalankan lewat ADB pada paket rilis `dev.sawitulm.palmannotate.field` v0.3.71,
+instalasi baru dengan folder ekspor kosong. Kamera Orbbec tidak terpasang, jadi tangkapan memakai
+kamera perangkat. Tidak ada satu pun entri crash milik aplikasi di buffer logcat selama pengujian.
+
+Modul berat tandan:
+
+- Dialog menolak blok kosong; pilihan jumlah foto disembunyikan karena hanya satu nilai berlaku.
+- Token perangkat masuk ke nama sampel: `DAMIMAS_QAFULL_BW_VM367Z_0001`.
+- Dua foto tertangkap dengan koordinat GPS terekam pada bilah tangkap.
+- Panel pengukuran menolak berat kosong, berat nol, dan tinggi nol dengan pesan masing-masing.
+- Penyimpanan yang sah memunculkan pil "Saved" di atas panel.
+- Kotak kedua bernomor 2, lalu menjadi 1 setelah ditautkan; nilai pengukuran ikut ke pasangannya.
+- Setelah `am force-stop`, tautan, berat, tinggi, lingkar, dan catatan tetap utuh.
+- Sampel satu foto lewat "Use 1 photo" tersimpan dan berstatus lengkap.
+- Gerbang penyelesaian menolak sampel tanpa kotak dan sampel tanpa berat, dengan pesan
+  "Bunch 1: Weight is required." yang dapat ditelusuri ke nomor pada kanvas.
+- Melepas tautan mengembalikan nomor 1 dan 2 tanpa mengubah nilai; penautan ulang berhasil.
+- Menghapus sampel meminta konfirmasi dengan nama dan jumlah foto, lalu menghapus seluruh
+  artefaknya dari folder ekspor.
+
+Isi ekspor yang diperiksa:
+
+- Output JSON memuat `dataset_type: BUNCH_WEIGHT`, `bunch_id`, `appearance_count`, pengukuran
+  tingkat tandan, dan tidak memuat satu pun kunci kematangan.
+- Label YOLO berat tandan memakai kelas `0`; label multisisi memakai indeks kelas kematangan.
+- Sidecar metadata memuat operator, token perangkat, `lat`/`lng`, serta objek `gps` yang
+  menyatakan status `STALE` beserta umur fix.
+- ZIP sesi memuat images, labels, json, metadata, manifests, dan `capture_set.json`. Seluruh
+  `sha256` pada manifest cocok dengan isi berkas di dalam ZIP.
+- Salinan cermin SAF identik dengan isi ZIP, kecuali `generated_at` yang memang dibuat ulang saat
+  ekspor.
+- CSV sampel memuat delapan kolom dan mengutip catatan yang mengandung koma sesuai RFC 4180.
+
+Modul multisisi, sebagai regresi:
+
+- Sesi empat sisi berjalan dari tangkap sampai anotasi; pilihan 4/8 foto tetap tampil.
+- Kelas B2 dan tautan lintas sisi tersimpan; layar hasil melaporkan 1 tandan unik, 2 deteksi,
+  1 duplikat tertaut.
+- Pemeriksaan mutu memperingatkan dua sisi yang belum dianotasi sebelum ekspor.
+- Ekspor CSV, Identity JSON, YOLO, dan Output JSON berjalan; nama multisisi dan berat tandan
+  hidup berdampingan di satu folder ekspor tanpa bertabrakan.
+
+Catatan yang belum ditindaklanjuti:
+
+- Blok kosong hanya ditandai garis merah tanpa pesan. Pesan galat blok baru muncul setelah kolom
+  terisi.
+- Peringatan folder ekspor memakai dua paragraf yang isinya bertumpang tindih, dan keadaan kosong
+  masih memakai kalimat penjelas di bawah judul.
+- Pil "Saved" dan snackbar gerbang tidak muncul pada dump uiautomator, meski terlihat pada
+  tangkapan layar. Perlu dipastikan keduanya terbaca oleh pembaca layar.
 
 ## Riwayat 9 September
 
