@@ -4,9 +4,8 @@
 
 Rewrite dari PalmAnnotate (Capacitor WebView hybrid) ke **native Kotlin + Jetpack Compose**.
 
-> **Status migrasi ada di [`docs/MIGRATION_STATUS.md`](docs/MIGRATION_STATUS.md).**
-> Status lapangan terbaru ada di
-> [`docs/FIELD_REPORT_20260727.md` §5.8](docs/FIELD_REPORT_20260727.md#58-addendum-audit-terkini-29-juli-2026).
+> **Status pengujian ada di [HANDOFF.md](HANDOFF.md).**
+> Mulai dari [indeks dokumentasi](docs/README.md) untuk panduan aktif, finishing, dan bukti historis.
 
 ## Download APK
 
@@ -119,7 +118,7 @@ adb install -r $apk.FullName
 ```
 
 Versi (`versionName`/`versionCode`) dihitung otomatis dari jumlah commit — lihat
-bagian Versioning di [`CLAUDE.md`](CLAUDE.md).
+bagian Versioning di [Build dan perangkat](docs/BUILD-AND-DEVICES.md#versioning).
 
 CI membangun APK yang sama lewat GitHub Actions setiap push ke `master`; lihat
 [Download APK](#download-apk) di atas kalau tidak mau build lokal.
@@ -135,8 +134,8 @@ UI (Compose) → ViewModel → UseCase → Repository → Room + Filesystem + SA
 
 ## Dokumentasi
 
-- [`docs/MIGRATION_STATUS.md`](docs/MIGRATION_STATUS.md) — Status migrasi dari web app
-- [`docs/PERF_GAIN.md`](docs/PERF_GAIN.md) — Analisis optimasi performa
-- [`CLAUDE.md`](CLAUDE.md) — Panduan build, versioning, CI, dan catatan teknis
+- [Indeks dokumentasi](docs/README.md): panduan aktif dan arsip pengujian.
+- [Build dan perangkat](docs/BUILD-AND-DEVICES.md): build, versioning, CI, dan signing.
+- [Panduan agen](AGENTS.md): aturan kerja, identik dengan CLAUDE.md.
 - [`.github/workflows/`](.github/workflows) — CI: `android-build.yml` (APK per push),
   `release.yml` (Release bertag)

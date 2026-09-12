@@ -1,12 +1,14 @@
 # PalmAnnotate Native - Agent Guide
 
-Native Kotlin + Jetpack Compose rewrite of PalmAnnotate (originally Capacitor WebView hybrid).
-
-> **AGENTS.md and CLAUDE.md share the same agent guide.** Keep both files identical when updating these instructions.
-
+AGENTS.md and CLAUDE.md must remain byte-identical when edited.
 Do not use em dashes (Unicode U+2014).
 
-# Orchestrator rule
+## Start here
+
+Native Kotlin + Jetpack Compose app, Hilt, Room, CameraX, Orbbec, and ONNX Runtime.
+Read PRODUCT.md for scope, HANDOFF.md for dated verification, and
+docs/FINISHING-NOTES.md for current finishing work. Historical reports are evidence,
+not current implementation instructions.
 
 ## Ponytail, lazy senior dev mode
 
@@ -39,541 +41,6 @@ Rules:
 
 Not lazy about: understanding the problem (read it fully and trace the real flow before picking a rung, a small diff you don't understand is just laziness dressed up as efficiency), input validation at trust boundaries, error handling that prevents data loss, security, accessibility, the calibration real hardware needs (the platform is never the spec ideal, a clock drifts, a sensor reads off), anything explicitly requested. Lazy code without its check is unfinished: non-trivial logic leaves ONE runnable check behind, the smallest thing that fails if the logic breaks (an assert-based demo/self-check or one small test file; no frameworks, no fixtures). Trivial one-liners need no test.
 
-## Build & Run
-
-> Building locally is optional - every push to `master` produces a downloadable APK.
-> See [CI - GitHub Actions](#ci--github-actions).
-
-### Prerequisites
-
-- **JDK 17** - `C:\tools\jdk17\jdk-17.0.19+10`
-- **Android SDK** - `C:\tools\android-sdk`
-- **Device:** Xiaomi Pad 8 (Android 16, wireless ADB `192.168.1.7:5555`)
-
-### Build APK
-
-```powershell
-$env:JAVA_HOME = 'C:\tools\jdk17\jdk-17.0.19+10'
-$env:ANDROID_HOME = 'C:\tools\android-sdk'
-$env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
-.\gradlew.bat :app:assembleField --no-daemon --max-workers=4
-```
-
-Output: `app/build/outputs/apk/field/PalmAnnotate-field-v<version>.apk`
-(for example `PalmAnnotate-field-v0.3.42.apk`). The version is part of the filename
-(see [Versioning](#versioning)), so don't hardcode it; resolve the newest APK instead.
-
-Without the signing secrets configured the name gains a `-NOKEY` suffix
-(`PalmAnnotate-field-v0.3.42-NOKEY.apk`). That build runs, but it cannot update - or be
-updated by - an APK signed with the real key. See [Distribution signing](#distribution-signing).
-
-The field variant is not debuggable, keeps R8/resource shrinking disabled, and uses
-`dev.sawitulm.palmannotate.field` so installing it cannot overwrite the existing debug
-app's private dataset.
-
-### Install & Launch
-
-```powershell
-$apk = Get-ChildItem 'app/build/outputs/apk/field/PalmAnnotate-field-v*.apk' |
-    Sort-Object LastWriteTime -Descending | Select-Object -First 1
-& 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 install -r $apk.FullName
-& 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 shell am force-stop dev.sawitulm.palmannotate.field
-& 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 shell monkey -p dev.sawitulm.palmannotate.field -c android.intent.category.LAUNCHER 1
-```
-
-### Run Tests
-
-```powershell
-.\gradlew.bat :app:testDebugUnitTest --no-daemon
-```
-
-## R8 Minification - DO NOT ENABLE
-
-**R8 code minification + resource shrinking are DISABLED (deliberately).**
-
-When R8 was enabled (`minifyEnabled true`), the Orbbec live preview showed "one frame then freeze / laggy". R8 strips/optimizes something the Orbbec SDK reaches via its JNI/reflection frame-callback path. The keep rules in `proguard-rules.pro` don't cover this.
-
-**Do NOT re-enable `minifyEnabled`/`shrinkResources` without re-verifying the live Orbbec preview on a physical device.**
-
-## Architecture
-
-```
-app/src/main/java/dev/sawitulm/palmannotate/
-├── PalmAnnotateApp.kt          ← Hilt @HiltAndroidApp Application
-├── MainActivity.kt             ← Compose entry point (@AndroidEntryPoint)
-├── di/AppModule.kt             ← Hilt DI module (singleton bindings)
-├── domain/
-│   ├── model/                   ← Data classes (Bbox, ActiveSession, TreeSide, DatasetType,
-│   │                              BunchMeasurements, etc.)
-│   ├── dedup/                   ← UnionFind + SuggestionEngine
-│   ├── results/                 ← ResultsComputer
-│   ├── quality/                 ← QualityCheck (capture QA validation)
-│   ├── usecase/                 ← SessionUseCases (bbox CRUD, link mgmt, mismatch resolve),
-│   │                              WeightDatasetPolicy (bunch-weight completion gate)
-│   └── util/                    ← DepthUtil, ColorUtil, OperationQueue
-├── data/
-│   ├── db/                      ← Room entities + DAOs + PalmAnnotateDatabase
-│   ├── storage/                 ← SessionRepository, AndroidStorageManager, SafMirrorStore,
-│   │                              ExportFolderRepository, FolderResumeImporter, InputCache
-│   ├── yolo/                    ← YoloParser (parse/serialize YOLO labels)
-│   ├── detection/               ← OnnxDetector (native ONNX Runtime inference)
-│   ├── camera/                  ← OrbbecManager (Orbbec USB depth camera)
-│   ├── location/                ← GpsProvider (background GPS)
-│   └── export/                  ← ExportManager (Output JSON / YOLO / CSV / Identity)
-├── ui/
-│   ├── theme/                   ← Material 3 theming (PalmColors, OnMediaColors)
-│   ├── navigation/              ← NavHost + routes (start destination = ModuleHubScreen)
-│   ├── home/                    ← ModuleHubScreen (dataset picker) + HomeScreen/HomeViewModel
-│   │                              (one instance per DatasetType)
-│   ├── session/                 ← SessionDetailScreen
-│   ├── capture/                 ← CaptureFlowScreen (CameraX + Orbbec toggle)
-│   ├── carousel/                ← CarouselScreen (PRIMARY annotation editor: swipe sides, draw/select/link, auto-save)
-│   ├── viewer/                  ← DepthViewerScreen (jet colormap + tap-to-read)
-│   ├── dedup/                   ← DeduplicationScreen (two-canvas pair review)
-│   ├── results/                 ← ResultsScreen (summary + export + ZIP backup)
-│   └── common/                  ← AnnotationCanvas (shared by carousel + dedup), AppHeader,
-│                                   Dialogs, KeyboardShortcuts, ToastHost
-└── app/src/test/                ← Unit tests (DomainTests + FolderResumeTests)
-```
-
-### Key Patterns
-
-- **DI:** Hilt (`@HiltAndroidApp`, `@AndroidEntryPoint`, `@Module`, `@Provides`)
-- **DB:** Room (entities, DAOs, migrations, `@Database`)
-- **UI:** Jetpack Compose (Material 3, `NavHost`, `remember`, `LaunchedEffect`)
-- **ViewModels:** `@HiltViewModel`, `viewModel()`, `viewModelScope.launch`
-- **Concurrency:** `Dispatchers.IO` for file ops, `Dispatchers.Default` for compute
-- **Navigation:** `NavHost` with route strings, `navController.navigate()`
-- **Image loading:** `BitmapFactory` with downsampling, LRU `BitmapCache` (8 entries)
-
-## Key Technical Decisions
-
-### Dataset modules (module hub + bunch weight)
-
-The app opens on `ModuleHubScreen`, not on the session list. `DatasetType` (`MULTISIDE`,
-`BUNCH_WEIGHT`) routes everything below it; `Routes.HOME` is an alias for
-`Routes.MULTISIDE_HOME`, so existing navigation code keeps working.
-
-**Multiside is unchanged.** Every new parameter defaults to `MULTISIDE`, and
-`DatasetType.runGroupKey` returns the legacy `VARIETY__BLOCK` key untouched for it - only
-`BUNCH_WEIGHT` gets the `BUNCH_WEIGHT__` prefix. That prefix is what keeps the two modules'
-runs apart when the same variety+block is collected in both.
-
-Bunch weight: photo 1 required, photo 2 optional (`sideCount = 2`, and
-`DatasetType.allowsEarlyFinish` unlocks the "Use 1 photo" button after the first shot). The
-QA gate compares against the photos actually taken, not the configured count, so stopping at
-one photo is not a warning. Measurements live on the bbox
-(`BboxEntity.weightKg/heightCm/circumferenceCm/notes`, all nullable) and are propagated to
-every member of a cross-side link cluster, so one physical bunch carries one set of values.
-Weight is required and must be > 0; height/circumference are optional but must be > 0 when
-present; an empty optional is stored as `null`, never `0`.
-Ripeness classes B1/B2/B3/B4 do not apply to Bunch Weight. Its UI and JSON/CSV/identity/annot-log
-exports omit them; YOLO uses the required single object class `0`. The internal bbox class stays
-unassigned for backward-compatible Room and Output JSON resume without a schema migration.
-`WeightDatasetPolicy.completionError` is the single completion gate - a weight sample can only
-be marked complete through it. Full contract in `docs/BUNCH-WEIGHT-MODULE.md`.
-
-**DB is at version 8.** `MIGRATION_7_8` adds `sessions.datasetType`, `trees.datasetType`
-(both `TEXT NOT NULL DEFAULT 'MULTISIDE'`) and the four nullable bbox measurement columns.
-Every addition is additive: existing rows read back as multiside with no measurements, and
-`ExportManager` only emits the new keys when a value exists, so already-delivered packages
-still parse.
-
-### AnnotationCanvas viewport invariants
-
-- **The auto-fit is keyed on the canvas size, not on a one-shot flag.** The measurement panel
-  narrows the canvas at runtime; fitting once left the photo positioned for the old width, so
-  it looked shifted and ran under the panel. `fittedTo != size` re-centres it.
-- **Two fingers on the canvas report `isActiveEdit`.** The carousel pager and `transformable`
-  both want a multi-finger drag; without the signal the pager won the arbitration and
-  pinch-zoom did nothing on any tree with more than one side.
-- **Review mode still installs no zoom/pan, deliberately.** It would consume the horizontal
-  drag and block swiping between sides.
-
-### Bunch-weight carousel invariants
-
-Verified on the moto g45 5G (720x1600) with `field` v0.3.67. Changing any of these means
-re-testing on a phone, not just in unit tests.
-
-- **The compact measurement sheet is LIFTED above the keyboard, never padded from inside.**
-  It is bottom-anchored with a fixed height, so inner padding consumes the sheet itself and
-  leaves only the header, hiding the weight field the moment it is tapped. The IME overlap is
-  measured on the wrapping `BoxWithConstraints`, not on the sheet, or the sheet's new position
-  feeds back into its own calculation. The full-height inspector on a wide screen cannot move,
-  so that one keeps the inner padding.
-- **`completeLink` and `changeBboxMeasurements` call `autoSave()` themselves.** A weighed bunch
-  cannot be re-weighed once the harvest moves on; holding those values in memory until the
-  operator happens to swipe means one process kill erases them. Both are a single deliberate
-  tap, not a drag, so they cannot spam the save path.
-- **A link applies the SOURCE box's measurements and says so when that discards something.**
-  `linkReplacedMeasurements` drives the `weight_link_replaced` toast. Silently replacing a
-  weight the operator typed is the failure mode this guards.
-- **The "Saved" pulse carries the sheet's height as a bottom inset.** It is drawn at the bottom
-  of the content area, which is exactly where the sheet sits, and the sheet is composed after
-  it. Without the inset, "Apply to bunch" saved with no visible response at all and operators
-  could not tell whether the tap had registered. Reported from the field, not caught in tests.
-- **The panel's validation error lives outside the scrolling column.** Inside it, the collapsed
-  sheet pushes the message below the fold and it renders as a clipped half-line.
-
-### Depth Viewer (Jet Colormap)
-
-The depth viewer uses the **jet colormap** (blue→cyan→green→yellow→red), matching the web app and Orbbec live preview.
-
-**Formula:** `clampUnit(1.5 - |4t - n|)` where `n=1` (Blue), `n=2` (Green), `n=3` (Red)
-
-**Range:** P2–P98 percentiles of the depth data (no padding, no clamping). This matches the web app's `_range(u16, scale)` function.
-
-**Value scale:** Read from JSON sidecar (`valueScale` field). Applied as `pixelValue * valueScale` before colormap.
-
-### Dedup Performance (saveDbOnly)
-
-The Dedup button originally called `saveAndAwait()` which waited for `writeSideArtifacts()` (YOLO labels + SAF image mirror) - **12 seconds**. Fixed by creating `saveDbOnly()` that only runs the DB transaction (**13ms**).
-
-**See:** `docs/PERF_GAIN.md` for full analysis.
-
-### Capture-set identity (cross-device merge safety)
-
-Two tablets collecting the same variety+block both counted from 1, so both produced
-`DAMIMAS_A21B_0001…`. Extracting the two ZIPs into one folder overwrote 168 samples silently
-(`docs/FIELD_REPORT_20260727.md` §3.1).
-
-- **`installId`** - a UUID minted once per install in `InputCache`. Private, never exported.
-- **`deviceToken`** - 6 chars derived from `installId` (`CaptureSetPolicy.deviceTokenFrom`).
-  Public, opaque, no hardware serial. Alphabet excludes I/L/O/U so it cannot be mistyped.
-- **`captureSetId`** - a UUID per run, stored on `sessions` and copied onto each `trees` row.
-  A **resumed** tree keeps the identity of the device that captured it.
-- **`nameToken`** - **opt-in**, off by default. When enabled in the Start Session dialog (which
-  shows the token and a live preview of the tree name), tree names become
-  `DAMIMAS_A21B_K7Q2M1_0001`. With it off, names are byte-identical to the legacy ones.
-
-**Adoption rules (`SessionRepository.createRun` → `adoptRunProvenanceLocked`).** C-01 folds a
-repeated variety+block into the run that already exists, so identity cannot be written only on
-INSERT - the collection tablet's `DAMIMAS__A21B` run predates WS-12 (folder resume, or a row
-migrated from v6) and would have stayed anonymous forever.
-
-| Field | Adopted onto an existing run? |
-|---|---|
-| `captureSetId` / `deviceToken` | Only while the run has none. A run that already has an identity keeps it. |
-| `operatorName` | Whenever a non-blank name is entered. Committed trees froze their own at commit; only future captures are labelled. |
-| `nameToken` | Only when the run has written **nothing** - no committed tree and no capture draft (`CaptureSetPolicy.resolveNameToken`). |
-
-A started run therefore keeps legacy naming, and the Start Session dialog says so: it looks up the
-run it will fold into and renders the real next tree name with the token switch disabled. Losing
-the filename token does **not** lose the protection - `captureSetId`/`deviceToken` still reach the
-sidecar, manifest, Output JSON, `capture_set.json` and the ZIP filename, so a merge tool can still
-separate two devices' identical names.
-
-Carried into: the metadata sidecar (`captureSet`), the package manifest (`captureSet` - note
-the pre-existing top-level `captureSetId` there is a *content digest*, unrelated), Output JSON
-(`capture_set_id`, `device_token`, and a token suffix on `session_id`), the ZIP filename, and a
-new root `capture_set.json` in the archive. `CaptureSetMergePolicy` is the merge rule and
-fails closed on any ambiguity, including a legacy package with no identity.
-
-**Compatibility:** every addition is additive. No existing file or field was renamed, so the
-already-collected 42/90-tree packages and the folder-resume path are unaffected.
-
-### GPS freshness and operator provenance
-
-`getBestLocation()` used to fall back to an unbounded-age last-known fix, which is how 42 trees
-shipped one identical coordinate with nothing in the data saying so.
-
-- `GpsProvider.bestProvenance()` returns a `GpsProvenance` record (status, coordinates,
-  accuracy, fix timestamp, age, provider, source) - never a bare coordinate.
-- A **stale** fix keeps its coordinates and is labelled `STALE`. **Top-level `lat`/`lng` keep
-  their historical population rule: any recorded coordinate is written.** Gating them on
-  freshness was tried and reverted - the window is 60 s while one tree takes minutes, so the keys
-  would have disappeared from ~100% of new packages *and* been stripped from the already-delivered
-  42/90-tree sidecars, which folder resume rewrites. The qualifier lives in `gps.status` /
-  `gps.ageMs` / `gps.source`, which is what §3 item 3 actually asked for.
-- A failed refresh **replaces** the record, clearing the previous tree's coordinates.
-- Freshness is re-judged at commit (`GpsFreshnessPolicy.recheckAtCommit`), because eight photos
-  can outlast the 60 s window. `CaptureFlowViewModel.rejudgeGps()` is the single place that does
-  it: the QA gate, the on-screen GPS line and the committed record all read the same judgement,
-  so the screen can never show a coordinate as live while a `STALE` record is written.
-  Resume does *not* re-judge - it is not a new measurement.
-- Capture is never blocked, and the QA warning keeps its historical meaning - "no coordinate at
-  all". Raising it for a merely stale fix would have put a blocking dialog on every one of ~90
-  saves without adding anything `gps.status` does not already record.
-- Operator is entered in the Start Session dialog, stored on `sessions`/`trees`, and written as
-  `UNKNOWN` (not an empty string) when unset.
-
-### Tap-to-Read Depth
-
-`DepthViewerScreen` has a `pointerInput` modifier that converts screen taps to depth pixel coordinates using `ContentScale.Fit` math. Shows depth in mm via a floating popup.
-
-## Performance Logging
-
-Filter `adb logcat` with:
-
-```bash
-adb logcat | grep -E "DedupPerf|CanvasPerf|SessionRepo|DepthViewer"
-```
-
-| Tag | Component |
-|-----|-----------|
-| `SavePerf` | **User-felt** save latency (tap → busy-overlay clears). Log lives at the wait the user sees, not inside the repo - the DB was 10ms yet the user waited 12s. |
-| `DedupPerf` | DeduplicationScreen composable + ViewModel |
-| `CanvasPerf` | AnnotationCanvas image loading |
-| `SessionRepo` | SessionRepository: DB txn, `writeLocalArtifacts` (sync, truth), `mirrorSafArtifacts` (background) |
-| `DepthViewer` | Depth viewer loading + tap-to-read |
-
-### Save path (important)
-
-`saveSession` writes the **DB + local label/annot-log synchronously** (the source of
-truth, ~15ms) and fires the **SAF mirror on a background `safScope`** (best-effort,
-never awaited). SAF was the entire ~11.6s "save feels slow" cost. `SafMirrorStore`
-caches directory handles + child listings and overwrites files in place (no
-delete+create), and infers MIME from the extension (a `.txt` written as
-`application/json` was being saved as `.txt.json` and spawning `(N)` duplicates).
-See `docs/PERF_GAIN.md`. **Do not move the SAF mirror back onto the blocking save path.**
-
-## Device Testing
-
-### Xiaomi Pad 8 (Primary Test Device)
-
-- **ADB:** Wireless at `192.168.1.7:5555`
-- **Android:** 16
-- **Package:** `dev.sawitulm.palmannotate.debug`
-- **Screen:** 2880×1800 (landscape)
-- **Notes:** R8 causes Orbbec preview freeze; keep minification OFF
-
-### Motorola moto g45 5G (Device 2, Handphone)
-
-- **ADB:** Wireless at `192.168.1.3:42309` (the connection port changes when wireless
-  debugging restarts; re-check it with `adb mdns services` if connect fails)
-- **Android:** 15
-- **Model:** `moto g45 5G` (`device:fogos`, `product:fogos_gpn`)
-
-### Xiaomi Pad 6 (Secondary Test Device)
-
-- **ADB:** Wireless at `192.168.1.2:45227` (both the address and the port change when wireless
-  debugging restarts; re-check them in Developer options if connect fails)
-- **Model:** `23043RP34G` (`device:pipa`)
-- **Package:** `dev.sawitulm.palmannotate.debug`
-
-### ADB Commands
-
-```powershell
-# Connect
-& 'C:\tools\android-sdk\platform-tools\adb.exe' connect 192.168.1.7:5555
-
-# Check connection
-& 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 devices
-
-# View logs
-& 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 logcat | Select-String -Pattern "DedupPerf|CanvasPerf"
-
-# Clear logs
-& 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 shell logcat -c
-
-# Force stop
-& 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 shell am force-stop dev.sawitulm.palmannotate.debug
-
-# Take screenshot
-& 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 shell screencap -p /sdcard/screenshot.png
-& 'C:\tools\android-sdk\platform-tools\adb.exe' -s 192.168.1.7:5555 pull /sdcard/screenshot.png .
-```
-
-## Versioning
-
-PalmAnnotate uses **Semantic Versioning (SemVer)** with auto-increment:
-
-```
-versionName = "MAJOR.MINOR.COMMIT_COUNT"   e.g. "0.2.35"
-versionCode = COMMIT_COUNT                  e.g. 35
-```
-
-- **PATCH** (`.35`) - auto, derived from `git rev-list --count HEAD`. Every commit increments it.
-- **MAJOR.MINOR** (`0.2`) - manual, set in `app/build.gradle.kts` → `val majorMinor = "0.2"`.
-
-### When to bump MAJOR vs MINOR
-
-| Bump | When | Example |
-|------|------|---------|
-| **MINOR** (`0.2` → `0.3`) | New feature set is complete and usable: new screen, new workflow, significant UX improvement. Accumulate several small changes, then bump once when the feature set is "done". | Carousel editor done, depth viewer added, export pipeline complete |
-| **MAJOR** (`0.x` → `1.0`) | App is production-ready: field-tested, stable, no known data-loss bugs, suitable for real annotation work. Also: breaking changes to data format or DB schema that require migration. | First field release, or v2.0 with new DB schema |
-
-### Rules of thumb
-
-1. **Don't bump MINOR for every commit.** Accumulate related changes, bump when a coherent feature set is done.
-2. **PATCH is free** - it auto-increments, so you never think about it.
-3. **Stay at `0.x` while in active development.** Bump to `1.0` only when the app is field-ready.
-4. **Commit message convention** (optional but helpful):
-   - `feat:` / `fix:` / `perf:` / `docs:` prefixes help when reviewing git log.
-
-### How to bump
-
-Edit `app/build.gradle.kts`:
-```kotlin
-val majorMinor = "0.3"   // ← change this
-```
-Then commit. The build will produce e.g. `PalmAnnotate-debug-v0.3.36.apk`.
-
-## CI - GitHub Actions
-
-Local builds are no longer the only way to get an APK. Two workflows live in `.github/workflows/`.
-
-| Trigger | Android Build | Release |
-|---------|---------------|---------|
-| Push to `master` | ✅ APK as workflow artifact (30d) | ❌ |
-| PR to `master` | ✅ | ❌ |
-| Push tag `v*` | ❌ (branch-filtered) | ✅ tag + GitHub Release |
-| Actions → Run workflow | ✅ | ✅ (derives the tag from the build) |
-
-Build variants: `field` (collection), `debug` (local development), `trace` (side-by-side
-diagnostics on a tablet whose old debug app is signed with a different key). See the
-invariants below for which one is safe to hand to an operator.
-
-**Getting a CI APK:** Actions tab → pick the run → Artifacts. Or `gh run download`.
-Release assets are the raw `.apk`; workflow artifacts are ZIP-wrapped by GitHub, so
-the byte counts differ (~83 MB vs ~44 MB) for the *same* build. Install from a Release
-to skip the unzip.
-
-**Releases are deliberately manual.** `versionCode` increments on every commit, so
-auto-releasing each push would bury the one build that was actually field-verified
-under dozens of near-identical ones. Push daily → artifact; cut a Release only for a
-build you intend to carry into the field.
-
-### Invariants - do not break these
-
-- **`fetch-depth: 0` in both checkouts is REQUIRED, not cosmetic.** `app/build.gradle.kts`
-  derives `versionCode`/`versionName` from `git rev-list --count HEAD`. GitHub's default
-  shallow clone (depth 1) makes that return `1` and ships a silently downgraded
-  `v0.3.1` / `versionCode 1` APK.
-- **CI never builds `release`.** `android-build.yml` builds `field`, `debug` and `trace`;
-  `release.yml` publishes `field` + `trace` only. All keep R8 and resource shrinking off, and
-  each has its own application id so none can overwrite another's app-private dataset. Only
-  `field` is non-debuggable. `field`/`trace` are signed with the persistent distribution key
-  when the secrets are present - see [Distribution signing](#distribution-signing).
-- **Only the `field` APK may be used for dataset collection.** `trace` is `initWith(debug)`
-  and therefore debuggable, which costs roughly the 19 ms median frame measured in
-  `docs/FIELD_REPORT_20260727.md` §4.5.
-- **The release asset named `PalmAnnotate-debug-v<version>.apk` carries applicationId
-  `dev.sawitulm.palmannotate.trace`.** This is deliberate (`release.yml:52-53`): `trace` is the
-  side-by-side diagnostic app that replaces `debug` in releases, so it ships under the name
-  operators recognise. Don't "fix" the name - but do remember that the *variant* is `trace`
-  when reading logs, matching signatures, or issuing `pm uninstall`.
-- **A runner-generated debug keystore is not a stable update identity.** `release.yml` now
-  **fails before building** when the signing secrets are absent, and Gradle renames an
-  unsigned distributable APK `…-NOKEY.apk`. Compare certificate SHA-256 digests with
-  `apksigner verify --print-certs`; a mismatch forces uninstall and would remove that
-  package's app-private data.
-- **Only ONE variant owns `USB_DEVICE_ATTACHED`.** The filter lives in
-  `app/src/field/AndroidManifest.xml`, not `src/main`. With all three packages installed, a
-  shared filter raised a package chooser on every camera plug-in and bound the USB permission
-  to whichever app was tapped. `debug`/`trace` still open the camera through
-  `OrbbecManager.requestPermission()` (runtime `UsbManager`), which this does not affect.
-  `VariantManifestPolicyTests` fails if a second source set ever claims the filter.
-  **Deployment precondition:** this only removes the chooser once *every installed* variant is
-  rebuilt from this commit. Tablet `b98cea56` still has the older `.debug` v0.3.41 (which holds
-  the 27 Jul data and must not be uninstalled) - its merged manifest still declares the filter,
-  so the chooser persists until that package is updated in place. It is debug-signed today, so
-  updating it in place is possible. Verify on the device; it cannot be checked from CI.
-- **`android:allowBackup` is `false`, deliberately.** The dataset under `getExternalFilesDir`
-  is multiple GB - far past Auto Backup's 25 MB quota - and carries field GPS and operator
-  names. A restore could not work anyway: SAF grants are not restored and a restored Room DB
-  would reference files that were never copied. `backup_rules.xml` and
-  `data_extraction_rules.xml` exclude every domain (cloud backup *and* device transfer) so
-  re-enabling backup cannot silently expose a domain. The sanctioned recovery path is the
-  dataset ZIP / SAF mirror.
-- **`release.yml` fails the run if a pushed tag disagrees with the built version.** That
-  guard exists so a Release can never carry an APK whose internal version differs from
-  its label. Don't relax it.
-- **`git push --follow-tags` triggers both workflows** (branch push + tag push) - correct
-  output, one wasted build. Push commit and tag separately.
-
-### Distribution signing
-
-Android refuses `install -r` when the signer changed. The only way past it is `pm uninstall`,
-which deletes the package's app-private storage - i.e. the collected dataset. So `field` and
-`trace` are signed with one persistent key, sourced from repository secrets.
-
-| Secret / Gradle property | Contents |
-|---|---|
-| `PALMANNOTATE_KEYSTORE_BASE64` | base64 of the `.jks` (used by CI) |
-| `PALMANNOTATE_KEYSTORE_PATH` | path to the `.jks` (local alternative to the blob) |
-| `PALMANNOTATE_KEYSTORE_PASSWORD` | store password |
-| `PALMANNOTATE_KEY_ALIAS` | key alias |
-| `PALMANNOTATE_KEY_PASSWORD` | key password |
-| `PALMANNOTATE_SIGNING_CERT_SHA256` | **required to publish**; `release.yml` fails if the built cert differs |
-
-> ### ⛔ Read before configuring the secrets
->
-> A tablet in the field already has `dev.sawitulm.palmannotate.field` installed **with a dataset
-> in it** (`docs/FIELD_REPORT_20260727.md` §5.8: tablet `b98cea56`, `.field` v0.3.60,
-> 152 committed trees). The current field status and remaining hardware checks are recorded in
-> that addendum.
-> Introducing a *different* signer is not a packaging detail: `install -r` starts failing with
-> `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, and the only way to install the new build is
-> `pm uninstall`, which deletes that dataset. Generating a fresh key without checking would
-> **cause** the data-loss event this whole workstream exists to prevent.
->
-> So the first question is not "which key do I create" but "which key is already on the device".
-
-**Step 1 - identify the installed signer (do this first, on the device).**
-
-```powershell
-$adb = 'C:\tools\android-sdk\platform-tools\adb.exe'
-$installed = & $adb -s 192.168.1.7:5555 shell pm path dev.sawitulm.palmannotate.field
-& $adb -s 192.168.1.7:5555 pull ($installed -replace '^package:','') installed-field.apk
-& 'C:\tools\android-sdk\build-tools\35.0.0\apksigner.bat' verify --print-certs installed-field.apk
-```
-
-**Step 2 - prefer adopting that signer.** If the digest matches a keystore you still hold (for a
-locally built APK that is `~/.android/debug.keystore`, alias `androiddebugkey`, store/key password
-`android`), use **that** file as `PALMANNOTATE_KEYSTORE_BASE64`. The identity then does not change,
-every installed app updates in place, and nothing has to be uninstalled.
-
-**Step 3 - only if the existing signer is unrecoverable**, generate a new one - and treat it as a
-migration, not a config change:
-
-1. Export a dataset ZIP from every device that holds data and **verify it off-device** (open the
-   ZIP, count trees) before the first key-change install.
-2. Record the pre-change digest from step 1 in the release notes.
-3. Then, and only then, `pm uninstall` + install the new build.
-
-```powershell
-$env:JAVA_HOME = 'C:\tools\jdk17\jdk-17.0.19+10'
-& "$env:JAVA_HOME\bin\keytool.exe" -genkeypair -v `
-    -keystore palmannotate-release.jks -alias palmannotate `
-    -keyalg RSA -keysize 2048 -validity 10000 `
-    -storepass '<store-pw>' -keypass '<key-pw>' `
-    -dname "CN=PalmAnnotate, O=SawitULM, C=ID"
-
-# Value for PALMANNOTATE_KEYSTORE_BASE64
-[Convert]::ToBase64String([IO.File]::ReadAllBytes('palmannotate-release.jks')) | Set-Clipboard
-
-# Value for PALMANNOTATE_SIGNING_CERT_SHA256 (required) - the SHA256 line
-& "$env:JAVA_HOME\bin\keytool.exe" -list -v -keystore palmannotate-release.jks -alias palmannotate
-```
-
-Back the `.jks` up off the machine and add it to the repository's Actions secrets
-(Settings → Secrets and variables → Actions). **Never commit it.**
-
-The pin is mandatory because `field` and `trace` are signed by the same config, so the
-field-vs-trace comparison in `release.yml` can never fail on its own. The pin is the only guard
-that can catch a *changed* key.
-
-Behaviour without the secrets:
-
-- **Local builds keep working.** Gradle falls back to the debug keystore and names the output
-  `PalmAnnotate-field-v<version>-NOKEY.apk`. `BuildConfig.SIGNING_IDENTITY` becomes
-  `EPHEMERAL_DEBUG` and `PalmAnnotateApp` logs a warning naming the data-loss consequence.
-- **`release.yml` refuses to run.** The secret check is the first step, before checkout, and a
-  `-NOKEY` asset is rejected again just before upload.
-- **`android-build.yml` still builds** (a PR from a fork has no secrets); the `-NOKEY` name is
-  the marker that the artifact cannot update anything.
-
-`release.yml` additionally rejects a `versionCode` that is not greater than the highest already
-published (the rebase/force-push case), except when re-running the same tag, and records the
-certificate SHA-256 in the release notes.
-
-### CI does NOT replace on-device verification
-
-A green CI run means it compiles and the unit tests pass. It says **nothing** about the
-Orbbec live depth preview, which no runner can exercise. Every APK still needs the
-on-device checklist before field use. See the 0% error tolerance block below.
-
 ## Working Rules
 
 > ### ⛔ 0% ERROR TOLERANCE - 0% BUG (read before every code change)
@@ -600,14 +67,61 @@ on-device checklist before field use. See the 0% error tolerance block below.
 5. **Small changes.** Make one change at a time, test it, then proceed.
 6. **Preserve data integrity.** DB transactions must be atomic; never leave partial state.
 
-## Related Documentation
+## UI rules
 
-| File | Content |
-|------|---------|
-| `docs/MIGRATION_STATUS.md` | Migration progress (Done / Partial / Missing) |
-| `docs/BUNCH-WEIGHT-MODULE.md` | Bunch-weight module: flow, data contract, acceptance criteria |
-| `PRODUCT.md` | Product scope shared by both dataset modules |
-| `docs/PERF_GAIN.md` | Dedup performance optimization analysis |
-| `.github/workflows/` | CI: `android-build.yml` (APK per push) + `release.yml` (tagged Release) |
-| `HANDOFF.md` | Session handoff notes |
-| `README.md` | Project overview |
+Fewer words, fewer elements. One self-explanatory heading or label per thing. Do not add
+subtitles, helper text, or descriptive copy beneath headings, labels, cards, or settings, and
+never restate a heading. Add supporting copy only when a rule cannot be inferred from the
+control itself, for example why a locked field cannot be edited. Keep a top-bar title on one
+line so it stays aligned with the back button.
+
+The operator works outdoors, on a tablet, often with one hand and in sunlight. Design against
+these numbers:
+
+- 8.3 ms = one frame at 120 Hz, 16.7 ms = one frame at 60 Hz. Frame work above that drops frames.
+- 100 ms = the response feels instantaneous.
+- 200-300 ms = transitions feel snappy, 300-500 ms = transitions feel deliberate.
+- 1 second = the delay interrupts thought, 10 seconds = waiting loses attention. Anything slower
+  needs visible progress and must never block the save path.
+- 48 dp on Android (44 x 44 pt on iOS) = the minimum comfortable touch target, including icon
+  buttons in a bottom bar.
+- 4.5:1 = minimum contrast for ordinary text, 3:1 for large text and for any icon, outline, or
+  state colour that carries meaning.
+- 45-90 characters = comfortable line length, 1.2-1.45 x font size = comfortable line height.
+- 8 dp = the spacing step. Related controls sit closer together than unrelated ones.
+
+Also:
+
+- A selected state must read as selected. A disabled or faint tint is not a selection cue,
+  especially over a photo.
+- Every destructive or saving action needs visible feedback within 100 ms of the tap.
+- The soft keyboard must never cover the focused field or its validation message.
+- State what a control does with a verb the operator uses, not with a description of the data.
+
+## Non-negotiable contracts
+
+- Protect existing datasets. No destructive DB migration, app uninstall, clear-data, or signer replacement as a routine fix. Verify the installed APK signer before an in-place update.
+- R8 minification and resource shrinking stay OFF. Do not touch the Orbbec live preview/frame-callback path for unrelated work. Hardware verification is separate from compilation and unit tests.
+- Only the non-debuggable field variant is for dataset collection. Debug and trace are separate diagnostic packages. Only field owns USB_DEVICE_ATTACHED.
+- Preserve atomic DB writes, revision conflict handling, and synchronous local artifacts. SAF mirroring stays on the background queue, never on the blocking save path.
+- Preserve multiside defaults, legacy names, and exports. Bunch weight has its own session/artifact namespace, requires positive weight, has no ripeness classes, and uses YOLO class 0.
+- WeightDatasetPolicy.completionError is the single bunch-weight completion gate. Linked appearances share measurements; deliberate apply/link/unlink actions save immediately.
+- Preserve the measurement panel keyboard placement, visible validation/save feedback, canvas auto-fit on size change, and pager/edit gesture arbitration.
+- Keep provenance additive. Resumed trees retain capture identity and GPS judgement. Top-level lat/lng preserve recorded coordinates, including stale fixes qualified by gps metadata.
+- Keep allowBackup false, distribution signing pinned, full Git history in CI, and manual release/version guards. Never commit signing material.
+
+## Build and tests
+
+Use JDK 17 at C:/tools/jdk17/jdk-17.0.19+10 and SDK at C:/tools/android-sdk.
+Run gradlew.bat :app:testDebugUnitTest --no-daemon for JVM checks.
+Build the required variant with :app:assembleField, :app:assembleDebug, or :app:assembleTrace.
+Resolve the generated APK filename instead of hardcoding its version.
+PATCH/versionCode comes from Git commit count; keep the codex/ prefix for new branches.
+
+## References
+
+- [Technical contracts](docs/TECHNICAL-CONTRACTS.md): architecture, data, GPS, save path, and canvas invariants.
+- [Build and devices](docs/BUILD-AND-DEVICES.md): exact commands, variant IDs, versioning, CI, signer adoption, and release requirements.
+- [Bunch weight](docs/BUNCH-WEIGHT-MODULE.md): workflow, acceptance criteria, and remaining limits.
+- [RGB-D audit](docs/AUDIT_RGBD_DEPTH.md): hardware checklist in section 8.
+- [Documentation index](docs/README.md): active references and historical evidence.

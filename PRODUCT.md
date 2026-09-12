@@ -22,7 +22,7 @@ Aplikasi digunakan dalam orientasi lanskap dengan kamera perangkat atau kamera R
 
 - Alur dataset multisisi yang sudah ada mempertahankan pengambilan 4 atau 8 sisi.
 - Alur berat tandan memakai satu foto wajib dan satu foto kedua opsional.
-- Setiap tandan memakai kelas B1–B4 dan berat wajib.
+- Modul multisisi memakai kelas kematangan B1-B4. Modul berat tandan tidak memakai kelas kematangan dan mewajibkan berat positif.
 - Tinggi, keliling, dan catatan tambahan bersifat opsional.
 - Kotak pembatas lintas foto yang ditautkan mewakili satu tandan dan berbagi atribut.
 - Nilai yang tidak diukur disimpan sebagai nilai kosong, bukan angka nol.
@@ -36,7 +36,7 @@ Nama PalmAnnotate, palet hijau kelapa sawit, komponen Material 3, dan keterbacaa
 
 - Implementasi Android berada di `app/src/main/java/dev/sawitulm/palmannotate`.
 - Model kotak pembatas dan relasi lintas sisi sudah tersedia.
-- Skema Room dan pengujian migrasi tersedia sampai versi 7.
+- Skema Room dan pengujian migrasi tersedia sampai versi 8.
 
 ## Product Principles
 
@@ -44,4 +44,3 @@ Nama PalmAnnotate, palet hijau kelapa sawit, komponen Material 3, dan keterbacaa
 - Tampilkan konteks dan tindakan utama tanpa menutupi foto.
 - Simpan satu fakta tandan untuk seluruh kemunculannya pada beberapa foto.
 - Pertahankan kompatibilitas alur dan ekspor dataset lama.
-
