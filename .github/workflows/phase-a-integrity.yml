@@ -33,7 +33,16 @@ jobs:
           path: |
             ~/.android/avd
             ~/.android/adb*
-          key: avd-v2-api-34-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+          key: avd-v3-api-34-${{ runner.os }}-${{ hashFiles('gradle/libs.versions.toml') }}
+
+      # Without this the runner user cannot open /dev/kvm, the emulator falls back to
+      # `-accel off`, and a pure-software boot takes minutes and regularly dies before the
+      # package service is up ("Can't find service: package", 0 tests run).
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
 
       - name: Run Phase-A instrumentation integrity tests
         uses: reactivecircus/android-emulator-runner@v2
