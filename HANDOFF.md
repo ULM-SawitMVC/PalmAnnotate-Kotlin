@@ -1,12 +1,12 @@
 # PalmAnnotate Native - Session Handoff
 
-> **Diperbarui:** 9 September 2026 (Asia/Makassar)
+> **Diperbarui:** 12 September 2026 (Asia/Makassar)
 > Status bukti lapangan sebelumnya ada di [laporan lapangan](docs/FIELD_REPORT_20260727.md#58-addendum-audit-terkini-29-juli-2026).
 
 ## Status terkini
 
 - Build perangkat terakhir yang diverifikasi adalah `.field` v0.3.67 pada Motorola moto g45 5G.
-- Uji unit lulus **317/317**, dengan 0 kegagalan, 0 error, dan 0 tes dilewati.
+- Uji unit lulus **318/318**, dengan 0 kegagalan, 0 error, dan 0 tes dilewati.
 - Modul berat tandan diuji ujung ke ujung di perangkat: pemilih modul, dialog sesi, tangkap dua
   foto, anotasi, tautan lintas foto, gerbang penyelesaian, cermin SAF, dan isi ZIP ekspor.
   Kontrak datanya benar. Output JSON memuat `dataset_type`, `weight_kg`, `bunch_id`,
@@ -16,6 +16,28 @@
   seluruh direktori bersarang di folder ekspor, termasuk direktori `exports/` yang baru dibuat.
 - Hanya varian `field` yang mendeklarasikan filter manifest `USB_DEVICE_ATTACHED`. Varian
   `debug` dan `trace` meminta izin USB saat runtime.
+
+## Riwayat 12 September
+
+Penyelesaian kandidat rilis pada modul berat tandan, diverifikasi memakai varian `trace` v0.3.69
+pada Xiaomi Pad 6 lewat ADB nirkabel. Data aplikasi tidak dihapus; APK dipasang di tempat setelah
+sidik sertifikat penanda tangan dicocokkan dengan paket yang sudah terpasang.
+
+- Setiap kotak tandan memperoleh nomor, bukan hanya kotak tertaut, dan nomornya berasal dari
+  klaster hasil yang sama dengan pesan gerbang penyelesaian serta `bunch_id` pada ekspor. Nomor
+  digambar di dalam kotak agar tidak tertutup pegangan ubah ukuran.
+- Berpindah foto memakai tombol "Photo 1" dan "Photo 2", karena mode Edit menelan geser
+  horizontal untuk zoom dan geser kanvas.
+- "Remove link" tersedia sebagai aksi tersendiri dan menyimpan langsung. Kotak beserta
+  pengukurannya tidak ikut terhapus.
+- Ekspor CSV sampel dapat dijangkau dari editor melalui pemilih dokumen Android. Berkas hasil
+  ditarik dari perangkat dan isinya cocok dengan klaster tandan.
+- Teks antarmuka dipangkas: subjudul modul pada bilah atas, keterangan kartu pemilih modul, dan
+  paragraf penjelas pada dialog mulai sesi dihapus. Peringatan penguncian nama hanya tampil
+  ketika sesi memang sudah terkunci.
+
+Verifikasi perangkat mencakup pemasangan ulang, pelepasan tautan, penomoran ulang setelah
+tautan dilepas, dan ekspor CSV. Perangkat keras Orbbec tetap belum diuji.
 
 ## Riwayat 9 September
 
@@ -31,10 +53,8 @@ lalu diperbaiki dan diverifikasi ulang di perangkat.
 - Menaut mengganti nilai kotak target tanpa pemberitahuan. Aturan "kotak sumber menang"
   dipertahankan, tetapi kini disertai pemberitahuan.
 
-Batas yang masih terbuka pada modul ini tercatat di
-[`docs/BUNCH-WEIGHT-MODULE.md`](docs/BUNCH-WEIGHT-MODULE.md#batas-yang-diketahui): CSV belum
-dapat dijangkau operator, melepas tautan belum tersedia sebagai aksi tersendiri, hanya tandan
-tertaut yang bernomor, dan berpindah foto di mode Edit hanya lewat titik halaman.
+Empat batas yang tercatat pada tanggal itu ditutup pada 12 September. Batas yang masih terbuka
+ada di [`docs/BUNCH-WEIGHT-MODULE.md`](docs/BUNCH-WEIGHT-MODULE.md#batas-yang-diketahui).
 
 ## Varian dan distribusi
 
@@ -72,5 +92,5 @@ Detail investigasi, hash artefak, dan batas bukti tersimpan di
 
 - [`README.md`](README.md): gambaran proyek dan batas runtime RGB-D.
 - [`CLAUDE.md`](CLAUDE.md): build, signing, CI, dan rambu perangkat.
-- [`PLAN.md`](PLAN.md): arsip rencana perbaikan sebelumnya.
+- [Rencana RGB-D historis](docs/archive/PLAN_RGBD_202606.md): arsip rencana perbaikan sebelumnya.
 - [`docs/archive/TODO_20260616.md`](docs/archive/TODO_20260616.md): backlog pengukuran historis.

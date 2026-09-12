@@ -23,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -416,22 +417,15 @@ fun HomeScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
-                        Text(
-                            stringResource(
-                                if (datasetType == DatasetType.MULTISIDE) R.string.module_multiside_title
-                                else R.string.module_weight_title,
-                            ),
-                            fontWeight = FontWeight.Bold,
-                        )
-                        Text(
-                            stringResource(
-                                if (datasetType == DatasetType.MULTISIDE) R.string.module_multiside_body
-                                else R.string.module_weight_body,
-                            ),
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
+                    Text(
+                        stringResource(
+                            if (datasetType == DatasetType.MULTISIDE) R.string.module_multiside_title
+                            else R.string.module_weight_title,
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        fontWeight = FontWeight.Bold,
+                    )
                 },
                 navigationIcon = {
                     onBack?.let { callback ->
@@ -454,6 +448,7 @@ fun HomeScreen(
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     titleContentColor = MaterialTheme.colorScheme.onPrimary,
+                    navigationIconContentColor = MaterialTheme.colorScheme.onPrimary,
                 ),
             )
         },
@@ -599,9 +594,6 @@ fun HomeScreen(
             existingRuns = runs,
             groupKeyOf = { variety, block -> viewModel.groupKeyFor(variety, block, datasetType) },
             allowedSideCounts = if (datasetType == DatasetType.MULTISIDE) listOf(4, 8) else listOf(2),
-            photoCountDescription = if (datasetType == DatasetType.BUNCH_WEIGHT) {
-                stringResource(R.string.dialog_weight_photos_hint)
-            } else null,
             datasetType = datasetType,
         )
     }

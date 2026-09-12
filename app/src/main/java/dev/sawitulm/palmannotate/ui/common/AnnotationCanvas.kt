@@ -186,6 +186,7 @@ fun AnnotationCanvas(
      *  matching numbered badge so a connected bunch reads at a glance and keeps the same
      *  colour/number on both sides of a link. */
     linkedBoxes: Map<String, Int> = emptyMap(),
+    boxNumbers: Map<String, Int> = linkedBoxes,
     onBboxTap: ((String) -> Unit)? = null,
     onBboxMoved: ((String, Float, Float, Float, Float) -> Unit)? = null,
     onBboxDrawn: ((x1: Float, y1: Float, x2: Float, y2: Float) -> Unit)? = null,
@@ -585,20 +586,20 @@ fun AnnotationCanvas(
                 )
             }
 
-            // Link badge: a chip in the group colour with the stable link-group number at the
-            // box's top-right corner. The same colour + number appears on the matching bunch on
-            // the adjacent side, so the operator can see what is linked to what.
-            if (linkGroup != null) {
-                val linkColor = linkGroupColor(linkGroup)
+            // Number every weight bunch; only confirmed links get the dashed outline above.
+            val boxNumber = boxNumbers[bbox.id]
+            if (boxNumber != null) {
+                val linkColor = linkGroupColor(boxNumber)
                 val br = 9.dp.toPx()
-                val bcx = tl.x + sz.width
-                val bcy = tl.y
+                // Keep the number clear of the corner resize handle while editing.
+                val bcx = tl.x + sz.width - br - 8.dp.toPx()
+                val bcy = tl.y + br + 8.dp.toPx()
                 drawCircle(color = Color.Black, radius = br + 1.5.dp.toPx(), center = Offset(bcx, bcy))
                 drawCircle(color = linkColor, radius = br, center = Offset(bcx, bcy))
                 paint.textSize = br * 1.5f
                 // Black or white digit by the badge colour's luminance so it always reads.
                 paint.color = if (linkColor.luminance() > 0.5f) android.graphics.Color.BLACK else android.graphics.Color.WHITE
-                val gt = linkGroup.toString()
+                val gt = boxNumber.toString()
                 val gtw = paint.measureText(gt)
                 drawContext.canvas.nativeCanvas.drawText(gt, bcx - gtw / 2f, bcy + br * 0.55f, paint)
             }

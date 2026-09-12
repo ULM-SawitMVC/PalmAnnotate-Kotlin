@@ -41,12 +41,7 @@ fun ModuleHubScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = {
-                    Column {
-                        Text(stringResource(R.string.app_name), fontWeight = FontWeight.Bold)
-                        Text(stringResource(R.string.module_hub_tagline), style = MaterialTheme.typography.bodySmall)
-                    }
-                },
+                title = { Text(stringResource(R.string.app_name), fontWeight = FontWeight.Bold) },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primary,
                     titleContentColor = MaterialTheme.colorScheme.onPrimary,
@@ -61,21 +56,12 @@ fun ModuleHubScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             item {
-                Column(
+                Text(
+                    stringResource(R.string.module_hub_title),
                     modifier = Modifier.fillMaxWidth().widthIn(max = 960.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Text(
-                        stringResource(R.string.module_hub_title),
-                        style = MaterialTheme.typography.headlineSmall,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Text(
-                        stringResource(R.string.module_hub_body),
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                )
             }
             item {
                 Surface(
@@ -86,14 +72,12 @@ fun ModuleHubScreen(
                     Column {
                         ModuleRow(
                             title = stringResource(R.string.module_multiside_title),
-                            description = stringResource(R.string.module_multiside_body),
                             icon = { Icon(Icons.Default.Forest, null) },
                             onClick = onOpenMultiside,
                         )
                         HorizontalDivider()
                         ModuleRow(
                             title = stringResource(R.string.module_weight_title),
-                            description = stringResource(R.string.module_weight_body),
                             icon = { Icon(Icons.Default.Scale, null) },
                             onClick = onOpenBunchWeight,
                         )
@@ -107,13 +91,11 @@ fun ModuleHubScreen(
 @Composable
 private fun ModuleRow(
     title: String,
-    description: String,
     icon: @Composable () -> Unit,
     onClick: () -> Unit,
 ) {
     ListItem(
         headlineContent = { Text(title, style = MaterialTheme.typography.titleLarge) },
-        supportingContent = { Text(description, style = MaterialTheme.typography.bodyMedium) },
         leadingContent = icon,
         trailingContent = {
             Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = null)

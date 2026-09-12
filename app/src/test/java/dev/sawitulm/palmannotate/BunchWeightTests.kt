@@ -24,6 +24,36 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BunchWeightTests {
+    @Test
+    fun `canvas numbers match completion and csv including singles and repeated ids`() {
+        var sample = session(
+            sides = listOf(
+                side(0, listOf(bbox("b0", measurements = BunchMeasurements(12.0)), bbox("b1"))),
+                side(1, listOf(bbox("b0", measurements = BunchMeasurements(12.0)), bbox("b1", measurements = BunchMeasurements(8.0)))),
+            ),
+            links = listOf(CrossSideLink.create("L0", 0, "b0", 1, "b0")),
+        )
+        val first = WeightDatasetPolicy.bunchNumbers(sample, 0)
+        val second = WeightDatasetPolicy.bunchNumbers(sample, 1)
+        assertEquals(first.getValue("b0"), second.getValue("b0"))
+        assertNotEquals(first.getValue("b1"), second.getValue("b1"))
+        assertEquals("Bunch ${first.getValue("b1")}: Weight is required.", WeightDatasetPolicy.completionError(sample))
+        val csv = ExportManager.generateCsv(sample, ResultsComputer.compute(sample)).lines()
+        assertTrue(csv.any { it == "WEIGHT_A01_0001,field,${first.getValue("b0")},2,12.0,,," })
+        assertTrue(csv.any { it == "WEIGHT_A01_0001,field,${first.getValue("b1")},1,,,," })
+
+        // Removing the selected appearance preserves geometry and measurements. Later edits
+        // must no longer propagate to its former partner, even though their IDs are equal.
+        val originalSides = sample.sides
+        sample = SessionUseCases.removeLinksForBbox(sample, 1, "b0")
+        assertTrue(sample.confirmedLinks.isEmpty())
+        assertEquals(originalSides, sample.sides)
+        assertNotEquals(WeightDatasetPolicy.bunchNumbers(sample, 0)["b0"], WeightDatasetPolicy.bunchNumbers(sample, 1)["b0"])
+        sample = SessionUseCases.setBboxMeasurements(sample, 1, "b0", BunchMeasurements(15.0))
+        assertEquals(12.0, sample.sides[0].bboxes[0].measurements.weightKg!!, 0.0)
+        assertEquals(15.0, sample.sides[1].bboxes[0].measurements.weightKg!!, 0.0)
+    }
+
     private fun bbox(
         id: String,
         classId: Int = AnnotationClass.UNASSIGNED.id,

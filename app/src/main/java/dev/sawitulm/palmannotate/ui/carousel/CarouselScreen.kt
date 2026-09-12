@@ -1,6 +1,10 @@
 package dev.sawitulm.palmannotate.ui.carousel
 
+import android.content.ContentResolver
+import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
@@ -29,6 +33,7 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -45,12 +50,14 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dev.sawitulm.palmannotate.R
 import dev.sawitulm.palmannotate.ui.theme.PalmColors
 import dev.sawitulm.palmannotate.data.detection.OnnxDetector
+import dev.sawitulm.palmannotate.data.export.ExportManager
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
 import dev.sawitulm.palmannotate.data.storage.SaveResult
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
 import dev.sawitulm.palmannotate.domain.model.*
 import dev.sawitulm.palmannotate.domain.usecase.SessionUseCases
 import dev.sawitulm.palmannotate.domain.usecase.WeightDatasetPolicy
+import dev.sawitulm.palmannotate.domain.results.ResultsComputer
 import dev.sawitulm.palmannotate.domain.util.OperationQueue
 import dev.sawitulm.palmannotate.ui.common.AnnotationCanvas
 import dev.sawitulm.palmannotate.ui.common.CanvasTool
@@ -306,6 +313,38 @@ class CarouselViewModel @Inject constructor(
         pendingLinkBboxId = null
         pendingLinkSide = -1
         selectedBboxId = null
+    }
+
+    fun unlinkSelectedBbox() {
+        val s = session ?: return
+        val id = selectedBboxId ?: return
+        session = SessionUseCases.removeLinksForBbox(s, currentSideIndex, id)
+        markDirty()
+        autoSave()
+    }
+
+    /** Export the already-saved sample through Android's document picker. */
+    fun exportCsv(uri: Uri, resolver: ContentResolver, onExported: () -> Unit) {
+        val snapshot = session ?: return
+        if (isSaving || isDetecting) return
+        isSaving = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val csv = ExportManager.generateCsv(snapshot, ResultsComputer.compute(snapshot))
+                    val stream = resolver.openOutputStream(uri, "wt")
+                        ?: error("Could not open the CSV destination")
+                    stream.bufferedWriter(Charsets.UTF_8).use { it.write(csv) }
+                }
+                onExported()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                saveErrorMessage = error.message ?: "CSV export failed"
+            } finally {
+                isSaving = false
+            }
+        }
     }
 
     /** Create a link between pending source and [targetBboxId] on the current side.
@@ -581,6 +620,11 @@ fun CarouselScreen(
     }
 
     val toasts = LocalToasts.current
+    val resolver = LocalContext.current.contentResolver
+    val csvExported = stringResource(R.string.results_export_done, "CSV")
+    val csvLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
+        if (uri != null) viewModel.exportCsv(uri, resolver) { toasts.info(csvExported) }
+    }
     LaunchedEffect(viewModel.saveErrorMessage) {
         viewModel.saveErrorMessage?.let {
             toasts.error(it)
@@ -662,7 +706,18 @@ fun CarouselScreen(
                         },
                         modifier = Modifier.heightIn(min = 40.dp).padding(horizontal = 2.dp),
                     )
-                    if (!isWeightDataset) {
+                    if (isWeightDataset) {
+                        IconButton(
+                            enabled = !viewModel.isSaving && !viewModel.isDetecting,
+                            onClick = {
+                                viewModel.saveAndNavigate {
+                                    csvLauncher.launch("${session?.treeName}_result.csv")
+                                }
+                            },
+                        ) {
+                            Icon(Icons.Default.TableChart, stringResource(R.string.weight_export_csv))
+                        }
+                    } else {
                         IconButton(onClick = { showMoreMenu = true }) {
                             Icon(Icons.Default.MoreVert, stringResource(R.string.cd_more))
                         }
@@ -724,6 +779,7 @@ fun CarouselScreen(
                     }
                 },
                 onCancelLink = { viewModel.cancelLink() },
+                onUnlink = if (isWeightDataset) ({ viewModel.unlinkSelectedBbox() }) else null,
                 saveExitLabel = stringResource(
                     if (isWeightDataset) R.string.weight_save_draft_exit else R.string.carousel_save_exit,
                 ),
@@ -800,7 +856,16 @@ fun CarouselScreen(
                 val side = session!!.sides.getOrNull(sideIdx) ?: return@HorizontalPager
                 // bboxId → link-group number for this side (same number on the matching
                 // bunch on the adjacent side), so links are visible at a glance.
-                val linkMap = viewModel.linkGroupFor(sideIdx)
+                val numbers = if (isWeightDataset) WeightDatasetPolicy.bunchNumbers(session!!, sideIdx)
+                    else viewModel.linkGroupFor(sideIdx)
+                val linkedIds = session!!.confirmedLinks.mapNotNull {
+                    when (sideIdx) {
+                        it.sideA -> it.bboxIdA
+                        it.sideB -> it.bboxIdB
+                        else -> null
+                    }
+                }.toSet()
+                val linkMap = if (isWeightDataset) numbers.filterKeys { it in linkedIds } else numbers
 
                 Box(Modifier.fillMaxSize().background(Color.Black)) {
                     AnnotationCanvas(
@@ -814,6 +879,7 @@ fun CarouselScreen(
                         showClassLabels = !isWeightDataset,
                         boxColorOverride = if (isWeightDataset) PalmColors.Accent else null,
                         linkedBoxes = linkMap,
+                        boxNumbers = numbers,
                         onBboxTap = { id ->
                             if (sideIdx != viewModel.currentSideIndex) {
                                 coroutineScope.launch { pagerState.animateScrollToPage(page) }
@@ -883,8 +949,31 @@ fun CarouselScreen(
                 }
             }
 
-            // Page dots
-            if (totalSides > 1) {
+            // Explicit photo buttons stay usable when Edit consumes horizontal canvas drags.
+            if (isWeightDataset && totalSides > 1) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(end = inspectorWidth).padding(top = 40.dp),
+                    horizontalArrangement = Arrangement.Center,
+                ) {
+                    for (i in 0 until totalSides) {
+                        val isCurrent = pagerState.currentPage % sidesCount == i
+                        FilledTonalButton(
+                            onClick = {
+                                coroutineScope.launch {
+                                    val current = pagerState.currentPage
+                                    pagerState.animateScrollToPage(current + i - current % sidesCount)
+                                }
+                            },
+                            enabled = !viewModel.isSaving && !pagerState.isScrollInProgress,
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                containerColor = if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surface,
+                                contentColor = if (isCurrent) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+                            ),
+                            modifier = Modifier.padding(horizontal = 4.dp).heightIn(min = 48.dp),
+                        ) { Text(stringResource(R.string.weight_photo_number, i + 1)) }
+                    }
+                }
+            } else if (totalSides > 1) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -960,6 +1049,7 @@ fun CarouselScreen(
             if (showMeasurements && selectedBbox != null) {
                 BunchMeasurementPanel(
                     bbox = selectedBbox,
+                    bunchNumber = WeightDatasetPolicy.bunchNumbers(session!!, viewModel.currentSideIndex).getValue(selectedBbox.id),
                     bboxKey = measurementKey,
                     showOptional = optionalDetailsOpen,
                     imeVisible = imeOverlapPx > 0,
@@ -994,6 +1084,7 @@ fun CarouselScreen(
 @Composable
 private fun BunchMeasurementPanel(
     bbox: Bbox,
+    bunchNumber: Int,
     bboxKey: String,
     showOptional: Boolean,
     imeVisible: Boolean,
@@ -1036,7 +1127,7 @@ private fun BunchMeasurementPanel(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    stringResource(R.string.weight_panel_title),
+                    stringResource(R.string.weight_bunch_number, bunchNumber),
                     modifier = Modifier.weight(1f),
                     // The keyboard leaves roughly a third of a landscape screen for this
                     // panel, so the header gives its space back to the fields while typing.
@@ -1176,6 +1267,7 @@ private fun CarouselBottomBar(
     onToggleSwipe: () -> Unit,
     onArmLink: () -> Unit,
     onCancelLink: () -> Unit,
+    onUnlink: (() -> Unit)?,
     saveExitLabel: String,
     nextTreeLabel: String,
     onSaveExit: () -> Unit,
@@ -1259,6 +1351,15 @@ private fun CarouselBottomBar(
                 }
 
                 // Draw-new-box toggle — only meaningful while editing geometry.
+                if (onUnlink != null && !linkArmed && session?.confirmedLinks?.any {
+                    (it.sideA == currentSideIndex && it.bboxIdA == selectedBboxId) ||
+                        (it.sideB == currentSideIndex && it.bboxIdB == selectedBboxId)
+                } == true) {
+                    IconButton(onClick = onUnlink, enabled = !isSaving, modifier = Modifier.size(48.dp)) {
+                        Icon(Icons.Default.LinkOff, stringResource(R.string.cd_remove_link), modifier = Modifier.size(26.dp))
+                    }
+                }
+
                 if (editMode) {
                     IconButton(onClick = onToggleDraw, modifier = Modifier.size(48.dp)) {
                         Icon(

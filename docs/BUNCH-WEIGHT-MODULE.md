@@ -44,6 +44,20 @@ menguji ulang di ponsel, bukan hanya di uji unit.
   ketukannya terbaca. Ini juga yang menjawab pertanyaan apakah tombol itu menyimpan.
 - **Pesan galat validasi berada di luar area gulir.** Di dalam area gulir, panel yang tertutup
   mendorong pesan itu ke bawah lipatan dan pesan tampil terpotong separuh baris.
+- **Nomor tandan berasal dari klaster hasil.** `WeightDatasetPolicy.bunchNumbers` memakai
+  klaster `ResultsComputer`, yaitu sumber yang sama dengan pesan gerbang penyelesaian dan
+  `bunch_id` pada ekspor. Setiap kotak bernomor, bukan hanya kotak tertaut, sehingga pesan
+  "Bunch N" dapat ditelusuri ke kotaknya. Nomor digambar di dalam kotak agar tidak tertimpa
+  pegangan ubah ukuran saat mode Edit.
+- **Perpindahan foto memakai tombol, bukan titik halaman.** Mode Edit menelan geser horizontal
+  untuk zoom dan geser kanvas, jadi modul ini menampilkan tombol "Photo 1" dan "Photo 2"
+  setinggi minimal 48 dp di atas foto.
+- **"Remove link" menyimpan langsung.** Melepas tautan adalah aksi sengaja seperti menaut dan
+  "Apply to bunch", sehingga memanggil `autoSave()` sendiri. Geometri dan pengukuran kotak
+  tidak diubah; hanya tautannya yang dilepas.
+- **Ekspor CSV berjalan setelah sampel tersimpan.** Tombol ekspor menjalankan
+  `saveAndNavigate` lebih dahulu, lalu membuka pemilih dokumen Android. Isi CSV dihasilkan dari
+  snapshot sesi yang sama dengan Output JSON, sehingga keduanya tidak dapat berbeda.
 
 ## Kontrak Data
 
@@ -70,19 +84,14 @@ menguji ulang di ponsel, bukan hanya di uji unit.
 - AC-010: menaut dan menerapkan atribut bertahan setelah proses aplikasi dimatikan tanpa berganti foto atau keluar.
 - AC-011: seluruh isi panel pengukuran tetap terlihat ketika papan ketik terbuka, termasuk kolom berat dan pesan galat validasi.
 - AC-012: menekan "Apply to bunch" memunculkan konfirmasi tersimpan yang terlihat, tidak tertutup panel.
+- AC-013: setiap kotak memperoleh nomor tandan yang sama dengan pesan gerbang penyelesaian dan `bunch_id` pada CSV.
+- AC-014: berpindah foto dapat dilakukan lewat tombol foto, termasuk ketika mode Edit aktif.
+- AC-015: melepas tautan mengembalikan kedua kotak menjadi tandan terpisah tanpa menghapus kotak atau nilainya.
+- AC-016: operator dapat mengekspor CSV sampel dari editor melalui pemilih dokumen Android.
 
 ## Batas yang Diketahui
 
-- CSV dan Identity JSON hanya dihasilkan `ResultsScreen`, dan layar itu tidak dapat dijangkau
-  dari modul berat tandan. Cabang CSV berat beserta tesnya ada, tetapi belum ada jalan bagi
-  operator untuk mengunduhnya. Output JSON sudah memuat seluruh datanya pada tingkat tandan.
-- Melepas tautan tidak tersedia sebagai aksi tersendiri. Koreksi dilakukan dengan menaut ulang,
-  yang mengganti tautan lama, atau dengan menghapus kotaknya.
-- Hanya tandan yang tertaut memperoleh nomor kelompok di kanvas, sehingga pesan gerbang
-  penyelesaian yang menyebut "Bunch N" belum dapat ditelusuri ke kotaknya.
-- Di mode Edit, geser horizontal ditelan zoom/pan kanvas. Berpindah foto hanya melalui dua
-  titik halaman di atas foto.
-
-## Direction contract
-
-THESIS: pemilih modul memberi satu keputusan awal dan menolak pencampuran dua jenis dataset dalam satu daftar. OWN-WORLD: Material 3, hijau PalmAnnotate, permukaan terang, target sentuh besar, dan teks lapangan yang langsung. STORY: pilih dataset, buka sesi, tangkap sampel, anotasi tandan, isi atribut, lalu simpan. FIRST VIEWPORT: identitas PalmAnnotate berada di atas, dua baris modul mengisi pusat layar, dan tiap baris menjelaskan jumlah foto serta jenis data. FORM: perluasan tepat dari dunia visual yang sudah ada; tanpa konsep atau komponen baru yang tidak diperlukan. FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance.
+- Ekspor CSV berlaku per sampel. Belum ada CSV gabungan untuk satu sesi; gabungan masih
+  dikerjakan di luar aplikasi dari berkas per sampel atau dari Output JSON.
+- Identity JSON tetap hanya dihasilkan `ResultsScreen` dan layar itu tidak dapat dijangkau dari
+  modul berat tandan. Seluruh datanya sudah ada pada Output JSON tingkat tandan.

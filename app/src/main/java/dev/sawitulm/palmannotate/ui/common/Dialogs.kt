@@ -47,7 +47,6 @@ fun NewSessionDialog(
     existingRuns: List<RunSummary> = emptyList(),
     groupKeyOf: (variety: String, block: String) -> String = { _, _ -> "" },
     allowedSideCounts: List<Int> = listOf(4, 8),
-    photoCountDescription: String? = null,
     datasetType: DatasetType = DatasetType.MULTISIDE,
 ) {
     var variety by remember { mutableStateOf(inputCache?.lastVariety ?: "DAMIMAS") }
@@ -99,14 +98,6 @@ fun NewSessionDialog(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text(
-                    stringResource(
-                        if (datasetType == DatasetType.MULTISIDE) R.string.dialog_session_lock_hint
-                        else R.string.weight_dialog_session_lock_hint,
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
                 OutlinedTextField(
                     value = variety,
                     onValueChange = { variety = it; varietyError = false },
@@ -128,20 +119,8 @@ fun NewSessionDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Text(
-                    stringResource(
-                        if (datasetType == DatasetType.MULTISIDE) R.string.dialog_photos_per_tree
-                        else R.string.weight_dialog_photos_per_sample,
-                    ),
-                    style = MaterialTheme.typography.labelMedium,
-                )
-                if (photoCountDescription != null) {
-                    Text(
-                        photoCountDescription,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                } else {
+                if (allowedSideCounts.size > 1) {
+                    Text(stringResource(R.string.dialog_photos_per_tree), style = MaterialTheme.typography.labelMedium)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         for (n in allowedSideCounts) {
                             FilterChip(
@@ -153,17 +132,11 @@ fun NewSessionDialog(
                     }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(stringResource(R.string.dialog_auto_id), style = MaterialTheme.typography.bodyMedium)
-                        Text(
-                            stringResource(
-                                if (datasetType == DatasetType.MULTISIDE) R.string.dialog_auto_id_hint
-                                else R.string.weight_dialog_auto_id_hint,
-                            ),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
+                    Text(
+                        stringResource(R.string.dialog_auto_id),
+                        modifier = Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
                     Switch(checked = autoId, onCheckedChange = { autoId = it })
                 }
                 // WS-13: the operator field used to be hardcoded empty in every metadata sidecar.
@@ -172,7 +145,6 @@ fun NewSessionDialog(
                     onValueChange = { operatorName = it },
                     label = { Text(stringResource(R.string.dialog_operator_label)) },
                     placeholder = { Text(stringResource(R.string.dialog_operator_placeholder)) },
-                    supportingText = { Text(stringResource(R.string.dialog_operator_hint)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -191,17 +163,13 @@ fun NewSessionDialog(
                                 ),
                                 style = MaterialTheme.typography.bodyMedium,
                             )
-                            Text(
-                                stringResource(
-                                    if (datasetType == DatasetType.BUNCH_WEIGHT) {
-                                        if (tokenLocked) R.string.weight_dialog_name_token_locked
-                                        else R.string.weight_dialog_name_token_hint
-                                    } else if (tokenLocked) R.string.dialog_name_token_locked
-                                    else R.string.dialog_name_token_hint,
-                                ),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                            if (tokenLocked) {
+                                Text(
+                                    stringResource(R.string.dialog_name_token_locked),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                         Switch(
                             checked = if (tokenLocked) effectiveToken.isNotEmpty() else useNameToken,

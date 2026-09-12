@@ -5,6 +5,13 @@ import dev.sawitulm.palmannotate.domain.model.DatasetType
 import dev.sawitulm.palmannotate.domain.results.ResultsComputer
 
 object WeightDatasetPolicy {
+    /** Same numbering as completion errors and exported bunch IDs, including single boxes. */
+    fun bunchNumbers(session: ActiveSession, sideIndex: Int): Map<String, Int> = buildMap {
+        ResultsComputer.compute(session).clusters.values.forEachIndexed { index, members ->
+            members.filter { it.sideIndex == sideIndex }.forEach { put(it.bboxId, index + 1) }
+        }
+    }
+
     fun completionError(session: ActiveSession): String? {
         if (session.datasetType != DatasetType.BUNCH_WEIGHT) return null
         if (session.totalBboxes == 0) return "Add at least one bunch bounding box."
