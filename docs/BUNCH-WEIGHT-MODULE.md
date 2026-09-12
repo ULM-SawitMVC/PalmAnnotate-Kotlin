@@ -49,6 +49,12 @@ menguji ulang di ponsel, bukan hanya di uji unit.
   `bunch_id` pada ekspor. Setiap kotak bernomor, bukan hanya kotak tertaut, sehingga pesan
   "Bunch N" dapat ditelusuri ke kotaknya. Nomor digambar di dalam kotak agar tidak tertimpa
   pegangan ubah ukuran saat mode Edit.
+- **Pager berat tandan memakai arah baku, bukan arah tangkap terbalik.** Modul multisisi
+  menyusun halaman terbalik agar geser ke kanan berarti maju, sesuai arah mengelilingi pohon, dan
+  menyediakan sakelar arah. Modul berat tandan tidak punya arah putar dan sakelarnya memang
+  disembunyikan, sehingga layout terbalik membuatnya terjebak: menekan "Photo 2" menggeser halaman
+  ke arah yang berlawanan dengan urutan tombolnya. Karena itu `reverseLayout` dimatikan khusus
+  untuk modul ini.
 - **Perpindahan foto memakai tombol, bukan titik halaman.** Mode Edit menelan geser horizontal
   untuk zoom dan geser kanvas, jadi modul ini menampilkan tombol "Photo 1" dan "Photo 2"
   setinggi minimal 48 dp di atas foto.

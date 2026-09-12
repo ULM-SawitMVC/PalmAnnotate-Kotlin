@@ -844,7 +844,10 @@ fun CarouselScreen(
             val inspectorHeight = if (showMeasurements && !expandedInspector) sheetHeight else 0.dp
             HorizontalPager(
                 state = pagerState,
-                reverseLayout = !viewModel.reverseSwipe,
+                // Bunch weight has no capture direction and hides the swipe-direction toggle
+                // (showSwipeDirection), so a reversed layout would strand it: tapping Photo 2
+                // slid the page backwards with no way to flip it. Multiside keeps the CCW default.
+                reverseLayout = !isWeightDataset && !viewModel.reverseSwipe,
                 flingBehavior = pagerFling,
                 // Only suppress swipe while actually grabbing a box IN edit mode. In Review
                 // (and the moment Edit closes) swiping is always enabled, so a stuck flag can
