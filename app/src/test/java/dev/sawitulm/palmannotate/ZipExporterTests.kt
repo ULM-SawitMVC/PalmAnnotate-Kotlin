@@ -23,9 +23,11 @@ class ZipSanitizeTest {
 }
 
 class ZipLayoutTest {
-    @Test fun `entry count is four per side plus three tree-level files`() {
-        assertEquals(4 * 2 + 3, DatasetZipLayout.zipEntriesFor("T_0001", 2).size)
-        assertEquals(4 * 4 + 3, DatasetZipLayout.zipEntriesFor("T_0001", 4).size)
+    @Test fun `entry count is four per side plus four tree-level files`() {
+        // The fourth tree-level candidate is the multiside-video recording; like depth, it only
+        // becomes a real entry when the file exists.
+        assertEquals(4 * 2 + 4, DatasetZipLayout.zipEntriesFor("T_0001", 2).size)
+        assertEquals(4 * 4 + 4, DatasetZipLayout.zipEntriesFor("T_0001", 4).size)
     }
 
     @Test fun `paths follow the flat training layout with 1-based side numbers`() {

@@ -13,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Forest
 import androidx.compose.material.icons.filled.Scale
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -37,6 +38,7 @@ import androidx.compose.ui.res.stringResource
 fun ModuleHubScreen(
     onOpenMultiside: () -> Unit,
     onOpenBunchWeight: () -> Unit,
+    onOpenMultisideVideo: () -> Unit,
 ) {
     Scaffold(
         topBar = {
@@ -80,6 +82,12 @@ fun ModuleHubScreen(
                             title = stringResource(R.string.module_weight_title),
                             icon = { Icon(Icons.Default.Scale, null) },
                             onClick = onOpenBunchWeight,
+                        )
+                        HorizontalDivider()
+                        ModuleRow(
+                            title = stringResource(R.string.module_video_title),
+                            icon = { Icon(Icons.Default.Videocam, null) },
+                            onClick = onOpenMultisideVideo,
                         )
                     }
                 }

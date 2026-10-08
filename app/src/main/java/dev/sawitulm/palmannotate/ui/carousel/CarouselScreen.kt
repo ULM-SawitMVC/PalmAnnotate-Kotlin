@@ -141,6 +141,13 @@ class CarouselViewModel @Inject constructor(
         get() = if (mode == CarouselMode.REVIEW) CanvasTool.VIEW else editTool
 
     fun load(treeKey: String) {
+        // The activity can be recreated (dark-mode switch, display or font-size change) while
+        // this ViewModel survives. Reloading then replaced the in-memory tree with the stored
+        // one and silently dropped a box that was drawn but not yet saved. With nothing unsaved
+        // the reload still runs, so changes made on the dedup screen are picked up as before.
+        // A revision conflict is the exception: only a reload resolves it.
+        if (dirty && !saveConflicted && session?.sessionId == treeKey) return
+        saveConflicted = false
         viewModelScope.launch {
             isLoading = true
             session = repo.loadActiveSession(treeKey)
@@ -182,6 +189,8 @@ class CarouselViewModel @Inject constructor(
 
     /** Serializes all Carousel saves so revision tokens are applied in commit order. */
     private val autoSaveMutex = kotlinx.coroutines.sync.Mutex()
+
+    private var saveConflicted = false
 
     private fun markDirty() {
         dirty = true
@@ -226,6 +235,7 @@ class CarouselViewModel @Inject constructor(
         }
         withContext(Dispatchers.Main.immediate) {
             dirty = true
+            if (result is SaveResult.Conflict) saveConflicted = true
             saveErrorMessage = message
         }
     }
@@ -253,6 +263,15 @@ class CarouselViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /** One tap from an empty photo to drawing: enter Edit if needed and arm the draw tool. */
+    fun startDrawingBox() {
+        if (mode == CarouselMode.REVIEW) {
+            autoSave()
+            mode = CarouselMode.EDIT
+        }
+        editTool = CanvasTool.DRAW
     }
 
     /** EDIT-mode sub-tool: flip between move/resize (SELECT) and draw-new-box (DRAW). */
@@ -439,6 +458,18 @@ class CarouselViewModel @Inject constructor(
 
     fun saveDraftAndExit(onDone: () -> Unit) = persistAndExit(markComplete = false, onDone)
 
+    // The screen's own `isWeightDataset` belongs to the last composition. For one frame after
+    // the tree loads it still says "not bunch weight", and a tap in that frame used to take the
+    // multiside exit: the sample was marked complete and the next capture opened with no box and
+    // no weight. These two decide from the session as it is at the tap.
+    private val isWeightSession: Boolean get() = session?.datasetType == DatasetType.BUNCH_WEIGHT
+
+    fun exitTree(onDone: () -> Unit) =
+        if (isWeightSession) saveDraftAndExit(onDone) else saveAndExit(onDone)
+
+    fun exitToNextTree(onDone: () -> Unit) =
+        if (isWeightSession) completeWeightSample(onDone) else saveAndExit(onDone)
+
     fun completeWeightSample(onDone: () -> Unit) {
         val current = session ?: return
         WeightDatasetPolicy.completionError(current)?.let { error ->
@@ -615,8 +646,7 @@ fun CarouselScreen(
 
     // While no session exists there is nothing to save, so let NavHost handle Back normally.
     BackHandler(enabled = session != null) {
-        if (isWeightDataset) viewModel.saveDraftAndExit { onBack() }
-        else viewModel.saveAndExit { onBack() }
+        viewModel.exitTree { onBack() }
     }
 
     val toasts = LocalToasts.current
@@ -674,8 +704,7 @@ fun CarouselScreen(
                     // Save-then-leave so edits are never lost by tapping Back.
                     IconButton(
                         onClick = {
-                            if (isWeightDataset) viewModel.saveDraftAndExit { onBack() }
-                            else viewModel.saveAndExit { onBack() }
+                            viewModel.exitTree { onBack() }
                         },
                         enabled = !viewModel.isSaving && !viewModel.isDetecting,
                     ) {
@@ -787,13 +816,11 @@ fun CarouselScreen(
                     if (isWeightDataset) R.string.weight_save_next else R.string.carousel_next_tree,
                 ),
                 onSaveExit = {
-                    if (isWeightDataset) viewModel.saveDraftAndExit { onBack() }
-                    else viewModel.saveAndExit { onBack() }
+                    viewModel.exitTree { onBack() }
                 },
                 onNextTree = {
                     viewModel.runId?.let { rid ->
-                        if (isWeightDataset) viewModel.completeWeightSample { onNextTree(rid) }
-                        else viewModel.saveAndExit { onNextTree(rid) }
+                        viewModel.exitToNextTree { onNextTree(rid) }
                     }
                 },
             )
@@ -928,6 +955,24 @@ fun CarouselScreen(
                             style = MaterialTheme.typography.labelMedium,
                             color = if (!isWeightDataset && side.hasUnassigned) PalmColors.Warning else Color.White,
                         )
+                    }
+
+                    // A bunch-weight photo with no box has nothing to weigh yet, and the way to
+                    // add one (switch Review to Edit, then pick the draw tool) is two unlabeled
+                    // steps. Offer it as one labeled action until the first box exists.
+                    if (isWeightDataset && side.bboxes.isEmpty() &&
+                        sideIdx == viewModel.currentSideIndex &&
+                        viewModel.canvasTool != CanvasTool.DRAW && !viewModel.linkArmed
+                    ) {
+                        Button(
+                            onClick = { viewModel.startDrawingBox() },
+                            enabled = !viewModel.isSaving && !viewModel.isDetecting,
+                            modifier = Modifier.align(Alignment.Center).heightIn(min = 56.dp),
+                        ) {
+                            Icon(Icons.Default.Add, null, Modifier.size(20.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(stringResource(R.string.weight_draw_bunch))
+                        }
                     }
 
                     // Link armed indicator

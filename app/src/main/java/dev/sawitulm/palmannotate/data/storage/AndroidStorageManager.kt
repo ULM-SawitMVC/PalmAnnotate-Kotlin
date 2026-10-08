@@ -34,6 +34,7 @@ class AndroidStorageManager(private val context: Context) {
     val imagesDir get() = File(rootDir, "images/field").also { it.mkdirs() }
     val labelsDir get() = File(rootDir, "labels/field").also { it.mkdirs() }
     val depthDir get() = File(rootDir, "depth/field").also { it.mkdirs() }
+    val videoDir get() = File(rootDir, "video").also { it.mkdirs() }
     val metadataDir get() = File(rootDir, "metadata").also { it.mkdirs() }
     val manifestsDir get() = File(rootDir, "manifests").also { it.mkdirs() }
     val annotLogDir get() = File(rootDir, "annotlog/field").also { it.mkdirs() }
@@ -129,6 +130,13 @@ class AndroidStorageManager(private val context: Context) {
 
     fun captureDraftDepthJsonFile(runId: String, sideIndex: Int): File =
         File(captureDraftDir(runId), "side_${sideIndex + 1}.json")
+
+    /** The accepted recording of a multiside-video draft. Present only after a clean finalize. */
+    fun captureDraftVideoFile(runId: String): File = File(captureDraftDir(runId), "video.mp4")
+
+    /** The recording in progress. An mp4 that was never finalized is not playable, so it is never promoted. */
+    fun captureDraftIncomingVideoFile(runId: String): File =
+        File(captureDraftDir(runId), "video.incoming.mp4")
 
     fun deleteCaptureDraft(runId: String): Boolean {
         val root = captureDraftRoot.canonicalFile
@@ -392,6 +400,20 @@ class AndroidStorageManager(private val context: Context) {
         }
     }
 
+    // ─── Video helpers ────────────────────────────────────────────────────────
+
+    fun videoFile(treeName: String): File = File(videoDir, "$treeName.mp4")
+
+    /**
+     * Copy a draft recording to its canonical path. A copy, not a move: the draft stays intact
+     * until the Room commit succeeds, so a failed commit never costs the operator the recording.
+     */
+    @Throws(IOException::class)
+    fun publishVideo(source: File, treeName: String) {
+        if (!source.isFile || source.length() <= 0L) throw IOException("Video recording is missing")
+        copyFileSynced(source, videoFile(treeName))
+    }
+
     fun deleteCaptureStaging(stagingDir: File): Boolean {
         val root = captureStagingRoot.canonicalFile
         val target = stagingDir.canonicalFile
@@ -606,6 +628,8 @@ class AndroidStorageManager(private val context: Context) {
         targets.add(metadataFile(treeName))
         targets.add(manifestFile(treeName))
         targets.add(outputJsonFile(treeName))
+        targets.add(videoFile(treeName))
+        targets.add(File(videoDir, "$treeName.mp4.tmp"))
         for (file in targets.distinctBy { it.absolutePath }) {
             if (!deleteFile(file)) {
                 throw IOException("Cannot remove stale uncommitted artifact: ${file.path}")
@@ -630,6 +654,38 @@ class AndroidStorageManager(private val context: Context) {
         if (deleteFile(metadataFile(treeName))) removed++
         if (deleteFile(manifestFile(treeName))) removed++
         if (deleteFile(outputJsonFile(treeName))) removed++
+        if (deleteFile(videoFile(treeName))) removed++
+        deleteFile(File(videoDir, "$treeName.mp4.tmp"))
         return removed
+    }
+}
+
+/**
+ * Streamed copy for files too large to hold in memory (a recording is hundreds of MB): temp file,
+ * fsync, length check, then rename. The temp file never survives a failure.
+ */
+@Throws(IOException::class)
+internal fun copyFileSynced(source: File, target: File) {
+    val parent = target.parentFile
+    if (parent != null && !parent.exists() && !parent.mkdirs()) {
+        throw IOException("Cannot create directory: ${parent.path}")
+    }
+    val temp = File(parent, "${target.name}.tmp")
+    try {
+        temp.delete()
+        source.inputStream().use { input ->
+            FileOutputStream(temp, false).use { out ->
+                input.copyTo(out, 64 * 1024)
+                out.flush()
+                out.fd.sync()
+            }
+        }
+        if (temp.length() != source.length()) {
+            throw IOException("Short write for ${target.name}: ${temp.length()} != ${source.length()}")
+        }
+        if (target.exists() && !target.delete()) throw IOException("Cannot replace ${target.name}")
+        if (!temp.renameTo(target)) throw IOException("Cannot publish ${target.name}")
+    } finally {
+        temp.delete()
     }
 }

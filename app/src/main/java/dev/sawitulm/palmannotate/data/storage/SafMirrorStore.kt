@@ -5,6 +5,7 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import android.util.Log
 import androidx.documentfile.provider.DocumentFile
+import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -463,6 +464,45 @@ class SafMirrorStore(private val context: Context) {
         }
     }
 
+    /**
+     * Mirror one large local file to <treeUri>/<relPath> without buffering it.
+     *
+     * Skipped when the remote file already has the local length: every revision re-runs the
+     * mirror, and re-copying hundreds of MB each time would stall the queue. A failed or short
+     * copy removes the remote file, so a partial upload can never pass the length check later.
+     * [cacheLock] is held only for the lookup and the create, never across the copy.
+     *
+     * ponytail: equality is by length, not content hash. Upgrade path: a streamed SHA-256
+     * read-back compared against `artifacts.video.sha256` in the metadata sidecar.
+     */
+    fun mirrorLargeFile(treeUri: Uri, relPath: String, source: File, mime: String): Boolean {
+        if (!source.isFile || source.length() <= 0L) return false
+        val segments = relPath.split('/').filter { it.isNotBlank() }
+        if (segments.isEmpty()) return false
+        fun remoteLength(): Long? = synchronized(cacheLock) {
+            runCatching {
+                val dirSegments = segments.dropLast(1)
+                val dir = resolveDir(treeUri, dirSegments, create = false) ?: return@runCatching null
+                childrenOf(treeUri, dirSegments, dir, forceRefresh = true)[segments.last()]
+                    ?.takeIf { !it.isDirectory }?.document?.length()
+            }.getOrNull()
+        }
+        if (remoteLength() == source.length()) return true
+        val copied = try {
+            val target = createFileForStreaming(treeUri, relPath, mime) ?: return false
+            context.contentResolver.openOutputStream(target)?.use { out ->
+                source.inputStream().use { it.copyTo(out, 64 * 1024) }
+                true
+            } ?: false
+        } catch (e: Exception) {
+            Log.w(TAG, "mirrorLargeFile failed for $relPath", e)
+            false
+        }
+        if (copied && remoteLength() == source.length()) return true
+        runCatching { deletePath(treeUri, relPath) }
+        return false
+    }
+
     /** Typed read for resume-sensitive callers. Null streams and provider failures are inaccessible. */
     fun readTextResult(treeUri: Uri, relPath: String): SafReadResult =
         when (val result = readBytesResult(treeUri, relPath)) {
@@ -686,6 +726,9 @@ class SafMirrorStore(private val context: Context) {
                     add("dataset/annotlog/field/${treeName}_${i + 1}.json")
                     add("Output TXT/field/${treeName}_${i + 1}.txt")
                 }
+                // Only multiside-video trees have one; the tombstone does not record the dataset
+                // type, and an absent path is simply skipped by the verifier.
+                add("dataset/video/${treeName}.mp4")
                 add("dataset/metadata/${treeName}.json")
                 add("dataset/manifests/${treeName}.json")
                 add("dataset/reservations/${treeName}.json")

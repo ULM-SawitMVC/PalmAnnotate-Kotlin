@@ -309,6 +309,9 @@ class SessionRepository(
         // commits a historical package instead, so an unrelated draft for the NEXT tree must not
         // veto it — that is what blocked recovering DAMIMAS_A21B_0089 while 0153 was in progress.
         consumesCaptureDraft: Boolean = true,
+        // The finalized recording of a [DatasetType.requiresVideo] tree. Read from the capture
+        // draft, never from the staging directory: staging is deleted by the caller on every exit.
+        videoSource: File? = null,
     ): String {
         ArtifactIdentityPolicy.treeNameError(treeName)?.let {
             throw IllegalArgumentException("Invalid tree name: $it")
@@ -403,6 +406,13 @@ class SessionRepository(
             }
         }
 
+        // The single gate for "a video tree cannot be saved without its video". Checked before
+        // anything canonical is written, so a rejected commit leaves no orphan files behind.
+        val requiresVideo = DatasetType.fromPersisted(run.datasetType).requiresVideo
+        check(!requiresVideo || (videoSource != null && videoSource.isFile && videoSource.length() > 0L)) {
+            "Video recording is missing"
+        }
+
         // No committed row owns this name, so every canonical same-name file is an orphan from a
         // failed/deleted attempt. Clear it before publication; otherwise an old Output JSON or an
         // extra old side could coexist with the newly committed capture.
@@ -416,6 +426,7 @@ class SessionRepository(
             sideIndices = sides.map { it.sideIndex },
             requiredDepthSides = requiredDepthSides,
         )
+        if (requiresVideo) storage.publishVideo(requireNotNull(videoSource), treeName)
 
         // WS-12/WS-13: resolve the provenance that will be frozen into BOTH the sidecar and the
         // Room row, so the two can never disagree.
@@ -447,6 +458,7 @@ class SessionRepository(
             operatorName = committedOperator,
             captureDate = captureDate,
             atMillis = capturedAtMillis,
+            video = if (requiresVideo) videoArtifactJson(treeName) else null,
         ).toString(2)
         storage.writeText(storage.metadataFile(treeName), metaJson)
         writeLocalArtifacts(
@@ -652,6 +664,7 @@ class SessionRepository(
         operatorName: String = "",
         captureDate: String = "",
         atMillis: Long = System.currentTimeMillis(),
+        video: JSONObject? = null,
     ): JSONObject {
         val ts = ISO_FORMAT.format(Date(atMillis))
         return JSONObject().apply {
@@ -681,7 +694,20 @@ class SessionRepository(
                         })
                     }
                 })
+                // Additive: absent for every dataset type that records no video.
+                video?.let { put("video", it) }
             })
+        }
+    }
+
+    /** The `artifacts.video` record, derived from the canonical file. Null when there is none. */
+    private fun videoArtifactJson(treeName: String): JSONObject? {
+        val file = storage.videoFile(treeName)
+        if (!file.isFile) return null
+        return JSONObject().apply {
+            put("filename", file.name)
+            put("sizeBytes", file.length())
+            put("sha256", DepthArtifactContract.sha256Hex(file))
         }
     }
 
@@ -890,6 +916,7 @@ class SessionRepository(
             operatorName = session.metadata?.operatorName?.takeIf { it.isNotBlank() } ?: tree.operatorName,
             captureDate = session.metadata?.date?.takeIf { it.isNotBlank() } ?: tree.captureDate,
             atMillis = tree.createdAt,
+            video = if (session.datasetType.requiresVideo) videoArtifactJson(session.treeName) else null,
         ).toString(2)
         storage.writeText(File(stage, "metadata/${session.treeName}.json"), metadataText)
         TreePackageManifest.materializeAt(
@@ -1219,6 +1246,21 @@ class SessionRepository(
                 packageFilesOk = packageFilesOk && rawRemoved && metaRemoved
             }
         }
+        if (datasetType.requiresVideo) {
+            // One recording per tree, streamed: it is far too large for the ByteArray path above.
+            val videoOk = runCatching {
+                saf.mirrorLargeFile(
+                    safTreeUri,
+                    "dataset/video/$treeName.mp4",
+                    storage.videoFile(treeName),
+                    "video/mp4",
+                )
+            }.getOrElse {
+                Log.w(TAG, "SAF mirror video failed for $treeName", it)
+                false
+            }
+            packageFilesOk = packageFilesOk && videoOk
+        }
         return packageFilesOk
     }
 
@@ -1229,6 +1271,17 @@ class SessionRepository(
         safTreeUri: Uri? = null,
         awaitSafVerification: Boolean = true,
     ): SaveResult = commitAnnotationRevision(session, safTreeUri, markComplete = true)
+
+    /**
+     * First revision for a tree that has no annotation step (multiside video). A capture commit
+     * deliberately stops at r0 without Output JSON or manifest, and only a revision can move the
+     * mirror from PENDING to VERIFIED; the carousel that normally creates it is not used here.
+     * Safe to repeat: a tree that already has its revision simply gets the next one.
+     */
+    suspend fun finalizeCaptureOnlyTree(treeKey: String, safTreeUri: Uri? = null): SaveResult {
+        val session = loadActiveSession(treeKey) ?: return SaveResult.Failure("Tree is not loaded")
+        return saveOutputJson(session, safTreeUri)
+    }
 
     /** The run (session) id that owns [treeKey] — for "next capture" / "back to tree list" nav. */
     suspend fun getTreeRunId(treeKey: String): String? = withContext(Dispatchers.IO) {

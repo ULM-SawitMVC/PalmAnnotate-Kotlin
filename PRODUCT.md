@@ -22,6 +22,7 @@ Aplikasi digunakan dalam orientasi lanskap dengan kamera perangkat atau kamera R
 
 - Alur dataset multisisi yang sudah ada mempertahankan pengambilan 4 atau 8 sisi.
 - Alur berat tandan memakai satu foto wajib dan satu foto kedua opsional.
+- Alur multisisi video mengambil 4 atau 8 sisi dengan kamera tablet sambil merekam satu video bersuara per pohon. Video wajib, tanpa depth dan tanpa anotasi.
 - Modul multisisi memakai kelas kematangan B1-B4. Modul berat tandan tidak memakai kelas kematangan dan mewajibkan berat positif.
 - Tinggi, keliling, dan catatan tambahan bersifat opsional.
 - Kotak pembatas lintas foto yang ditautkan mewakili satu tandan dan berbagi atribut.

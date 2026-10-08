@@ -419,8 +419,11 @@ fun HomeScreen(
                 title = {
                     Text(
                         stringResource(
-                            if (datasetType == DatasetType.MULTISIDE) R.string.module_multiside_title
-                            else R.string.module_weight_title,
+                            when (datasetType) {
+                                DatasetType.MULTISIDE -> R.string.module_multiside_title
+                                DatasetType.BUNCH_WEIGHT -> R.string.module_weight_title
+                                DatasetType.MULTISIDE_VIDEO -> R.string.module_video_title
+                            },
                         ),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -435,7 +438,7 @@ fun HomeScreen(
                     }
                 },
                 actions = {
-                    if (runs.isNotEmpty() && datasetType == DatasetType.MULTISIDE) {
+                    if (runs.isNotEmpty() && datasetType != DatasetType.BUNCH_WEIGHT) {
                         IconButton(onClick = { showExportAllConfirm = true }) {
                             Icon(
                                 Icons.Default.Archive,
@@ -485,7 +488,7 @@ fun HomeScreen(
                             StatItem(stringResource(R.string.home_stat_sessions), stats.totalSessions)
                             StatItem(
                                 stringResource(
-                                    if (datasetType == DatasetType.MULTISIDE) R.string.home_stat_trees
+                                    if (datasetType != DatasetType.BUNCH_WEIGHT) R.string.home_stat_trees
                                     else R.string.home_stat_samples,
                                 ),
                                 stats.totalTrees,
@@ -513,21 +516,21 @@ fun HomeScreen(
                                 )
                             } else {
                                 Icon(
-                                    if (datasetType == DatasetType.MULTISIDE) Icons.Default.Forest else Icons.Default.Scale,
+                                    if (datasetType != DatasetType.BUNCH_WEIGHT) Icons.Default.Forest else Icons.Default.Scale,
                                     null,
                                     Modifier.size(48.dp),
                                     tint = MaterialTheme.colorScheme.primary,
                                 )
                                 Text(
                                     stringResource(
-                                        if (datasetType == DatasetType.MULTISIDE) R.string.home_empty_title
+                                        if (datasetType != DatasetType.BUNCH_WEIGHT) R.string.home_empty_title
                                         else R.string.weight_home_empty_title,
                                     ),
                                     style = MaterialTheme.typography.titleMedium,
                                 )
                                 Text(
                                     stringResource(
-                                        if (datasetType == DatasetType.MULTISIDE) R.string.home_empty_body
+                                        if (datasetType != DatasetType.BUNCH_WEIGHT) R.string.home_empty_body
                                         else R.string.weight_home_empty_body,
                                     ),
                                     style = MaterialTheme.typography.bodyMedium,
@@ -593,7 +596,7 @@ fun HomeScreen(
             inputCache = viewModel.inputCache,
             existingRuns = runs,
             groupKeyOf = { variety, block -> viewModel.groupKeyFor(variety, block, datasetType) },
-            allowedSideCounts = if (datasetType == DatasetType.MULTISIDE) listOf(4, 8) else listOf(2),
+            allowedSideCounts = if (datasetType != DatasetType.BUNCH_WEIGHT) listOf(4, 8) else listOf(2),
             datasetType = datasetType,
         )
     }

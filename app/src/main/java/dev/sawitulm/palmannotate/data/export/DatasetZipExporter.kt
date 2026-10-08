@@ -312,6 +312,21 @@ class DatasetZipExporter @Inject constructor(
             }
             val session = repo.loadActiveSessionWhileExclusive(tree.treeKey)
                 ?: return "committed tree could not be loaded"
+            if (session.datasetType.requiresVideo) {
+                // entriesForTree skips a missing file in silence, which is right for optional
+                // depth but would ship a video tree without its video.
+                val video = storage.videoFile(tree.treeName)
+                if (!video.isFile || video.length() <= 0L) return "video is missing"
+                val recordedSize = storage.readText(storage.metadataFile(tree.treeName))?.let { text ->
+                    runCatching {
+                        org.json.JSONObject(text).optJSONObject("artifacts")
+                            ?.optJSONObject("video")?.optLong("sizeBytes", -1L)
+                    }.getOrNull()
+                }
+                if (recordedSize != null && recordedSize > 0L && recordedSize != video.length()) {
+                    return "video size does not match its capture record"
+                }
+            }
             val sideIndices = session.sides.map { it.sideIndex }
             if (sideIndices.isEmpty() ||
                 sideIndices.distinct().size != sideIndices.size ||
@@ -465,6 +480,7 @@ class DatasetZipExporter @Inject constructor(
         FileKind.OUTPUT_JSON -> storage.outputJsonFile(treeName)
         FileKind.METADATA -> storage.metadataFile(treeName)
         FileKind.MANIFEST -> storage.manifestFile(treeName)
+        FileKind.VIDEO -> storage.videoFile(treeName)
     }
 
     /**
@@ -508,6 +524,7 @@ internal enum class FileKind {
     OUTPUT_JSON,
     METADATA,
     MANIFEST,
+    VIDEO,
 }
 
 /** One candidate zip entry: its [kind], the owning [sideIndex] (null for tree-level files), and
@@ -536,6 +553,8 @@ internal object DatasetZipLayout {
         list.add(ZipPathSpec(FileKind.OUTPUT_JSON, null, "json/$treeName.json"))
         list.add(ZipPathSpec(FileKind.METADATA, null, "metadata/$treeName.json"))
         list.add(ZipPathSpec(FileKind.MANIFEST, null, "manifests/$treeName.json"))
+        // Exists only for multiside-video trees; absent files are dropped by entriesForTree.
+        list.add(ZipPathSpec(FileKind.VIDEO, null, "video/$treeName.mp4"))
         return list
     }
 }

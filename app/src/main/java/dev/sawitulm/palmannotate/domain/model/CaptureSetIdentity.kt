@@ -70,6 +70,9 @@ object CaptureSetPolicy {
      */
     const val WEIGHT_NAME_MARKER = "BW"
 
+    /** Same role as [WEIGHT_NAME_MARKER], for [DatasetType.MULTISIDE_VIDEO] trees. */
+    const val VIDEO_NAME_MARKER = "VID"
+
     /**
      * null when [block] may be used, else why it was rejected.
      *
@@ -84,6 +87,8 @@ object CaptureSetPolicy {
         block.isBlank() -> "Block is required"
         sanitizeBlock(block) == WEIGHT_NAME_MARKER ->
             "$WEIGHT_NAME_MARKER is reserved for bunch-weight sample names"
+        sanitizeBlock(block) == VIDEO_NAME_MARKER ->
+            "$VIDEO_NAME_MARKER is reserved for multiside-video tree names"
         else -> null
     }
 
@@ -143,6 +148,7 @@ object CaptureSetPolicy {
             append(v)
             if (b.isNotEmpty()) { append('_'); append(b) }
             if (datasetType == DatasetType.BUNCH_WEIGHT) { append('_'); append(WEIGHT_NAME_MARKER) }
+            if (datasetType == DatasetType.MULTISIDE_VIDEO) { append('_'); append(VIDEO_NAME_MARKER) }
             if (t.isNotEmpty()) { append('_'); append(t) }
             append('_'); append(seq)
         }

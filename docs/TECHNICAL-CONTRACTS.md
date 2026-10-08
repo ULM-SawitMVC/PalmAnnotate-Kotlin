@@ -58,7 +58,7 @@ app/src/main/java/dev/sawitulm/palmannotate/
 ### Dataset modules (module hub + bunch weight)
 
 The app opens on `ModuleHubScreen`, not on the session list. `DatasetType` (`MULTISIDE`,
-`BUNCH_WEIGHT`) routes everything below it; `Routes.HOME` is an alias for
+`BUNCH_WEIGHT`, `MULTISIDE_VIDEO`) routes everything below it; `Routes.HOME` is an alias for
 `Routes.MULTISIDE_HOME`, so existing navigation code keeps working.
 
 **Multiside is unchanged.** Every new parameter defaults to `MULTISIDE`, and
@@ -79,6 +79,29 @@ exports omit them; YOLO uses the required single object class `0`. The internal 
 unassigned for backward-compatible Room and Output JSON resume without a schema migration.
 `WeightDatasetPolicy.completionError` is the single completion gate - a weight sample can only
 be marked complete through it. Full contract in `BUNCH-WEIGHT-MODULE.md`.
+
+Multiside video (`MULTISIDE_VIDEO`): the multiside capture (4 or 8 sides, tablet camera only,
+no Orbbec, no annotation) plus one mp4 with audio per tree, recorded while the photos are taken.
+
+- Reached through its own route (`capture-video/{runId}`), so the screen knows the mode on the
+  first composition and never auto-starts the Orbbec preview.
+- `VideoCaptureStage` binds Preview + ImageCapture + VideoCapture once. The per-side review step
+  is skipped while recording because leaving the preview unbinds the camera.
+- Every saved photo is taken inside the accepted recording: Record clears earlier draft photos,
+  the shutter needs a running recording, and Stop needs every side filled. The one exception is
+  a retake from the final review.
+- A recording is accepted only when the operator pressed Stop and the recorder finalized without
+  error. Anything else deletes `video.incoming.mp4`.
+- Files: draft `.capture-drafts/{runId}/video.mp4`, canonical `video/{tree}.mp4`, SAF
+  `dataset/video/{tree}.mp4`, ZIP `video/{tree}.mp4`. The sidecar gains the additive key
+  `artifacts.video {filename, sizeBytes, sha256}`. No DB migration.
+- `commitTreePackage` is the single gate: a `requiresVideo` tree is rejected without
+  `videoSource`. The video is copied from the draft by stream, never through the staging directory.
+- Tree names carry the reserved marker `VID` (`DAMIMAS_A21B_VID_0001`), same position as `BW`.
+- After the commit `finalizeCaptureOnlyTree` creates the first revision; the session screen
+  retries it for trees that are not complete.
+- Known limits: folder resume skips video packages (it does not restore the recording), and the
+  mirror and the ZIP check the video by length, not by content hash.
 
 **DB is at version 8.** `MIGRATION_7_8` adds `sessions.datasetType`, `trees.datasetType`
 (both `TEXT NOT NULL DEFAULT 'MULTISIDE'`) and the four nullable bbox measurement columns.

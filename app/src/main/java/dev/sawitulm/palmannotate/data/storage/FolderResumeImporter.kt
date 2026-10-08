@@ -150,8 +150,11 @@ class FolderResumeImporter @Inject constructor(
 
         val scanned = ArrayList<ScannedTree>()
         var scanFailures = 0
+        // Video packages are not importable yet. They are skipped, NOT rejected: a rejection
+        // fails the whole resume, and this resume runs on every Home open for every module.
+        val skippedVideo = HashSet<String>()
         for (name in jsonNames) {
-            val scanResult = runCatching { scanOne(safTreeUri, name, imageNames) }
+            val scanResult = runCatching { scanOne(safTreeUri, name, imageNames, skippedVideo) }
             scanResult.exceptionOrNull()?.let {
                 scanFailures++
                 Log.w(TAG, "resume scan failed for $name", it)
@@ -163,7 +166,7 @@ class FolderResumeImporter @Inject constructor(
         // A rejected package must stay visible instead of looking like "nothing new to resume",
         // but it must not block the packages that ARE importable — that would turn one bad folder
         // entry into a total recovery outage. The report is raised after ingest, below.
-        val rejected = jsonNames.size - scanned.size
+        val rejected = jsonNames.size - scanned.size - skippedVideo.size
         if (scanned.isEmpty()) {
             check(rejected == 0) { "Rejected $rejected incomplete or invalid tree package(s)" }
             return@withContext 0
@@ -241,10 +244,21 @@ class FolderResumeImporter @Inject constructor(
         readBytesForResume(treeUri, path)?.toString(Charsets.UTF_8)
 
     /** Parse one Output JSON (+ metadata sidecar) into a ScannedTree, or null if unusable. */
-    private fun scanOne(safTreeUri: Uri, jsonName: String, imageNames: Set<String>): ScannedTree? {
+    private fun scanOne(
+        safTreeUri: Uri,
+        jsonName: String,
+        imageNames: Set<String>,
+        skippedVideo: MutableSet<String>,
+    ): ScannedTree? {
         val text = readTextForResume(safTreeUri,"$OUTPUT_JSON_DIR/$jsonName") ?: return null
         val json = runCatching { JSONObject(text) }.getOrNull() ?: return null
         val parsed = runCatching { OutputSchema.toSessionData(json) }.getOrNull() ?: return null
+        if (parsed.datasetType.requiresVideo) {
+            // ponytail: the recording is not restored from the folder. Upgrade path: stream
+            // dataset/video/<tree>.mp4 into the commit as videoSource.
+            skippedVideo.add(jsonName)
+            return null
+        }
         if (parsed.sides.isEmpty()) return null
         ArtifactIdentityPolicy.treeNameError(parsed.treeName)?.let {
             Log.w(TAG, "resume skipped unsafe tree name '${parsed.treeName}': $it")

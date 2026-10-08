@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Base64
 import android.util.Log
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -70,6 +71,7 @@ import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
 import dev.sawitulm.palmannotate.data.storage.InputCache
 import dev.sawitulm.palmannotate.data.storage.JpegOrientationNormalizer
 import dev.sawitulm.palmannotate.data.storage.PackageProvenanceCodec
+import dev.sawitulm.palmannotate.data.storage.SaveResult
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
 import dev.sawitulm.palmannotate.domain.model.*
 import dev.sawitulm.palmannotate.domain.quality.QualityCheck
@@ -450,6 +452,100 @@ class CaptureFlowViewModel @Inject constructor(
         orbbec.onState = null
     }
 
+    // ── Multiside video ───────────────────────────────────────────────────────
+    //
+    // One recording per tree. The invariant the rules below protect: every photo that is saved
+    // was taken inside the accepted recording. The only exception is a retake from the final
+    // review, which happens after the recording was accepted.
+
+    val isVideoRun: Boolean get() = DatasetType.fromPersisted(run?.datasetType).requiresVideo
+
+    /** True once this draft holds an accepted (cleanly finalized) recording. */
+    var draftVideoReady by mutableStateOf(false)
+        private set
+
+    /** Mirrors the stage's recorder so the screen can guard Back and Discard. */
+    var isRecordingVideo by mutableStateOf(false)
+        private set
+
+    /**
+     * False while [load] is still restoring the draft. The video stage waits for it: a Record tap
+     * before the stored photos are back would start a take that those photos then predate.
+     */
+    var draftLoaded by mutableStateOf(false)
+        private set
+
+    fun setVideoRecording(recording: Boolean) { isRecordingVideo = recording }
+
+    private fun draftVideoPresent(runId: String): Boolean =
+        runCatching { storage.captureDraftVideoFile(runId).let { it.isFile && it.length() > 0L } }
+            .getOrDefault(false)
+
+    /** (in-progress file, accepted file) for a new recording, or null when storage is unavailable. */
+    fun prepareVideoFiles(): Pair<File, File>? {
+        val runId = run?.sessionId ?: return null
+        return runCatching {
+            val incoming = storage.captureDraftIncomingVideoFile(runId)
+            storage.deleteFile(incoming)
+            incoming to storage.captureDraftVideoFile(runId)
+        }.getOrNull()
+    }
+
+    /** Start of a take: photos from before this recording are dropped so none predate it. */
+    fun beginVideoTake() {
+        capturedImages.indices.filter { capturedImages[it] != null }.forEach { index ->
+            capturedImages[index] = null
+            if (index < capturedDepths.size) capturedDepths[index] = null
+            if (index < capturedSources.size) capturedSources[index] = null
+            run?.sessionId?.let { runId ->
+                storage.deleteCaptureDraftIncomingImages(runId, index)
+                val generation = repo.invalidateCaptureDraftSide(runId, index)
+                viewModelScope.launch { repo.removeCaptureDraftSide(runId, index, generation) }
+            }
+        }
+        currentSide = 0
+        currentStep = SideStep.PREVIEW
+        phase = CapturePhase.SIDES
+        retakingFromReview = false
+        persistDraftCursor()
+    }
+
+    /**
+     * After a photo in video mode: stay on the live preview and move to the next empty side. The
+     * per-side review step is skipped on purpose, because leaving the preview unbinds the camera
+     * and that would end the recording. Once nothing is left to shoot and the recording is
+     * already accepted (a retake from the final review), go back to the final review.
+     */
+    fun advanceAfterVideoPhoto() {
+        val next = capturedImages.indexOfFirst { it == null }
+        if (next >= 0) {
+            currentSide = next
+            currentStep = SideStep.PREVIEW
+            persistDraftCursor()
+        } else if (draftVideoReady && !isRecordingVideo) {
+            retakingFromReview = false
+            phase = CapturePhase.REVIEW_ALL
+            currentStep = SideStep.REVIEW
+            persistDraftCursor()
+        }
+    }
+
+    /** The recorder finalized cleanly after the operator pressed Stop, and the file is in place. */
+    fun onVideoAccepted() {
+        val runId = run?.sessionId ?: return
+        draftVideoReady = draftVideoPresent(runId)
+        if (draftVideoReady && allCaptured) {
+            retakingFromReview = false
+            phase = CapturePhase.REVIEW_ALL
+            currentStep = SideStep.REVIEW
+            persistDraftCursor()
+        }
+    }
+
+    fun onVideoFailed(reason: String) {
+        captureError = appContext.getString(R.string.video_record_failed, reason)
+    }
+
     // ── Standard capture logic ────────────────────────────────────────────────
 
     fun dismissQa() { showQaDialog = false }
@@ -466,6 +562,8 @@ class CaptureFlowViewModel @Inject constructor(
                         currentStep = SideStep.PREVIEW
                         phase = CapturePhase.SIDES
                         retakingFromReview = false
+                        // The draft directory is gone, and the accepted recording with it.
+                        draftVideoReady = false
                         draftStatus = null
                         saveError = null
                         draftPersistErrors.clear()
@@ -491,6 +589,11 @@ class CaptureFlowViewModel @Inject constructor(
                 }
                 draftPersistErrors.values.firstOrNull()?.let { failure ->
                     saveError = failure
+                    return@launch
+                }
+                if (isVideoRun && !draftVideoPresent(runId)) {
+                    draftVideoReady = false
+                    saveError = appContext.getString(R.string.video_required)
                     return@launch
                 }
                 val capturedCount = capturedImages.count { it != null }
@@ -553,6 +656,7 @@ class CaptureFlowViewModel @Inject constructor(
         }
         viewModelScope.launch {
             val r = repo.getRun(runId) ?: return@launch
+            draftLoaded = false
             run = r
             sideCount = r.sideCount
             manualId = r.nextId.toString()
@@ -593,6 +697,17 @@ class CaptureFlowViewModel @Inject constructor(
             }.getOrDefault(
                 if (capturedImages[currentSide] != null) SideStep.REVIEW else SideStep.PREVIEW,
             )
+            if (DatasetType.fromPersisted(r.datasetType).requiresVideo) {
+                // A recording that was never finalized is not a playable file; drop it.
+                runCatching { storage.deleteFile(storage.captureDraftIncomingVideoFile(runId)) }
+                draftVideoReady = draftVideoPresent(runId)
+                // The final review is only reachable with every side AND the recording in place.
+                phase = if (draftVideoReady && allCaptured) CapturePhase.REVIEW_ALL else CapturePhase.SIDES
+                if (phase == CapturePhase.SIDES) {
+                    capturedImages.indexOfFirst { it == null }.takeIf { it >= 0 }?.let { currentSide = it }
+                }
+            }
+            draftLoaded = true
             refreshGps()
         }
     }
@@ -808,6 +923,19 @@ class CaptureFlowViewModel @Inject constructor(
             retakingFromReview = true
             persistDraftCursor()
         }
+    }
+
+    /**
+     * From the final review of a sample that was finished early: go and take the photo that is
+     * still missing. Without this "Use 1 photo" was a one-tap dead end, since the review only
+     * offered Retake for the photos it already had.
+     */
+    fun captureMissingSide() {
+        val index = capturedImages.indexOfFirst { it == null }
+        if (index < 0) return
+        currentSide = index; currentStep = SideStep.PREVIEW; phase = CapturePhase.SIDES
+        retakingFromReview = true
+        persistDraftCursor()
     }
 
     fun returnToReviewAll() {
@@ -1032,7 +1160,19 @@ class CaptureFlowViewModel @Inject constructor(
                         .filter { it.depthRequired }
                         .mapTo(mutableSetOf()) { it.sideIndex },
                     safTreeUri = safTreeUri,
+                    videoSource = if (isVideoRun) storage.captureDraftVideoFile(runId) else null,
                 )
+                if (isVideoRun) {
+                    // No annotation step follows, so create the first revision here. The tree is
+                    // already committed; a failure only leaves the mirror pending, and the
+                    // session screen retries it.
+                    val finalized = runCatching { repo.finalizeCaptureOnlyTree(treeKey, safTreeUri) }
+                        .getOrElse { SaveResult.Failure(it.message ?: "finalize failed", it) }
+                    if (finalized !is SaveResult.Success) {
+                        Log.w("CaptureFlow", "First revision pending for $treeName: $finalized")
+                    }
+                    draftVideoReady = false
+                }
                 onDone(treeKey)
             } catch (e: Exception) {
                 Log.e("CaptureFlow", "Failed to save tree", e)
@@ -1068,11 +1208,17 @@ fun CaptureFlowScreen(
     sessionId: String,
     onTreeSaved: (String) -> Unit,
     onCancel: () -> Unit,
+    // Known from the route, i.e. synchronously, so the Orbbec auto-start below can be skipped
+    // on the very first composition instead of after the asynchronous load().
+    videoMode: Boolean = false,
     viewModel: CaptureFlowViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
     val toasts = LocalToasts.current
     var hasCameraPermission by remember { mutableStateOf(false) }
+    // Leaving mid-recording throws the recording away, so it is confirmed first.
+    var confirmLeaveRecording by remember { mutableStateOf(false) }
+    BackHandler(enabled = viewModel.isRecordingVideo) { confirmLeaveRecording = true }
     // Request camera + location together. Android shows the dialogs sequentially
     // (camera first, then GPS), so location no longer needs manual enabling in Settings.
     val permLauncher = rememberLauncherForActivityResult(
@@ -1099,7 +1245,7 @@ fun CaptureFlowScreen(
 
     // Auto-start Orbbec preview when switching to Orbbec source
     LaunchedEffect(viewModel.captureSource, viewModel.orbbecAvailable) {
-        if (viewModel.captureSource == CaptureSource.ORBBEC && viewModel.orbbecAvailable) {
+        if (!videoMode && viewModel.captureSource == CaptureSource.ORBBEC && viewModel.orbbecAvailable) {
             viewModel.startOrbbecPreviewIfReady()
         }
     }
@@ -1145,6 +1291,10 @@ fun CaptureFlowScreen(
                 },
                 navigationIcon = {
                     IconButton(onClick = {
+                        if (viewModel.isRecordingVideo) {
+                            confirmLeaveRecording = true
+                            return@IconButton
+                        }
                         viewModel.stopOrbbecPreview()
                         onCancel()
                     }) {
@@ -1153,7 +1303,8 @@ fun CaptureFlowScreen(
                 },
                 actions = {
                     val isOrbbec = viewModel.captureSource == CaptureSource.ORBBEC
-                    FilterChip(
+                    // Multiside video records with the tablet camera only.
+                    if (!videoMode) FilterChip(
                         selected = isOrbbec,
                         onClick = { viewModel.selectSource(if (isOrbbec) CaptureSource.PHONE_CAMERA else CaptureSource.ORBBEC) },
                         label = { Text(stringResource(if (isOrbbec) R.string.capture_source_orbbec else R.string.capture_source_phone), style = MaterialTheme.typography.labelLarge) },
@@ -1186,7 +1337,11 @@ fun CaptureFlowScreen(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.error,
                     )
-                    TextButton(onClick = viewModel::discardDraft) { Text("Discard") }
+                    // Discarding deletes the draft directory the recorder is writing into.
+                    TextButton(
+                        onClick = viewModel::discardDraft,
+                        enabled = !viewModel.isRecordingVideo,
+                    ) { Text("Discard") }
                 }
             }
             if (!run.autoId) {
@@ -1226,7 +1381,16 @@ fun CaptureFlowScreen(
                         isDraftPersisting = viewModel.pendingDraftWrites > 0,
                         isDraftValidating = viewModel.isDraftValidating,
                         onRetake = { viewModel.retakeSide(it) },
+                        addPhotoLabel = if (
+                            DatasetType.fromPersisted(run.datasetType) == DatasetType.BUNCH_WEIGHT &&
+                            reviewSides.size == 1 && viewModel.sideCount == 2
+                        ) stringResource(R.string.capture_take_photo_2) else null,
+                        onAddPhoto = viewModel::captureMissingSide,
                         onSave = { viewModel.requestSave(sessionId, context, onTreeSaved) },
+                        // No annotation step follows a video tree.
+                        saveLabel = stringResource(
+                            if (videoMode) R.string.action_save else R.string.capture_save_annotate,
+                        ),
                         modifier = Modifier
                             .fillMaxWidth()
                             .weight(1f),
@@ -1246,12 +1410,18 @@ fun CaptureFlowScreen(
                         if (viewModel.retakingFromReview) viewModel.returnToReviewAll()
                         else viewModel.continueFromReview()
                     }
-                    val sideContinueLabel = if (viewModel.retakingFromReview) stringResource(R.string.action_done) else null
                     val finishEarlyLabel = if (
                         DatasetType.fromPersisted(run.datasetType) == DatasetType.BUNCH_WEIGHT &&
                         viewModel.currentSide == 0 &&
                         viewModel.capturedImages.count { it != null } == 1
                     ) stringResource(R.string.capture_finish_one_photo) else null
+                    // Next to "Use 1 photo" a bare "Continue" does not say that it leads to the
+                    // second photo, so that choice names what it does.
+                    val sideContinueLabel = when {
+                        viewModel.retakingFromReview -> stringResource(R.string.action_done)
+                        finishEarlyLabel != null -> stringResource(R.string.capture_take_photo_2)
+                        else -> null
+                    }
 
                     Box(
                         modifier = Modifier
@@ -1264,13 +1434,38 @@ fun CaptureFlowScreen(
                             sideCount = viewModel.sideCount,
                             currentSide = viewModel.currentSide,
                             capturedImages = viewModel.capturedImages,
-                            onSelect = { viewModel.goToSide(it) },
+                            // In video mode a tap would open the per-side review, which unbinds
+                            // the camera and ends the recording. Retakes go through the final review.
+                            onSelect = { if (!videoMode) viewModel.goToSide(it) },
                             modifier = Modifier
                                 .align(Alignment.TopStart)
                                 .padding(12.dp)
                                 .zIndex(1f),
                         )
-                        if (viewModel.captureSource == CaptureSource.ORBBEC) {
+                        if (videoMode && !viewModel.draftLoaded) {
+                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                CircularProgressIndicator()
+                            }
+                        } else if (videoMode) {
+                            VideoCaptureStage(
+                                canShoot = viewModel.capturedImages.getOrNull(viewModel.currentSide) == null,
+                                allCaptured = viewModel.allCaptured,
+                                hasPhotos = viewModel.capturedImages.any { it != null },
+                                videoReady = viewModel.draftVideoReady,
+                                createPhotoFile = viewModel::preparePhoneCaptureFile,
+                                createVideoFiles = viewModel::prepareVideoFiles,
+                                onPhotoCaptured = {
+                                    val side = viewModel.currentSide + 1
+                                    viewModel.onImageCaptured(it)
+                                    viewModel.advanceAfterVideoPhoto()
+                                    toasts.info(context.getString(R.string.capture_side_captured, side))
+                                },
+                                onRecordingChange = viewModel::setVideoRecording,
+                                onBeginTake = viewModel::beginVideoTake,
+                                onVideoAccepted = viewModel::onVideoAccepted,
+                                onVideoFailed = viewModel::onVideoFailed,
+                            )
+                        } else if (viewModel.captureSource == CaptureSource.ORBBEC) {
                             OrbbecCaptureStage(
                                 isAvailable = viewModel.orbbecAvailable,
                                 permissionGranted = viewModel.orbbecPermissionGranted,
@@ -1351,6 +1546,25 @@ fun CaptureFlowScreen(
                 Text(stringResource(R.string.capture_permission_required))
             }
         }
+    }
+
+    if (confirmLeaveRecording) {
+        AlertDialog(
+            onDismissRequest = { confirmLeaveRecording = false },
+            title = { Text(stringResource(R.string.video_discard_title)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmLeaveRecording = false
+                    // Disposing the stage stops the recorder without accepting the file.
+                    onCancel()
+                }) { Text(stringResource(R.string.video_discard_confirm), color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmLeaveRecording = false }) {
+                    Text(stringResource(R.string.video_keep_recording))
+                }
+            },
+        )
     }
 
     viewModel.qaReport?.let { report ->
@@ -1450,7 +1664,8 @@ private fun CapturedReviewStage(
             OutlinedButton(
                 onClick = onRetake,
                 modifier = Modifier.weight(1f).height(48.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                colors = OverPhotoButtonColors(),
+                border = OverPhotoButtonBorder,
             ) { Text(stringResource(R.string.action_retake)) }
 
             if (finishEarlyLabel != null) {
@@ -1458,7 +1673,8 @@ private fun CapturedReviewStage(
                     onClick = onFinishEarly,
                     modifier = Modifier.weight(1f).height(48.dp),
                     enabled = !isSaving,
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                    colors = OverPhotoButtonColors(),
+                    border = OverPhotoButtonBorder,
                     // Third equal-weight button: the default content padding leaves ~77dp of
                     // text width on a 360dp phone, which wrapped this label onto a second line
                     // and clipped it inside the fixed 48dp height.
@@ -1476,16 +1692,38 @@ private fun CapturedReviewStage(
                 onClick = onContinue,
                 modifier = Modifier.weight(1f).height(48.dp),
                 enabled = !isSaving && (if (isLastSide) allCaptured else true),
+                // With three buttons in the row the default padding wraps the label on a phone.
+                contentPadding = if (finishEarlyLabel != null) PaddingValues(horizontal = 4.dp)
+                    else ButtonDefaults.ContentPadding,
             ) {
                 if (isSaving) {
                     CircularProgressIndicator(Modifier.size(20.dp), color = MaterialTheme.colorScheme.onPrimary)
                 } else {
-                    Text(continueLabel ?: stringResource(if (isLastSide) R.string.capture_review_all else R.string.action_continue))
+                    Text(
+                        continueLabel ?: stringResource(if (isLastSide) R.string.capture_review_all else R.string.action_continue),
+                        maxLines = 1,
+                    )
                 }
             }
         }
     }
 }
+
+/**
+ * Secondary buttons drawn on top of a captured photo. A plain outlined button there is white text
+ * on whatever the photo shows, with an outline that vanishes on bright backgrounds, so it read as
+ * loose text rather than a control. A dark fill and a white edge keep 3:1 on any photo.
+ */
+@Composable
+private fun OverPhotoButtonColors() = ButtonDefaults.outlinedButtonColors(
+    containerColor = Color.Black.copy(alpha = 0.6f),
+    contentColor = Color.White,
+    // The defaults are a transparent fill and faint text, which vanish over a photo.
+    disabledContainerColor = Color.Black.copy(alpha = 0.6f),
+    disabledContentColor = Color.White.copy(alpha = 0.6f),
+)
+
+private val OverPhotoButtonBorder = androidx.compose.foundation.BorderStroke(1.5.dp, Color.White)
 
 /** Tokenized "Captured" pill (icon + label on the success color) reused by both review stages. */
 @Composable
@@ -1520,6 +1758,10 @@ private fun ReviewAllPager(
     onRetake: (Int) -> Unit,
     onSave: () -> Unit,
     modifier: Modifier = Modifier,
+    saveLabel: String = stringResource(R.string.capture_save_annotate),
+    /** Set when the sample was finished early and a photo slot is still empty. */
+    addPhotoLabel: String? = null,
+    onAddPhoto: () -> Unit = {},
 ) {
     val pageCount = sideCount.coerceAtLeast(1)
     val pagerState = rememberPagerState(pageCount = { pageCount })
@@ -1567,7 +1809,7 @@ private fun ReviewAllPager(
                     }
                     CapturedBadge(Modifier.padding(16.dp).align(Alignment.TopEnd))
 
-                    Box(
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .align(Alignment.BottomCenter)
@@ -1577,18 +1819,32 @@ private fun ReviewAllPager(
                                 )
                             )
                             .padding(16.dp),
-                        contentAlignment = Alignment.Center,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
                     ) {
                         val sideIndex = sideIndices.getOrElse(page) { page }
                         OutlinedButton(
                             onClick = { onRetake(sideIndex) },
                             enabled = !isSaving && !isDraftPersisting && !isDraftValidating,
                             modifier = Modifier.height(48.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White),
+                            colors = OverPhotoButtonColors(),
+                            border = OverPhotoButtonBorder,
                         ) {
                             Icon(Icons.Default.CameraAlt, null, Modifier.size(18.dp))
                             Spacer(Modifier.width(8.dp))
                             Text(stringResource(R.string.capture_retake_side, sideIndex + 1))
+                        }
+                        if (addPhotoLabel != null) {
+                            OutlinedButton(
+                                onClick = onAddPhoto,
+                                enabled = !isSaving && !isDraftPersisting && !isDraftValidating,
+                                modifier = Modifier.height(48.dp),
+                                colors = OverPhotoButtonColors(),
+                                border = OverPhotoButtonBorder,
+                            ) {
+                                Icon(Icons.Default.CameraAlt, null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                                Text(addPhotoLabel, maxLines = 1)
+                            }
                         }
                     }
                 }
@@ -1648,7 +1904,7 @@ private fun ReviewAllPager(
             if (isSaving) {
                 CircularProgressIndicator(Modifier.size(20.dp), color = MaterialTheme.colorScheme.onPrimary)
             } else {
-                Text(stringResource(R.string.capture_save_annotate))
+                Text(saveLabel)
             }
         }
     }

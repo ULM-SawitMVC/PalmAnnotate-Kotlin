@@ -85,7 +85,7 @@ fun NewSessionDialog(
         title = {
             Text(
                 stringResource(
-                    if (datasetType == DatasetType.MULTISIDE) R.string.dialog_start_session
+                    if (datasetType != DatasetType.BUNCH_WEIGHT) R.string.dialog_start_session
                     else R.string.weight_dialog_start_session,
                 ),
             )
@@ -157,7 +157,7 @@ fun NewSessionDialog(
                         Column(Modifier.weight(1f)) {
                             Text(
                                 stringResource(
-                                    if (datasetType == DatasetType.MULTISIDE) R.string.dialog_name_token
+                                    if (datasetType != DatasetType.BUNCH_WEIGHT) R.string.dialog_name_token
                                     else R.string.weight_dialog_name_token,
                                     deviceToken,
                                 ),

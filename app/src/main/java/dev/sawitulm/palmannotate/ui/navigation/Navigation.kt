@@ -27,9 +27,11 @@ object Routes {
     const val MODULES = "modules"
     const val MULTISIDE_HOME = "home/multiside"
     const val BUNCH_WEIGHT_HOME = "home/bunch-weight"
+    const val MULTISIDE_VIDEO_HOME = "home/multiside-video"
     const val HOME = MULTISIDE_HOME
     const val SESSION_DETAIL = "session/{runId}"
     const val CAPTURE = "capture/{runId}"
+    const val CAPTURE_VIDEO = "capture-video/{runId}"
     const val ANNOTATION = "annotation/{treeKey}"
     const val RESULTS = "results/{treeKey}"
     const val DEDUP = "dedup/{treeKey}"
@@ -38,6 +40,7 @@ object Routes {
 
     fun sessionDetail(runId: String) = "session/$runId"
     fun capture(runId: String) = "capture/$runId"
+    fun captureVideo(runId: String) = "capture-video/$runId"
     fun annotation(treeKey: String) = "annotation/$treeKey"
     fun results(treeKey: String) = "results/$treeKey"
     fun dedup(treeKey: String) = "dedup/$treeKey"
@@ -55,6 +58,7 @@ fun PalmAnnotateNavHost(
             ModuleHubScreen(
                 onOpenMultiside = { navController.navigate(Routes.MULTISIDE_HOME) },
                 onOpenBunchWeight = { navController.navigate(Routes.BUNCH_WEIGHT_HOME) },
+                onOpenMultisideVideo = { navController.navigate(Routes.MULTISIDE_VIDEO_HOME) },
             )
         }
 
@@ -66,6 +70,10 @@ fun PalmAnnotateNavHost(
             HomeScreen(datasetType = DatasetType.BUNCH_WEIGHT, onSessionClick = { runId -> navController.navigate(Routes.sessionDetail(runId)) }, onBack = { navController.popBackStack() })
         }
 
+        composable(Routes.MULTISIDE_VIDEO_HOME) {
+            HomeScreen(datasetType = DatasetType.MULTISIDE_VIDEO, onSessionClick = { runId -> navController.navigate(Routes.sessionDetail(runId)) }, onBack = { navController.popBackStack() })
+        }
+
         composable(
             route = Routes.SESSION_DETAIL,
             arguments = listOf(navArgument("runId") { type = NavType.StringType }),
@@ -75,6 +83,7 @@ fun PalmAnnotateNavHost(
                 sessionId = runId,
                 onBack = { navController.popBackStack() },
                 onAddTree = { navController.navigate(Routes.capture(runId)) },
+                onAddVideoTree = { navController.navigate(Routes.captureVideo(runId)) },
                 // Carousel is now the primary annotation editor (tapping a tree opens it).
                 onOpenTree = { treeKey -> navController.navigate(Routes.carousel(treeKey)) },
                 onOpenCarousel = { treeKey -> navController.navigate(Routes.carousel(treeKey)) },
@@ -95,6 +104,21 @@ fun PalmAnnotateNavHost(
                     }
                 },
                 onCancel = { navController.popBackStack() },
+            )
+        }
+
+        // Multiside video: same capture screen, tablet camera only, and no annotation step, so a
+        // saved tree returns to the session's tree list instead of opening the carousel.
+        composable(
+            route = Routes.CAPTURE_VIDEO,
+            arguments = listOf(navArgument("runId") { type = NavType.StringType }),
+        ) { entry ->
+            val runId = entry.arguments?.getString("runId") ?: return@composable
+            CaptureFlowScreen(
+                sessionId = runId,
+                onTreeSaved = { navController.popBackStack() },
+                onCancel = { navController.popBackStack() },
+                videoMode = true,
             )
         }
 

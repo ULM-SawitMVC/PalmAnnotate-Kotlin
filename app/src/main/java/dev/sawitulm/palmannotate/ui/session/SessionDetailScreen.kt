@@ -66,6 +66,23 @@ class SessionDetailViewModel @Inject constructor(
         runIdFlow.value = runId
     }
 
+    private val finalizeAttempted = HashSet<String>()
+
+    /**
+     * Recovery for multiside-video trees whose first revision failed right after capture. They
+     * have no editor that would create it later, so it is retried once per visit to this screen.
+     */
+    fun finalizeCaptureOnlyTrees(trees: List<TreeEntity>) {
+        val pending = trees.filter { !it.isComplete && finalizeAttempted.add(it.treeKey) }
+        if (pending.isEmpty()) return
+        viewModelScope.launch {
+            for (tree in pending) {
+                runCatching { repo.finalizeCaptureOnlyTree(tree.treeKey, exportFolder.folderUri.first()) }
+                    .onFailure { Log.w("SessionDetailVM", "finalize failed for ${tree.treeName}", it) }
+            }
+        }
+    }
+
     fun deleteTree(treeKey: String) {
         viewModelScope.launch {
             try {
@@ -94,12 +111,18 @@ fun SessionDetailScreen(
     onAddTree: () -> Unit,             // navigate to capture(runId)
     onOpenTree: (String) -> Unit,      // navigate to annotation(treeKey)
     onOpenCarousel: (String) -> Unit = {}, // navigate to carousel(treeKey)
+    onAddVideoTree: () -> Unit = onAddTree, // navigate to captureVideo(runId)
     viewModel: SessionDetailViewModel = hiltViewModel(),
 ) {
     LaunchedEffect(sessionId) { viewModel.load(sessionId) }
     val run by viewModel.run.collectAsState()
     val trees by viewModel.trees.collectAsState()
     val isWeightDataset = DatasetType.fromPersisted(run?.datasetType) == DatasetType.BUNCH_WEIGHT
+    // Photos + one recording, no annotation: nothing here opens the carousel editor.
+    val isVideoDataset = run != null && DatasetType.fromPersisted(run?.datasetType).requiresVideo
+    LaunchedEffect(isVideoDataset, trees) {
+        if (isVideoDataset) viewModel.finalizeCaptureOnlyTrees(trees)
+    }
     val mirrorStatuses by viewModel.mirrorStatuses.collectAsState()
     val mirrorByTree = remember(mirrorStatuses) { mirrorStatuses.associateBy { it.treeKey } }
 
@@ -120,7 +143,9 @@ fun SessionDetailScreen(
         },
         floatingActionButton = {
             ExtendedFloatingActionButton(
-                onClick = onAddTree,
+                // Until the run is loaded its module is unknown, and a video run opened on the
+                // plain capture route has no way to record.
+                onClick = { if (run != null) { if (isVideoDataset) onAddVideoTree() else onAddTree() } },
                 icon = { Icon(Icons.Default.Add, null) },
                 text = {
                     Text(
@@ -173,6 +198,7 @@ fun SessionDetailScreen(
                             mirrorStatus = mirrorByTree[tree.treeKey],
                             onRetryMirror = { viewModel.retryMirror(tree.treeKey) },
                             isWeightDataset = isWeightDataset,
+                            canAnnotate = !isVideoDataset,
                         )
                     }
                 }
@@ -239,6 +265,7 @@ private fun TreeRow(
     mirrorStatus: dev.sawitulm.palmannotate.data.db.MirrorStatusEntity?,
     onRetryMirror: () -> Unit,
     isWeightDataset: Boolean = false,
+    canAnnotate: Boolean = true,
 ) {
     var confirm by remember { mutableStateOf(false) }
     ElevatedCard(Modifier.fillMaxWidth()) {
@@ -249,7 +276,7 @@ private fun TreeRow(
                 }
             }
             Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f).clickable(onClick = onAnnotate)) {
+            Column(Modifier.weight(1f).clickable(enabled = canAnnotate, onClick = onAnnotate)) {
                 Text(tree.treeName, fontWeight = FontWeight.Medium, maxLines = 1)
                 Text(
                     if (isWeightDataset) {
@@ -286,7 +313,7 @@ private fun TreeRow(
             }
             if (tree.isComplete) Icon(Icons.Default.CheckCircle, stringResource(R.string.cd_complete), tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(4.dp))
-            IconButton(onClick = onCarousel) {
+            if (canAnnotate) IconButton(onClick = onCarousel) {
                 Icon(Icons.Default.ViewCarousel, stringResource(R.string.cd_open_carousel), modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             IconButton(onClick = { confirm = true }) {
