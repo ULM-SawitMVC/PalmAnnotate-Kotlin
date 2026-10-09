@@ -66,6 +66,7 @@ Not lazy about: understanding the problem (read it fully and trace the real flow
 4. **Read existing code first.** Understand the current implementation before changing it.
 5. **Small changes.** Make one change at a time, test it, then proceed.
 6. **Preserve data integrity.** DB transactions must be atomic; never leave partial state.
+7. **Test the full life of an item, not only its creation.** After a save, find the item in every list that shows it, open it, and confirm the operator can see what was captured (each photo, the video, the measurements). A row that looks like an item must open something. A new mode or item type runs the whole checklist the existing modes pass: create, reopen and review, retake, resume a draft, delete, mirror, export. "Not needed for this mode" is a decision for the operator, never an assumption: ask before removing a path that the other modes have.
 
 ## UI rules
 

@@ -145,4 +145,15 @@ class MultisideVideoTests {
             ),
         )
     }
+
+    @Test
+    fun `a saved video tree opens a viewer from the tree list`() {
+        val detail = repoFile(
+            "app/src/main/java/dev/sawitulm/palmannotate/ui/session/SessionDetailScreen.kt",
+        ).readText()
+        assertTrue(detail.contains("if (isVideoDataset) viewingKey = tree.treeKey else onOpenTree(tree.treeKey)"))
+        assertTrue(detail.contains("VideoTreeViewer("))
+        // The row stays tappable in every module.
+        assertTrue(detail.contains(".clickable(onClick = onAnnotate)"))
+    }
 }

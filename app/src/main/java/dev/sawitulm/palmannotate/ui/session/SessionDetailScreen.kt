@@ -9,6 +9,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -22,6 +23,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import android.util.Log
 import dev.sawitulm.palmannotate.data.db.SessionEntity
 import dev.sawitulm.palmannotate.data.db.TreeEntity
+import dev.sawitulm.palmannotate.data.storage.AndroidStorageManager
 import dev.sawitulm.palmannotate.data.storage.ExportFolderRepository
 import dev.sawitulm.palmannotate.data.storage.MirrorStates
 import dev.sawitulm.palmannotate.data.storage.SessionRepository
@@ -44,7 +46,11 @@ import javax.inject.Inject
 class SessionDetailViewModel @Inject constructor(
     private val repo: SessionRepository,
     private val exportFolder: ExportFolderRepository,
+    private val storage: AndroidStorageManager,
 ) : ViewModel() {
+
+    fun imageUri(treeName: String, sideIndex: Int) = storage.imageUri(treeName, sideIndex)
+    fun videoFile(treeName: String) = storage.videoFile(treeName)
 
     private val runIdFlow = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
 
@@ -118,8 +124,22 @@ fun SessionDetailScreen(
     val run by viewModel.run.collectAsState()
     val trees by viewModel.trees.collectAsState()
     val isWeightDataset = DatasetType.fromPersisted(run?.datasetType) == DatasetType.BUNCH_WEIGHT
-    // Photos + one recording, no annotation: nothing here opens the carousel editor.
+    // Photos + one recording, no annotation: a tree opens the read-only viewer, never the
+    // carousel editor.
     val isVideoDataset = run != null && DatasetType.fromPersisted(run?.datasetType).requiresVideo
+    var viewingKey by rememberSaveable { mutableStateOf<String?>(null) }
+    // Looked up in the live list, so deleting the tree also closes its viewer.
+    val viewing = trees.firstOrNull { it.treeKey == viewingKey }
+    if (isVideoDataset && viewing != null) {
+        VideoTreeViewer(
+            treeName = viewing.treeName,
+            sideCount = viewing.sideCount,
+            imageUri = { viewModel.imageUri(viewing.treeName, it) },
+            videoFile = viewModel.videoFile(viewing.treeName),
+            onBack = { viewingKey = null },
+        )
+        return
+    }
     LaunchedEffect(isVideoDataset, trees) {
         if (isVideoDataset) viewModel.finalizeCaptureOnlyTrees(trees)
     }
@@ -192,7 +212,9 @@ fun SessionDetailScreen(
                     items(trees, key = { it.treeKey }) { tree ->
                         TreeRow(
                             tree = tree,
-                            onAnnotate = { onOpenTree(tree.treeKey) },
+                            onAnnotate = {
+                                if (isVideoDataset) viewingKey = tree.treeKey else onOpenTree(tree.treeKey)
+                            },
                             onCarousel = { onOpenCarousel(tree.treeKey) },
                             onDelete = { viewModel.deleteTree(tree.treeKey) },
                             mirrorStatus = mirrorByTree[tree.treeKey],
@@ -276,7 +298,7 @@ private fun TreeRow(
                 }
             }
             Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f).clickable(enabled = canAnnotate, onClick = onAnnotate)) {
+            Column(Modifier.weight(1f).clickable(onClick = onAnnotate)) {
                 Text(tree.treeName, fontWeight = FontWeight.Medium, maxLines = 1)
                 Text(
                     if (isWeightDataset) {

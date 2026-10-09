@@ -50,6 +50,9 @@
     <string name="video_keep_recording">Keep recording</string>
     <string name="video_retake_all_title">Retake all photos with the new recording?</string>
     <string name="video_mic_required">Allow the microphone to record.</string>
+    <string name="video_view_play">Play video</string>
+    <string name="video_view_photos">Photos</string>
+    <string name="video_view_failed">This video cannot be played.</string>
     <string name="video_camera_unavailable">This camera cannot record video and take photos together.</string>
     <string name="capture_finish_one_photo">Use 1 photo</string>
     <string name="capture_take_photo_2">Take photo 2</string>
