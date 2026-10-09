@@ -1701,6 +1701,10 @@ private fun CapturedReviewStage(
                 } else {
                     Text(
                         continueLabel ?: stringResource(if (isLastSide) R.string.capture_review_all else R.string.action_continue),
+                        // Same size as its neighbour in the three-button row, where the default
+                        // style leaves no margin on a 360dp phone.
+                        style = if (finishEarlyLabel != null) MaterialTheme.typography.labelMedium
+                            else LocalTextStyle.current,
                         maxLines = 1,
                     )
                 }
@@ -1822,16 +1826,24 @@ private fun ReviewAllPager(
                         horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterHorizontally),
                     ) {
                         val sideIndex = sideIndices.getOrElse(page) { page }
+                        // Two buttons side by side: with the icons and the default padding the
+                        // second one was cut to "Take" on a 360dp phone.
+                        val paired = addPhotoLabel != null
+                        val pairedPadding = if (paired) PaddingValues(horizontal = 12.dp)
+                            else ButtonDefaults.ContentPadding
                         OutlinedButton(
                             onClick = { onRetake(sideIndex) },
                             enabled = !isSaving && !isDraftPersisting && !isDraftValidating,
                             modifier = Modifier.height(48.dp),
                             colors = OverPhotoButtonColors(),
                             border = OverPhotoButtonBorder,
+                            contentPadding = pairedPadding,
                         ) {
-                            Icon(Icons.Default.CameraAlt, null, Modifier.size(18.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text(stringResource(R.string.capture_retake_side, sideIndex + 1))
+                            if (!paired) {
+                                Icon(Icons.Default.CameraAlt, null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Text(stringResource(R.string.capture_retake_side, sideIndex + 1), maxLines = 1)
                         }
                         if (addPhotoLabel != null) {
                             OutlinedButton(
@@ -1840,11 +1852,8 @@ private fun ReviewAllPager(
                                 modifier = Modifier.height(48.dp),
                                 colors = OverPhotoButtonColors(),
                                 border = OverPhotoButtonBorder,
-                            ) {
-                                Icon(Icons.Default.CameraAlt, null, Modifier.size(18.dp))
-                                Spacer(Modifier.width(8.dp))
-                                Text(addPhotoLabel, maxLines = 1)
-                            }
+                                contentPadding = pairedPadding,
+                            ) { Text(addPhotoLabel, maxLines = 1) }
                         }
                     }
                 }
@@ -1852,7 +1861,8 @@ private fun ReviewAllPager(
 
             // Per-screen swipe-direction toggle — overlay outside the pager so it stays put
             // while pages swipe. Not persisted; resets each time the preview opens.
-            IconButton(
+            // One photo has no swipe direction, and the toggle would sit on the second button.
+            if (pageCount > 1) IconButton(
                 onClick = { reverseSwipe = !reverseSwipe },
                 modifier = Modifier
                     .align(Alignment.BottomEnd)

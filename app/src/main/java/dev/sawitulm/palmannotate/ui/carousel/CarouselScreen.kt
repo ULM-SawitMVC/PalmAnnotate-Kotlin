@@ -1454,12 +1454,16 @@ private fun CarouselBottomBar(
                         onClick = onSaveExit,
                         enabled = !isSaving,
                         modifier = Modifier.weight(1f).height(48.dp),
-                    ) { Text(saveExitLabel, style = MaterialTheme.typography.labelLarge) }
+                        // The default padding wraps the bunch-weight labels onto a second,
+                        // clipped line on a 360dp phone.
+                        contentPadding = PaddingValues(horizontal = 8.dp),
+                    ) { Text(saveExitLabel, style = MaterialTheme.typography.labelLarge, maxLines = 1) }
                     Button(
                         onClick = onNextTree,
                         enabled = !isSaving && nextTreeEnabled,
                         modifier = Modifier.weight(1f).height(48.dp),
-                    ) { Text(nextTreeLabel, style = MaterialTheme.typography.labelLarge) }
+                        contentPadding = PaddingValues(horizontal = 8.dp),
+                    ) { Text(nextTreeLabel, style = MaterialTheme.typography.labelLarge, maxLines = 1) }
                 }
             }
         }
