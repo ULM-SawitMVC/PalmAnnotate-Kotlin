@@ -1089,14 +1089,18 @@ class SessionRepository(
                 ) {
                     return false
                 }
-            } else if (
-                listOf("dataset/depth/field/$stem.raw", "dataset/depth/field/$stem.json").any {
-                    saf.exists(safTreeUri, it, forceRefresh = true) != SafPathState.Absent
-                }
-            ) {
-                return false
             }
         }
+
+        // One listing of the remote depth directory answers for every side without local depth.
+        // Asking per file listed that directory twice per side.
+        val sidesWithoutDepth = session.sides.map { it.sideIndex }
+            .filterNot { storage.hasValidDepthPair(session.treeName, it) }
+        val staleDepth = saf.existsAll(
+            safTreeUri,
+            ArtifactIdentityPolicy.remoteDepthPaths(session.treeName, sidesWithoutDepth),
+        )
+        if (staleDepth.values.any { it != SafPathState.Absent }) return false
 
         remoteMatches(
             "Output JSON/${session.treeName}.json",
@@ -1126,8 +1130,19 @@ class SessionRepository(
     ): Boolean {
         var packageFilesOk = true
 
+        // One listing of the remote depth directory answers for every side without local depth.
+        // Asking per file listed that directory twice per side, which stalled the mirror queue
+        // once the directory held thousands of files.
+        val staleDepth = saf.existsAll(
+            safTreeUri,
+            ArtifactIdentityPolicy.remoteDepthPaths(
+                treeName,
+                sides.map { it.sideIndex }.filterNot { storage.hasValidDepthPair(treeName, it) },
+            ),
+        )
+
         fun deleteRemoteIfPresent(path: String): Boolean = when (
-            val state = saf.exists(safTreeUri, path, forceRefresh = true)
+            staleDepth[path] ?: saf.exists(safTreeUri, path, forceRefresh = true)
         ) {
             SafPathState.Absent -> true
             is SafPathState.Inaccessible -> false
@@ -1201,8 +1216,8 @@ class SessionRepository(
             // halves; FolderResumeImporter must never see fresh raw with stale metadata.
             val depthRaw = storage.depthRawFile(treeName, side.sideIndex)
             val depthMeta = storage.depthJsonFile(treeName, side.sideIndex)
-            val rawPath = "dataset/depth/field/${treeName}_${side.sideIndex + 1}.raw"
-            val metaPath = "dataset/depth/field/${treeName}_${side.sideIndex + 1}.json"
+            val (rawPath, metaPath) =
+                ArtifactIdentityPolicy.remoteDepthPaths(treeName, listOf(side.sideIndex))
             if (storage.hasValidDepthPair(treeName, side.sideIndex)) {
                 val needsWrite = if (forceMediaOverwrite) {
                     true
