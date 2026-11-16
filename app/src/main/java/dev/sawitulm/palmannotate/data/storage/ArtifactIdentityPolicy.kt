@@ -26,8 +26,7 @@ internal object ArtifactIdentityPolicy {
             for (sideIndex in sideIndices) {
                 val stem = "${treeName}_${sideIndex + 1}"
                 add("dataset/images/field/$stem.jpg")
-                add("dataset/depth/field/$stem.raw")
-                add("dataset/depth/field/$stem.json")
+                addAll(remoteDepthPaths(treeName, listOf(sideIndex)))
                 add("dataset/annotlog/field/$stem.json")
                 add("Output TXT/field/$stem.txt")
             }

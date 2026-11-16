@@ -327,7 +327,9 @@ class SessionRepository(
                     treeName,
                     sides.map { it.sideIndex },
                 )
+                val probeStartedNanos = System.nanoTime()
                 val states = saf.existsAll(safTreeUri, probePaths)
+                Log.i(TAG, "Collision probe $treeName: ${elapsedMs(probeStartedNanos)} ms")
                 val inaccessible = probePaths.firstOrNull { states[it] is SafPathState.Inaccessible }
                 check(inaccessible == null) {
                     "Cannot verify tree-name availability in the export folder: $inaccessible"
@@ -1046,6 +1048,8 @@ class SessionRepository(
         manifestText: String,
         metadataText: String,
     ): Boolean {
+        val startedNanos = System.nanoTime()
+        val sidesWithoutDepth = ArrayList<Int>()
         return runCatching {
         fun remoteMatches(path: String, expectedSha256: String): Boolean {
             val bytes = saf.readBytes(safTreeUri, path) ?: return false
@@ -1078,24 +1082,20 @@ class SessionRepository(
             val localRaw = storage.depthRawFile(session.treeName, side.sideIndex)
             val localDepthJson = storage.depthJsonFile(session.treeName, side.sideIndex)
             if (storage.hasValidDepthPair(session.treeName, side.sideIndex)) {
-                if (!remoteMatches(
-                        "dataset/depth/field/$stem.raw",
-                        DepthArtifactContract.sha256Hex(localRaw),
-                    ) ||
-                    !remoteMatches(
-                        "dataset/depth/field/$stem.json",
-                        DepthArtifactContract.sha256Hex(localDepthJson),
-                    )
+                val (remoteRaw, remoteDepthJson) =
+                    ArtifactIdentityPolicy.remoteDepthPaths(session.treeName, listOf(side.sideIndex))
+                if (!remoteMatches(remoteRaw, DepthArtifactContract.sha256Hex(localRaw)) ||
+                    !remoteMatches(remoteDepthJson, DepthArtifactContract.sha256Hex(localDepthJson))
                 ) {
                     return false
                 }
+            } else {
+                sidesWithoutDepth += side.sideIndex
             }
         }
 
-        // One listing of the remote depth directory answers for every side without local depth.
-        // Asking per file listed that directory twice per side.
-        val sidesWithoutDepth = session.sides.map { it.sideIndex }
-            .filterNot { storage.hasValidDepthPair(session.treeName, it) }
+        // One existsAll lists the remote depth directory once for the whole tree. A forced probe
+        // per file listed it twice per side.
         val staleDepth = saf.existsAll(
             safTreeUri,
             ArtifactIdentityPolicy.remoteDepthPaths(session.treeName, sidesWithoutDepth),
@@ -1114,8 +1114,12 @@ class SessionRepository(
                 "dataset/manifests/${session.treeName}.json",
                 DepthArtifactContract.sha256Hex(manifestText.toByteArray(Charsets.UTF_8)),
             )
-        }.getOrDefault(false)
+        }.getOrDefault(false).also { ok ->
+            Log.i(TAG, "SAF read-back ${session.treeName}: ${elapsedMs(startedNanos)} ms, ok=$ok")
+        }
     }
+
+    private fun elapsedMs(startedNanos: Long): Long = (System.nanoTime() - startedNanos) / 1_000_000
 
     /**
      * Mirror every file referenced by the package manifest. Returns false on any required write
@@ -1128,28 +1132,9 @@ class SessionRepository(
         forceMediaOverwrite: Boolean,
         datasetType: DatasetType = DatasetType.MULTISIDE,
     ): Boolean {
+        val startedNanos = System.nanoTime()
         var packageFilesOk = true
-
-        // One listing of the remote depth directory answers for every side without local depth.
-        // Asking per file listed that directory twice per side, which stalled the mirror queue
-        // once the directory held thousands of files.
-        val staleDepth = saf.existsAll(
-            safTreeUri,
-            ArtifactIdentityPolicy.remoteDepthPaths(
-                treeName,
-                sides.map { it.sideIndex }.filterNot { storage.hasValidDepthPair(treeName, it) },
-            ),
-        )
-
-        fun deleteRemoteIfPresent(path: String): Boolean = when (
-            staleDepth[path] ?: saf.exists(safTreeUri, path, forceRefresh = true)
-        ) {
-            SafPathState.Absent -> true
-            is SafPathState.Inaccessible -> false
-            SafPathState.Present ->
-                saf.deletePath(safTreeUri, path) &&
-                    saf.exists(safTreeUri, path, forceRefresh = true) == SafPathState.Absent
-        }
+        val sidesWithoutDepth = ArrayList<Int>()
 
         for (side in sides) {
             if (side.imageWidth > 0 && side.imageHeight > 0) {
@@ -1253,13 +1238,26 @@ class SessionRepository(
                     packageFilesOk = packageFilesOk && mirrored
                 }
             } else {
-                // H-02: local has no depth for this side (never captured, or a re-shoot dropped it).
-                // Remove any depth previously mirrored to SAF so resume/import can't bring the stale
-                // depth back and pair it with the new RGB. Only touches SAF when something is there.
-                val rawRemoved = deleteRemoteIfPresent(rawPath)
-                val metaRemoved = deleteRemoteIfPresent(metaPath)
-                packageFilesOk = packageFilesOk && rawRemoved && metaRemoved
+                sidesWithoutDepth += side.sideIndex
             }
+        }
+        // H-02: these sides have no local depth (never captured, or a re-shoot dropped it). Remove
+        // any depth previously mirrored to SAF so resume/import can't bring the stale depth back
+        // and pair it with the new RGB. One existsAll lists the remote depth directory once for
+        // the whole tree: a forced probe per file listed it twice per side, which stalled the
+        // mirror queue once the directory held thousands of files.
+        for ((path, state) in saf.existsAll(
+            safTreeUri,
+            ArtifactIdentityPolicy.remoteDepthPaths(treeName, sidesWithoutDepth),
+        )) {
+            val removed = when (state) {
+                SafPathState.Absent -> true
+                is SafPathState.Inaccessible -> false
+                SafPathState.Present ->
+                    saf.deletePath(safTreeUri, path) &&
+                        saf.exists(safTreeUri, path, forceRefresh = true) == SafPathState.Absent
+            }
+            packageFilesOk = packageFilesOk && removed
         }
         if (datasetType.requiresVideo) {
             // One recording per tree, streamed: it is far too large for the ByteArray path above.
@@ -1276,6 +1274,7 @@ class SessionRepository(
             }
             packageFilesOk = packageFilesOk && videoOk
         }
+        Log.i(TAG, "SAF mirror $treeName: ${elapsedMs(startedNanos)} ms, ok=$packageFilesOk")
         return packageFilesOk
     }
 

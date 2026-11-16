@@ -591,7 +591,7 @@ class SafMirrorStore(private val context: Context) {
                                 resolved.document,
                                 forceRefresh = true,
                             )
-                        } catch (error: Exception) {
+                        } catch (error: Throwable) {
                             dirVerdicts[key] = SafPathState.Inaccessible(error)
                         }
                     }
