@@ -131,6 +131,24 @@ class PhaseARegressionTest {
     }
 
     @Test
+    fun `SAF mirror probes stale depth once per tree instead of once per file`() {
+        val source = repoFile(
+            "app/src/main/java/dev/sawitulm/palmannotate/data/storage/SessionRepository.kt",
+        ).readText()
+        val verify = source.substringAfter("private fun verifySafPackageReadBack(")
+            .substringBefore("private fun mirrorSafArtifacts(")
+        val mirror = source.substringAfter("private fun mirrorSafArtifacts(")
+            .substringBefore("// ─── Output JSON")
+
+        assertTrue(source.contains("// ─── Output JSON"))
+        assertTrue(verify.contains("saf.existsAll("))
+        assertFalse(verify.contains("forceRefresh = true"))
+        assertTrue(mirror.contains("saf.existsAll("))
+        // The only forced single-file probe left confirms a delete that just happened.
+        assertTrue(mirror.split("forceRefresh = true").size == 2)
+    }
+
+    @Test
     fun `carousel finalization performs one checked complete commit`() {
         val source = repoFile(
             "app/src/main/java/dev/sawitulm/palmannotate/ui/carousel/CarouselScreen.kt",

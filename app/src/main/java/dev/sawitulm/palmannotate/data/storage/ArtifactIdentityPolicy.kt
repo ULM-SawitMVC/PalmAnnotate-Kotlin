@@ -26,10 +26,16 @@ internal object ArtifactIdentityPolicy {
             for (sideIndex in sideIndices) {
                 val stem = "${treeName}_${sideIndex + 1}"
                 add("dataset/images/field/$stem.jpg")
-                add("dataset/depth/field/$stem.raw")
-                add("dataset/depth/field/$stem.json")
+                addAll(remoteDepthPaths(treeName, listOf(sideIndex)))
                 add("dataset/annotlog/field/$stem.json")
                 add("Output TXT/field/$stem.txt")
             }
+        }
+
+    /** Mirror-folder depth pair of each side, raw then JSON, all in one directory. */
+    fun remoteDepthPaths(treeName: String, sideIndices: List<Int>): List<String> =
+        sideIndices.flatMap { sideIndex ->
+            val stem = "${treeName}_${sideIndex + 1}"
+            listOf("dataset/depth/field/$stem.raw", "dataset/depth/field/$stem.json")
         }
 }

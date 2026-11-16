@@ -65,4 +65,23 @@ class ArtifactIdentityPolicyTest {
             paths.map { it.substringBeforeLast('/') }.toSet(),
         )
     }
+
+    /**
+     * The mirror asks about the depth pair of every side without local depth in one
+     * `SafMirrorStore.existsAll` batch. That is a single listing only while every path shares one
+     * directory. Asked one file at a time, a 3,249-file depth directory was listed twice per side
+     * and the mirror queue fell more than an hour behind the captures.
+     */
+    @Test fun `remote depth paths of a tree share one directory`() {
+        assertEquals(
+            listOf(
+                "dataset/depth/field/DXP_A01_0007_1.raw",
+                "dataset/depth/field/DXP_A01_0007_1.json",
+                "dataset/depth/field/DXP_A01_0007_8.raw",
+                "dataset/depth/field/DXP_A01_0007_8.json",
+            ),
+            ArtifactIdentityPolicy.remoteDepthPaths("DXP_A01_0007", listOf(0, 7)),
+        )
+        assertTrue(ArtifactIdentityPolicy.remoteDepthPaths("DXP_A01_0007", emptyList()).isEmpty())
+    }
 }
